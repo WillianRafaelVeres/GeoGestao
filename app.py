@@ -227,10 +227,24 @@ def init_db():
         CREATE TABLE IF NOT EXISTS clientes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
+            tipo_pessoa TEXT DEFAULT 'fisica',
             cpf_cnpj TEXT,
             telefone TEXT,
             email TEXT,
+            inscricao_estadual TEXT,
             endereco TEXT,
+            estado_civil TEXT,
+            regime_casamento TEXT,
+            conjuge_nome TEXT,
+            conjuge_cpf_cnpj TEXT,
+            conjuge_telefone TEXT,
+            conjuge_email TEXT,
+            tem_procurador INTEGER NOT NULL DEFAULT 0,
+            procurador_nome TEXT,
+            procurador_cpf_cnpj TEXT,
+            procurador_telefone TEXT,
+            procurador_email TEXT,
+            procurador_endereco TEXT,
             observacoes TEXT
         );
 
@@ -421,6 +435,20 @@ def init_db():
     add_column_if_missing(db, "projetos", "etapa_atual_id", "INTEGER")
     add_column_if_missing(db, "projetos", "observacoes", "TEXT")
     add_column_if_missing(db, "projetos", "atualizado_em", "TEXT")
+    add_column_if_missing(db, "clientes", "tipo_pessoa", "TEXT DEFAULT 'fisica'")
+    add_column_if_missing(db, "clientes", "inscricao_estadual", "TEXT")
+    add_column_if_missing(db, "clientes", "estado_civil", "TEXT")
+    add_column_if_missing(db, "clientes", "regime_casamento", "TEXT")
+    add_column_if_missing(db, "clientes", "conjuge_nome", "TEXT")
+    add_column_if_missing(db, "clientes", "conjuge_cpf_cnpj", "TEXT")
+    add_column_if_missing(db, "clientes", "conjuge_telefone", "TEXT")
+    add_column_if_missing(db, "clientes", "conjuge_email", "TEXT")
+    add_column_if_missing(db, "clientes", "tem_procurador", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(db, "clientes", "procurador_nome", "TEXT")
+    add_column_if_missing(db, "clientes", "procurador_cpf_cnpj", "TEXT")
+    add_column_if_missing(db, "clientes", "procurador_telefone", "TEXT")
+    add_column_if_missing(db, "clientes", "procurador_email", "TEXT")
+    add_column_if_missing(db, "clientes", "procurador_endereco", "TEXT")
     add_column_if_missing(db, "projetos", "valor", "REAL")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "atraso_origem", "TEXT")
@@ -1459,7 +1487,31 @@ def api_add_cliente():
         return {"error": "Nome obrigatorio"}, 400
 
     try:
-        cliente_id = execute_db("INSERT INTO clientes (nome) VALUES (?)", (nome,))
+        cliente_id = execute_db(
+            "INSERT INTO clientes (nome, tipo_pessoa, cpf_cnpj, telefone, email, inscricao_estadual, endereco, estado_civil, regime_casamento, conjuge_nome, conjuge_cpf_cnpj, conjuge_telefone, conjuge_email, tem_procurador, procurador_nome, procurador_cpf_cnpj, procurador_telefone, procurador_email, procurador_endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                nome,
+                data.get("tipo_pessoa", "fisica"),
+                (data.get("cpf_cnpj") or "").strip(),
+                (data.get("telefone") or "").strip(),
+                (data.get("email") or "").strip(),
+                (data.get("inscricao_estadual") or "").strip(),
+                (data.get("endereco") or "").strip(),
+                (data.get("estado_civil") or "").strip(),
+                (data.get("regime_casamento") or "").strip(),
+                (data.get("conjuge_nome") or "").strip(),
+                (data.get("conjuge_cpf_cnpj") or "").strip(),
+                (data.get("conjuge_telefone") or "").strip(),
+                (data.get("conjuge_email") or "").strip(),
+                1 if data.get("tem_procurador") else 0,
+                (data.get("procurador_nome") or "").strip(),
+                (data.get("procurador_cpf_cnpj") or "").strip(),
+                (data.get("procurador_telefone") or "").strip(),
+                (data.get("procurador_email") or "").strip(),
+                (data.get("procurador_endereco") or "").strip(),
+                (data.get("observacoes") or "").strip(),
+            ),
+        )
         return {"id": cliente_id, "nome": nome}, 201
     except Exception as e:
         return {"error": str(e)}, 500
@@ -2275,13 +2327,27 @@ def clients():
         name = request.form.get("nome", "").strip()
         if name:
             execute_db(
-                "INSERT INTO clientes (nome, cpf_cnpj, telefone, email, endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO clientes (nome, tipo_pessoa, cpf_cnpj, telefone, email, inscricao_estadual, endereco, estado_civil, regime_casamento, conjuge_nome, conjuge_cpf_cnpj, conjuge_telefone, conjuge_email, tem_procurador, procurador_nome, procurador_cpf_cnpj, procurador_telefone, procurador_email, procurador_endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     name,
+                    request.form.get("tipo_pessoa", "fisica"),
                     request.form.get("cpf_cnpj", "").strip(),
                     request.form.get("telefone", "").strip(),
                     request.form.get("email", "").strip(),
+                    request.form.get("inscricao_estadual", "").strip(),
                     request.form.get("endereco", "").strip(),
+                    request.form.get("estado_civil", "").strip(),
+                    request.form.get("regime_casamento", "").strip(),
+                    request.form.get("conjuge_nome", "").strip(),
+                    request.form.get("conjuge_cpf_cnpj", "").strip(),
+                    request.form.get("conjuge_telefone", "").strip(),
+                    request.form.get("conjuge_email", "").strip(),
+                    1 if request.form.get("tem_procurador") else 0,
+                    request.form.get("procurador_nome", "").strip(),
+                    request.form.get("procurador_cpf_cnpj", "").strip(),
+                    request.form.get("procurador_telefone", "").strip(),
+                    request.form.get("procurador_email", "").strip(),
+                    request.form.get("procurador_endereco", "").strip(),
                     request.form.get("observacoes", "").strip(),
                 ),
             )

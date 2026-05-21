@@ -1,45 +1,231 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="page-heading">
+<div class="page-heading d-flex justify-content-between align-items-center">
     <div>
         <h1>Clientes</h1>
-        <p>Cadastro simples para vincular projetos, contatos e observacoes.</p>
+        <p>Visualização estilo planilha dos clientes.</p>
+    </div>
+    <div>
+        <button id="btnNewClient" class="btn btn-primary btn-lg">Novo cliente</button>
     </div>
 </div>
 
-<div class="content-grid two-columns">
-    <section class="panel">
-        <div class="panel-header"><h2>Clientes cadastrados</h2></div>
-        <div class="table-responsive">
-            <table class="table compact-table">
-                <thead><tr><th>Nome</th><th>Contato</th><th>Endereco</th><th>Projetos</th></tr></thead>
-                <tbody>
-                    {% for client in clients %}
-                        <tr>
-                            <td><strong>{{ client.nome }}</strong><small>{{ client.cpf_cnpj or '' }}</small></td>
-                            <td>{{ client.telefone or '-' }}<small>{{ client.email or '' }}</small></td>
-                            <td>{{ client.endereco or '-' }}</td>
-                            <td>{{ client.projetos }}</td>
-                        </tr>
-                    {% else %}
-                        <tr><td colspan="4">Nenhum cliente cadastrado.</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </section>
+<section class="panel">
+    <div class="panel-header"><h2>Base de clientes</h2></div>
+    <div class="table-responsive">
+        <table class="table table-striped table-sm" id="clientsTable">
+            <thead>
+                <tr>
+                    <th>Nome / Razão</th>
+                    <th>Tipo</th>
+                    <th>CPF/CNPJ</th>
+                    <th>Telefone</th>
+                    <th>E-mail</th>
+                    <th>Endereço</th>
+                    <th>Estado civil / Regime</th>
+                    <th>Cônjuge</th>
+                    <th>Procurador</th>
+                    <th>Projetos</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for client in clients %}
+                    <tr>
+                        <td>{{ client.nome }}</td>
+                        <td>{{ client.tipo_pessoa|capitalize }}</td>
+                        <td>{{ client.cpf_cnpj or '-' }}</td>
+                        <td>{{ client.telefone or '-' }}</td>
+                        <td>{{ client.email or '-' }}</td>
+                        <td>{{ client.endereco or '-' }}</td>
+                        <td>{% if client.estado_civil %}{{ client.estado_civil }}{% if client.regime_casamento %} · {{ client.regime_casamento }}{% endif %}{% else %}-{% endif %}</td>
+                        <td>{% if client.conjuge_nome %}{{ client.conjuge_nome }} ({{ client.conjuge_cpf_cnpj or '' }}){% else %}-{% endif %}</td>
+                        <td>{% if client.tem_procurador %}{{ client.procurador_nome or '-' }}{% else %}-{% endif %}</td>
+                        <td>{{ client.projetos }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="10">Nenhum cliente cadastrado.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 
-    <section class="panel">
-        <div class="panel-header"><h2>Novo cliente</h2></div>
-        <form method="post" class="vstack gap-3">
-            <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
-            <div><label class="form-label">CPF/CNPJ</label><input class="form-control" name="cpf_cnpj" /></div>
-            <div><label class="form-label">Telefone</label><input class="form-control" name="telefone" /></div>
-            <div><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" /></div>
-            <div><label class="form-label">Endereco</label><input class="form-control" name="endereco" /></div>
-            <div><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3"></textarea></div>
-            <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Cadastrar cliente</button>
+<!-- Modal popup para novo cliente -->
+<div id="clientModal" role="dialog" aria-modal="true" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;z-index:1050;">
+    <div style="background:#fff;border-radius:8px;max-width:900px;width:100%;box-shadow:0 8px 24px rgba(0,0,0,0.2);">
+        <div style="padding:16px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;">
+            <h3 style="margin:0;">Novo cliente</h3>
+            <button id="closeModal" class="btn btn-sm">Fechar</button>
+        </div>
+        <form method="post" id="clientForm" style="padding:16px;">
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                <div style="flex:1 1 220px;min-width:200px;">
+                    <label class="form-label">Tipo de pessoa</label>
+                    <select class="form-select" name="tipo_pessoa" id="tipoPessoa">
+                        <option value="fisica">Pessoa Física</option>
+                        <option value="juridica">Pessoa Jurídica</option>
+                    </select>
+                </div>
+                <div style="flex:2 1 320px;min-width:250px;">
+                    <label class="form-label">Nome / Razão social</label>
+                    <input class="form-control" name="nome" id="nomeInput" required />
+                </div>
+                <div style="flex:1 1 180px;min-width:140px;">
+                    <label class="form-label">CPF / CNPJ</label>
+                    <input class="form-control" name="cpf_cnpj" id="docInput" />
+                </div>
+                <div style="flex:1 1 180px;min-width:140px;">
+                    <label class="form-label">Inscrição estadual</label>
+                    <input class="form-control" name="inscricao_estadual" />
+                </div>
+                <div style="flex:1 1 180px;min-width:140px;">
+                    <label class="form-label">Telefone</label>
+                    <input class="form-control" name="telefone" />
+                </div>
+                <div style="flex:1 1 220px;min-width:180px;">
+                    <label class="form-label">E-mail</label>
+                    <input class="form-control" type="email" name="email" />
+                </div>
+                <div style="flex:1 1 100%;">
+                    <label class="form-label">Endereço</label>
+                    <input class="form-control" name="endereco" />
+                </div>
+
+                <div id="fisicaFields" style="flex:1 1 100%;">
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                        <div style="flex:1 1 220px;min-width:200px;">
+                            <label class="form-label">Estado civil</label>
+                            <select class="form-select" name="estado_civil">
+                                <option value="">Escolha</option>
+                                <option value="solteiro">Solteiro</option>
+                                <option value="casado">Casado</option>
+                                <option value="divorciado">Divorciado</option>
+                                <option value="viuvo">Viúvo</option>
+                            </select>
+                        </div>
+                        <div id="regimeField" style="flex:1 1 220px;min-width:200px;display:none;transition:opacity 0.3s ease;">
+                            <label class="form-label">Regime de casamento</label>
+                            <select class="form-select" name="regime_casamento" id="regimeCasamento">
+                                <option value="">Escolha</option>
+                                <option value="comunhao_parcial">Comunhão parcial de bens</option>
+                                <option value="separacao_total">Separação total</option>
+                                <option value="comunhao_universal">Comunhão universal</option>
+                                <option value="participacao_acertos">Participação nos acertos</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="conjugeSection" style="margin-top:8px;display:none;transition:opacity 0.3s ease;">
+                        <strong>Dados do cônjuge</strong>
+                        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
+                            <div style="flex:1 1 220px;min-width:200px;"><input class="form-control" name="conjuge_nome" placeholder="Nome do cônjuge" /></div>
+                            <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="conjuge_cpf_cnpj" placeholder="CPF" /></div>
+                            <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="conjuge_telefone" placeholder="Telefone" /></div>
+                            <div style="flex:1 1 220px;min-width:180px;"><input class="form-control" type="email" name="conjuge_email" placeholder="E-mail" /></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="flex:1 1 100%;margin-top:8px;">
+                    <label class="form-check"><input type="checkbox" id="temProcuradorChk" name="tem_procurador" value="1" /> Possui procurador</label>
+                </div>
+
+                <div id="procuradorFields" style="display:none;flex:1 1 100%;margin-top:8px;">
+                    <strong>Dados do procurador</strong>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
+                        <div style="flex:1 1 220px;min-width:200px;"><input class="form-control" name="procurador_nome" placeholder="Nome do procurador" /></div>
+                        <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="procurador_cpf_cnpj" placeholder="CPF/CNPJ" /></div>
+                        <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="procurador_telefone" placeholder="Telefone" /></div>
+                        <div style="flex:1 1 220px;min-width:180px;"><input class="form-control" type="email" name="procurador_email" placeholder="E-mail" /></div>
+                        <div style="flex:1 1 100%;min-width:200px;"><input class="form-control" name="procurador_endereco" placeholder="Endereço" /></div>
+                    </div>
+                </div>
+
+                <div style="flex:1 1 100%;margin-top:12px;">
+                    <label class="form-label">Observações</label>
+                    <textarea class="form-control" name="observacoes" rows="3"></textarea>
+                </div>
+            </div>
+
+            <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px;border-top:1px solid #eee;">
+                <button type="button" id="cancelBtn" class="btn">Cancelar</button>
+                <button type="submit" class="btn btn-primary" {% if not can_manage() %}disabled{% endif %}>Salvar cliente</button>
+            </div>
         </form>
-    </section>
+    </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+    const modal = document.getElementById('clientModal');
+    const btn = document.getElementById('btnNewClient');
+    const close = document.getElementById('closeModal');
+    const cancel = document.getElementById('cancelBtn');
+    const tipo = document.getElementById('tipoPessoa');
+    const fisicaFields = document.getElementById('fisicaFields');
+    const temProcuradorChk = document.getElementById('temProcuradorChk');
+    const procuradorFields = document.getElementById('procuradorFields');
+    const estadoCivil = document.querySelector('select[name="estado_civil"]');
+    const regimeCasamento = document.getElementById('regimeCasamento');
+    const regimeField = document.getElementById('regimeField');
+    const conjugeSection = document.getElementById('conjugeSection');
+
+    function updateFieldsVisibility(){
+        // Show/hide civil status fields based on person type
+        if(tipo.value === 'fisica'){
+            fisicaFields.style.display = '';
+        } else {
+            fisicaFields.style.display = 'none';
+        }
+        
+        // Show/hide regime field based on civil status
+        const civiStatus = estadoCivil.value;
+        const regime = regimeCasamento.value;
+        
+        if(civiStatus === 'casado' || civiStatus === 'viuvo'){
+            regimeField.style.display = '';
+        } else {
+            regimeField.style.display = 'none';
+            regimeCasamento.value = '';
+        }
+        
+        // Show/hide conjugeSection based on civil status and regime
+        if((civiStatus === 'casado' || civiStatus === 'viuvo') && regime !== 'separacao_total' && regime !== ''){
+            conjugeSection.style.display = '';
+        } else {
+            conjugeSection.style.display = 'none';
+        }
+    }
+
+    function showModal(){
+        modal.style.display = 'flex';
+        // reset form
+        document.getElementById('clientForm').reset();
+        tipo.value = 'fisica';
+        estadoCivil.value = '';
+        regimeCasamento.value = '';
+        updateFieldsVisibility();
+        procuradorFields.style.display = 'none';
+    }
+    function hideModal(){ modal.style.display = 'none'; }
+
+    btn.addEventListener('click', showModal);
+    close.addEventListener('click', hideModal);
+    cancel.addEventListener('click', hideModal);
+
+    tipo.addEventListener('change', updateFieldsVisibility);
+    estadoCivil.addEventListener('change', updateFieldsVisibility);
+    regimeCasamento.addEventListener('change', updateFieldsVisibility);
+
+    temProcuradorChk.addEventListener('change', function(){
+        procuradorFields.style.display = this.checked ? '' : 'none';
+    });
+
+    // close modal when clicking outside
+    window.addEventListener('click', function(e){
+        if(e.target === modal){ hideModal(); }
+    });
+});
+</script>
+
 {% endblock %}
