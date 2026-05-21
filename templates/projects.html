@@ -1,0 +1,738 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="workspace-header">
+    <div>
+        <span class="module-label">Operacao</span>
+        <h1>Matriz de projetos</h1>
+    </div>
+    <form class="global-search" method="get">
+        <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar projeto, dono ou cartorio" />
+        <button type="submit">Buscar</button>
+    </form>
+    <div class="matrix-actions">
+        <a class="btn btn-primary btn-sm" href="{{ url_for('project_create') }}">Novo projeto</a>
+        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('projects_export') }}">Exportar</a>
+        <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Kanban</button>
+        <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Calendario</button>
+        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('dashboard') }}">Dashboard</a>
+        <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Colunas</button>
+    </div>
+</div>
+
+<section class="matrix-summary">
+    <a href="{{ url_for('projects') }}"><span>Projetos ativos</span><strong>{{ summary.ativos }}</strong></a>
+    <a href="{{ url_for('projects', prazo='7dias') }}"><span>Vencendo em 7 dias</span><strong>{{ summary.sete_dias }}</strong></a>
+    <a href="{{ url_for('projects', atrasados='1') }}"><span>Atrasados</span><strong>{{ summary.atrasados }}</strong></a>
+    <a href="{{ url_for('projects', q='Cartorio') }}"><span>Em cartorio</span><strong>{{ summary.cartorio }}</strong></a>
+    <a href="{{ url_for('projects', pendencia='aberta') }}"><span>Com pendencia</span><strong>{{ summary.pendencias }}</strong></a>
+</section>
+
+{% set active_filters = [] %}
+{% if filters.responsavel_id %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.cidade %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.cartorio_id %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.etapa_id %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.prioridade %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.prazo %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.pendencia %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.atrasados %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.sem_responsavel %}{% set active_filters = active_filters + [1] %}{% endif %}
+
+<section class="filter-bar">
+    <form method="get" id="filter-form">
+        <input type="hidden" name="q" value="{{ filters.q or '' }}" />
+        <div class="filter-row">
+            <div class="filter-field">
+                <label class="filter-label">Responsavel</label>
+                <select name="responsavel_id" class="filter-select {{ 'is-active' if filters.responsavel_id }}">
+                    <option value="">Todos</option>
+                    {% for usuario in usuarios %}
+                        <option value="{{ usuario.id }}" {% if filters.responsavel_id == usuario.id|string %}selected{% endif %}>{{ usuario.nome }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-field">
+                <label class="filter-label">Cartorio</label>
+                <select name="cartorio_id" class="filter-select {{ 'is-active' if filters.cartorio_id }}">
+                    <option value="">Todos</option>
+                    {% for cartorio in cartorios %}
+                        <option value="{{ cartorio.id }}" {% if filters.cartorio_id == cartorio.id|string %}selected{% endif %}>{{ cartorio.nome }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-field">
+                <label class="filter-label">Etapa atual</label>
+                <select name="etapa_id" class="filter-select {{ 'is-active' if filters.etapa_id }}">
+                    <option value="">Todas</option>
+                    {% for etapa in etapas %}
+                        <option value="{{ etapa.id }}" {% if filters.etapa_id == etapa.id|string %}selected{% endif %}>{{ etapa.nome }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-field">
+                <label class="filter-label">Prioridade</label>
+                <select name="prioridade" class="filter-select {{ 'is-active' if filters.prioridade }}">
+                    <option value="">Todas</option>
+                    <option value="Alta" {% if filters.prioridade == 'Alta' %}selected{% endif %}>Alta</option>
+                    <option value="Media" {% if filters.prioridade == 'Media' %}selected{% endif %}>Media</option>
+                    <option value="Baixa" {% if filters.prioridade == 'Baixa' %}selected{% endif %}>Baixa</option>
+                </select>
+            </div>
+            <div class="filter-field">
+                <label class="filter-label">Prazo</label>
+                <select name="prazo" class="filter-select {{ 'is-active' if filters.prazo }}">
+                    <option value="">Qualquer</option>
+                    <option value="vencido" {% if filters.prazo == 'vencido' %}selected{% endif %}>Vencido</option>
+                    <option value="7dias" {% if filters.prazo == '7dias' %}selected{% endif %}>Proximo (7d)</option>
+                    <option value="sem_prazo" {% if filters.prazo == 'sem_prazo' %}selected{% endif %}>Sem prazo</option>
+                </select>
+            </div>
+            <div class="filter-field">
+                <label class="filter-label">Cidade</label>
+                <input name="cidade" value="{{ filters.cidade or '' }}" placeholder="Todas" class="filter-input {{ 'is-active' if filters.cidade }}" />
+            </div>
+            <div class="filter-checks">
+                <label class="filter-check-item {{ 'is-active' if filters.pendencia == 'aberta' }}">
+                    <input type="checkbox" name="pendencia" value="aberta" {% if filters.pendencia == 'aberta' %}checked{% endif %}>
+                    Com pendencia
+                </label>
+                <label class="filter-check-item {{ 'is-active' if filters.atrasados == '1' }}">
+                    <input type="checkbox" name="atrasados" value="1" {% if filters.atrasados == '1' %}checked{% endif %}>
+                    Atrasado
+                </label>
+                <label class="filter-check-item {{ 'is-active' if filters.sem_responsavel == '1' }}">
+                    <input type="checkbox" name="sem_responsavel" value="1" {% if filters.sem_responsavel == '1' %}checked{% endif %}>
+                    Sem resp.
+                </label>
+            </div>
+            <div class="filter-actions">
+                <button class="btn-filter-apply" type="submit">
+                    Aplicar{% if active_filters|length > 0 %} <span class="filter-count">{{ active_filters|length }}</span>{% endif %}
+                </button>
+                {% if active_filters|length > 0 %}
+                <a class="btn-filter-clear" href="{{ url_for('projects') }}">Limpar</a>
+                {% endif %}
+            </div>
+        </div>
+    </form>
+    <div class="density-toggle">
+        <button type="button" data-density="comfortable" class="active">Normal</button>
+        <button type="button" data-density="compact">Compacta</button>
+    </div>
+</section>
+
+<section class="matrix-shell" data-matrix-density="comfortable">
+    <table class="ops-matrix">
+        <thead>
+            <tr>
+                <th class="sticky-col owner-col">Proprietario</th>
+                <th class="sticky-col project-name-col">Projeto</th>
+                <th class="sticky-col valor-col">Valor</th>
+                {% for etapa in etapas %}
+                    <th class="stage-head">{{ etapa.nome }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for project, etapas_projeto in projects %}
+                {# Determinar a ordem da etapa atual para classificar as demais #}
+                {% set ns_row = namespace(active_ordem=0) %}
+                {% for etapa in etapas_projeto %}
+                    {% if project.etapa_atual_id == etapa.id %}
+                        {% set ns_row.active_ordem = etapa.etapa_ordem %}
+                    {% endif %}
+                {% endfor %}
+                {% set project_pendings = pending_by_project.get(project.id, []) %}
+                <tr class="matrix-project-row">
+                    <td class="sticky-col owner-col">
+                        <span class="owner-name">{{ project.proprietario or project.cliente_nome or '-' }}</span>
+                    </td>
+                    <td class="sticky-col project-name-col">
+                        <span class="project-name-text">{{ project.nome }}</span>
+                        <small class="project-code">{{ project.codigo }}</small>
+                    </td>
+                    <td class="sticky-col valor-col">
+                        <span class="valor-text">{{ format_currency(project.valor) }}</span>
+                    </td>
+                    {% for etapa in etapas_projeto %}
+                        {% set status_key = etapa.status|lower %}
+                        {% set active = project.etapa_atual_id == etapa.id %}
+                        {% set is_past = etapa.etapa_ordem < ns_row.active_ordem %}
+                        {% set stage_pendings = pending_by_stage.get(etapa.id, []) %}
+                        <td class="stage-slot">
+                            {% if active %}
+                                <button class="active-stage-cell tone-{{ status_meta[status_key].tone if status_key in status_meta else 'muted' }} {{ 'is-late' if is_overdue(etapa.prazo, etapa.status) else '' }}"
+                                    type="button" data-bs-toggle="offcanvas" data-bs-target="#project-drawer-{{ project.id }}">
+                                    <strong>{{ etapa.responsavel_nome or project.responsavel_nome or 'Sem resp.' }}</strong>
+                                    {% if stage_pendings %}<em>{{ stage_pendings|length }} pend.</em>{% endif %}
+                                </button>
+                            {% elif is_past %}
+                                <span class="cell-past">···</span>
+                            {% else %}
+                                <span class="cell-future"></span>
+                            {% endif %}
+                        </td>
+                    {% endfor %}
+                </tr>
+            {% else %}
+                <tr><td colspan="{{ 3 + etapas|length }}" class="empty-state">Nenhum projeto encontrado.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+{% for project, etapas_projeto in projects %}
+    {% set ns = namespace(active_stage=None) %}
+    {% for etapa in etapas_projeto %}
+        {% if etapa.id == project.etapa_atual_id %}
+            {% set ns.active_stage = etapa %}
+        {% endif %}
+    {% endfor %}
+    {% set active_stage = ns.active_stage or etapas_projeto[0] %}
+    {% set active_status = active_stage.status|lower %}
+    {% set project_pendings = pending_by_project.get(project.id, []) %}
+    {% set ns_next = namespace(proxima=None, anteriores=[]) %}
+    {% for etapa in etapas_projeto %}
+        {% if etapa.etapa_ordem == active_stage.etapa_ordem + 1 %}
+            {% set ns_next.proxima = etapa %}
+        {% elif etapa.etapa_ordem < active_stage.etapa_ordem %}
+            {% set ns_next.anteriores = ns_next.anteriores + [etapa] %}
+        {% endif %}
+    {% endfor %}
+
+    {# ===== DRAWER ===== #}
+    <div class="offcanvas offcanvas-end project-drawer" tabindex="-1" id="project-drawer-{{ project.id }}">
+
+        {# Cabeçalho #}
+        <div class="drawer-header">
+            <div class="drawer-header-info">
+                <span class="drawer-code">{{ project.codigo }}</span>
+                <h2 class="drawer-title">{{ project.nome }}</h2>
+                <p class="drawer-sub">{{ project.proprietario or project.cliente_nome or '—' }}{% if project.cartorio_nome %} · {{ project.cartorio_nome }}{% endif %}</p>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+        </div>
+
+        <div class="drawer-body">
+
+            {# Etapa atual + status #}
+            <div class="drawer-stage-row">
+                <div>
+                    <div class="drawer-label">Etapa atual</div>
+                    <div class="drawer-stage-name">{{ active_stage.etapa_nome }}</div>
+                    {% if active_stage.proximo_checklist %}
+                    <div class="drawer-stage-sub">→ {{ active_stage.proximo_checklist }}</div>
+                    {% endif %}
+                </div>
+                <span class="status-pill tone-{{ status_meta[active_status].tone if active_status in status_meta else 'muted' }}">
+                    {{ status_meta[active_status].label if active_status in status_meta else active_stage.status }}
+                </span>
+            </div>
+
+            {# Metadados: responsavel + prazo + valor + pendencias #}
+            <div class="drawer-meta-grid">
+                <div class="drawer-meta-card">
+                    <div class="drawer-meta-label">Responsável</div>
+                    <div class="drawer-meta-value">{{ active_stage.responsavel_nome or '—' }}</div>
+                </div>
+                <div class="drawer-meta-card {{ 'drawer-meta-card--warn' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">
+                    <div class="drawer-meta-label">Prazo</div>
+                    <div class="drawer-meta-value {{ 'text-danger' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">{{ format_date(active_stage.prazo) or '—' }}</div>
+                </div>
+                <div class="drawer-meta-card">
+                    <div class="drawer-meta-label">Valor</div>
+                    <div class="drawer-meta-value">{{ format_currency(project.valor) }}</div>
+                </div>
+                <div class="drawer-meta-card {{ 'drawer-meta-card--danger' if project_pendings else '' }}">
+                    <div class="drawer-meta-label">Pendências</div>
+                    <div class="drawer-meta-value {{ 'text-danger' if project_pendings else '' }}">{{ project_pendings|length or '—' }}</div>
+                </div>
+            </div>
+
+            {# Ações principais #}
+            <div class="drawer-actions">
+                {% if ns_next.proxima %}
+                <button class="drawer-btn-advance" type="button"
+                    data-bs-toggle="modal" data-bs-target="#modal-avancar-{{ project.id }}">
+                    Avançar → {{ ns_next.proxima.etapa_nome }}
+                </button>
+                {% endif %}
+                <div class="drawer-actions-secondary">
+                    {% if ns_next.anteriores %}
+                    <button class="drawer-btn-ghost drawer-btn-danger" type="button"
+                        data-bs-toggle="modal" data-bs-target="#modal-retornar-{{ project.id }}">
+                        ← Retornar
+                    </button>
+                    {% endif %}
+                    <button class="drawer-btn-ghost" type="button"
+                        data-bs-toggle="modal" data-bs-target="#modal-pendencia-{{ project.id }}">
+                        + Pendência
+                    </button>
+                    <a class="drawer-btn-ghost" href="{{ url_for('project_detail', project_id=project.id) }}">
+                        Abrir projeto ↗
+                    </a>
+                </div>
+            </div>
+
+            {# Checklist — estilo Trello #}
+            <div class="drawer-section">
+                <div class="drawer-section-header">
+                    <span class="drawer-section-title">Checklist</span>
+                    <span class="drawer-checklist-counter" id="counter-{{ active_stage.id }}">
+                        {{ active_stage.checklist_done }}/{{ active_stage.checklist_total }}
+                    </span>
+                </div>
+
+                {# Barra de progresso #}
+                {% set pct = ((active_stage.checklist_done / active_stage.checklist_total * 100) | int) if active_stage.checklist_total else 0 %}
+                <div class="drawer-progress-bar">
+                    <div class="drawer-progress-fill" id="progress-{{ active_stage.id }}" style="width:{{ pct }}%"></div>
+                </div>
+
+                {# Itens #}
+                <div class="drawer-checklist" id="checklist-{{ active_stage.id }}">
+                    {% for item in matrix_checklists.get(active_stage.id, []) %}
+                    <label class="drawer-check-item {{ 'is-done' if item.concluido else '' }}" id="check-row-{{ item.id }}">
+                        <input type="checkbox" class="drawer-check-box"
+                            {{ 'checked' if item.concluido else '' }}
+                            onchange="toggleCheck(this, {{ item.id }}, {{ active_stage.id }})" />
+                        <span class="drawer-check-label" id="check-label-{{ item.id }}">{{ item.titulo }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+
+                {# Campo inline para adicionar item — como Trello #}
+                <div class="drawer-add-check" id="add-check-wrap-{{ active_stage.id }}">
+                    <input type="text" class="drawer-add-check-input"
+                        id="add-check-input-{{ active_stage.id }}"
+                        placeholder="+ Adicionar item..."
+                        onkeydown="handleAddCheck(event, {{ active_stage.id }})" />
+                </div>
+            </div>
+
+            {# Pendências abertas #}
+            {% if project_pendings %}
+            <div class="drawer-section">
+                <div class="drawer-section-header">
+                    <span class="drawer-section-title">Pendências abertas</span>
+                </div>
+                <div class="drawer-pending-list">
+                    {% for pending in project_pendings %}
+                    <div class="drawer-pending-item {{ 'is-late' if is_overdue(pending.prazo, pending.status) else '' }}">
+                        <div class="drawer-pending-info">
+                            <div class="drawer-pending-desc">{{ pending.descricao }}</div>
+                            <div class="drawer-pending-meta">{{ pending.origem or 'interna' }} · {{ pending.responsavel_nome or 'Sem resp.' }}{% if pending.prazo %} · {{ format_date(pending.prazo) }}{% endif %}</div>
+                        </div>
+                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" style="flex-shrink:0;">
+                            <input type="hidden" name="action" value="resolve_pending">
+                            <input type="hidden" name="pendencia_id" value="{{ pending.id }}">
+                            <input type="hidden" name="next" value="{{ request.full_path }}">
+                            <button class="drawer-btn-resolve" type="submit">✓</button>
+                        </form>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {# Pasta do servidor #}
+            {% if project.caminho_pasta %}
+            <div class="drawer-section">
+                <div class="drawer-folder-row">
+                    <code class="drawer-folder-path">{{ project.caminho_pasta }}</code>
+                    <button class="drawer-btn-ghost" type="button" data-copy="{{ project.caminho_pasta }}">Copiar</button>
+                </div>
+            </div>
+            {% endif %}
+
+            {# Movimentações recentes #}
+            {% set recent_moves = movements_by_project.get(project.id, [])[:3] %}
+            {% if recent_moves %}
+            <div class="drawer-section">
+                <div class="drawer-section-header">
+                    <span class="drawer-section-title">Movimentações</span>
+                </div>
+                <div class="drawer-timeline">
+                    {% for move in recent_moves %}
+                    <div class="drawer-timeline-item">
+                        <div class="drawer-timeline-dot"></div>
+                        <div class="drawer-timeline-content">
+                            <div class="drawer-timeline-route">{{ move.etapa_anterior or '—' }} → {{ move.etapa_nova or '—' }}</div>
+                            <div class="drawer-timeline-meta">{{ format_datetime(move.criado_em) }} · {{ move.usuario_nome or 'Sistema' }}</div>
+                            {% if move.observacao %}<div class="drawer-timeline-obs">{{ move.observacao }}</div>{% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+        </div>
+    </div>
+
+    {# ===== MODAL AVANCAR ===== #}
+    {% if ns_next.proxima %}
+    <div class="modal fade" id="modal-avancar-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--advance">
+                    <div>
+                        <div class="stage-modal-label">Avançar etapa</div>
+                        <div class="stage-modal-title">{{ active_stage.etapa_nome }} → {{ ns_next.proxima.etapa_nome }}</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="move_stage">
+                    <input type="hidden" name="next" value="{{ request.full_path }}">
+                    <input type="hidden" name="nova_etapa_id" value="{{ ns_next.proxima.id }}">
+                    <input type="hidden" name="motivo" value="avanco">
+                    <div class="stage-modal-body">
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Responsável</label>
+                            <select class="form-select form-select-sm" name="responsavel_id">
+                                <option value="">Manter atual ({{ active_stage.responsavel_nome or 'sem responsável' }})</option>
+                                {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Prazo <span class="stage-modal-optional">(opcional)</span></label>
+                            <input type="date" class="form-control form-control-sm" name="prazo">
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Observação <span class="stage-modal-optional">(opcional)</span></label>
+                            <textarea class="form-control form-control-sm" name="observacao" rows="2" placeholder="Alguma nota sobre este avanço?"></textarea>
+                        </div>
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--advance">Confirmar avanço →</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ===== MODAL RETORNAR ===== #}
+    {% if ns_next.anteriores %}
+    <div class="modal fade" id="modal-retornar-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--return">
+                    <div>
+                        <div class="stage-modal-label">Retornar etapa</div>
+                        <div class="stage-modal-title">{{ active_stage.etapa_nome }}</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="move_stage">
+                    <input type="hidden" name="next" value="{{ request.full_path }}">
+                    <input type="hidden" name="motivo" value="retorno">
+                    <div class="stage-modal-body">
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Retornar para</label>
+                            <select class="form-select form-select-sm" name="nova_etapa_id" required>
+                                <option value="">Selecionar etapa...</option>
+                                {% for etapa in ns_next.anteriores | reverse %}
+                                <option value="{{ etapa.id }}">{{ etapa.etapa_nome }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Responsável</label>
+                            <select class="form-select form-select-sm" name="responsavel_id">
+                                <option value="">Manter atual</option>
+                                {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label stage-modal-field-label--required">Justificativa <span class="stage-modal-optional">(obrigatória)</span></label>
+                            <textarea class="form-control form-control-sm" name="observacao" rows="3" required
+                                placeholder="Ex: Medição retornou — ponto de referência incorreto"></textarea>
+                        </div>
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--return">← Confirmar retorno</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ===== MODAL PENDENCIA ===== #}
+    <div class="modal fade" id="modal-pendencia-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--pending">
+                    <div>
+                        <div class="stage-modal-label">{{ project.nome }}</div>
+                        <div class="stage-modal-title">Nova pendência</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="add_pending">
+                    <input type="hidden" name="next" value="{{ request.full_path }}">
+                    <div class="stage-modal-body">
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Descrição</label>
+                            <textarea class="form-control form-control-sm" name="descricao" rows="2" required placeholder="Descreva a pendência..."></textarea>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Origem</label>
+                                <select class="form-select form-select-sm" name="origem">
+                                    <option value="interna">Interna</option>
+                                    <option value="cliente">Cliente</option>
+                                    <option value="cartorio">Cartório</option>
+                                    <option value="campo">Campo</option>
+                                    <option value="escritorio">Escritório</option>
+                                </select>
+                            </div>
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Prazo</label>
+                                <input type="date" class="form-control form-control-sm" name="prazo">
+                            </div>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Responsável</label>
+                            <select class="form-select form-select-sm" name="responsavel_id">
+                                <option value="">Sem responsável</option>
+                                {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <input type="hidden" name="etapa_id" value="{{ active_stage.id }}">
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending">Registrar pendência</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{% endfor %}
+<style>
+/* ── DRAWER ─────────────────────────────────────── */
+.project-drawer { width: 360px !important; display: flex; flex-direction: column; }
+
+.drawer-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 16px 18px 14px; border-bottom: 1px solid #e5e7eb; gap: 10px;
+    background: #fff;
+}
+.drawer-header-info { min-width: 0; }
+.drawer-code { font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .07em; }
+.drawer-title { font-size: 15px; font-weight: 700; margin: 2px 0 3px; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.drawer-sub { font-size: 12px; color: #6b7280; margin: 0; }
+
+.drawer-body {
+    flex: 1; overflow-y: auto; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 14px;
+}
+
+.drawer-stage-row {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+    padding: 10px 12px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;
+}
+.drawer-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .06em; }
+.drawer-stage-name { font-size: 14px; font-weight: 700; color: #111827; margin-top: 2px; }
+.drawer-stage-sub { font-size: 11px; color: #6b7280; margin-top: 2px; }
+
+.drawer-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.drawer-meta-card {
+    padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 7px;
+    background: #fafafa;
+}
+.drawer-meta-card--warn { border-color: #fde68a; background: #fffbeb; }
+.drawer-meta-card--danger { border-color: #fca5a5; background: #fef2f2; }
+.drawer-meta-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .05em; }
+.drawer-meta-value { font-size: 13px; font-weight: 600; color: #111827; margin-top: 2px; }
+
+.drawer-actions { display: flex; flex-direction: column; gap: 6px; }
+.drawer-btn-advance {
+    width: 100%; padding: 9px 14px; background: #2563eb; color: white;
+    border: none; border-radius: 7px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: background .15s;
+}
+.drawer-btn-advance:hover { background: #1d4ed8; }
+.drawer-actions-secondary { display: flex; gap: 6px; flex-wrap: wrap; }
+.drawer-btn-ghost {
+    padding: 6px 12px; background: transparent; border: 1px solid #e5e7eb;
+    border-radius: 6px; font-size: 12px; color: #374151; cursor: pointer;
+    text-decoration: none; transition: background .12s;
+}
+.drawer-btn-ghost:hover { background: #f3f4f6; color: #111827; }
+.drawer-btn-ghost.drawer-btn-danger { color: #dc2626; border-color: #fca5a5; }
+.drawer-btn-ghost.drawer-btn-danger:hover { background: #fef2f2; }
+
+/* Sections */
+.drawer-section { display: flex; flex-direction: column; gap: 7px; }
+.drawer-section-header { display: flex; justify-content: space-between; align-items: center; }
+.drawer-section-title { font-size: 11.5px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: .05em; }
+.drawer-checklist-counter { font-size: 11px; color: #6b7280; font-weight: 600; }
+
+/* Progress bar */
+.drawer-progress-bar { height: 4px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
+.drawer-progress-fill { height: 100%; background: #22c55e; border-radius: 999px; transition: width .3s ease; }
+
+/* Checklist items */
+.drawer-checklist { display: flex; flex-direction: column; gap: 1px; }
+.drawer-check-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    transition: background .1s;
+}
+.drawer-check-item:hover { background: #f9fafb; }
+.drawer-check-item.is-done .drawer-check-label { color: #9ca3af; text-decoration: line-through; }
+.drawer-check-box { width: 15px; height: 15px; accent-color: #2563eb; cursor: pointer; flex-shrink: 0; }
+.drawer-check-label { font-size: 13px; color: #374151; line-height: 1.3; }
+
+/* Add check input — Trello-style */
+.drawer-add-check { margin-top: 4px; }
+.drawer-add-check-input {
+    width: 100%; padding: 7px 10px; border: 1.5px dashed #d1d5db;
+    border-radius: 6px; font-size: 13px; color: #374151; background: transparent;
+    outline: none; transition: border .15s;
+}
+.drawer-add-check-input:focus { border-color: #2563eb; background: #f0f7ff; }
+.drawer-add-check-input::placeholder { color: #9ca3af; }
+
+/* Pending */
+.drawer-pending-list { display: flex; flex-direction: column; gap: 5px; }
+.drawer-pending-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 8px 10px; background: #fafafa; border: 1px solid #e5e7eb;
+    border-radius: 7px;
+}
+.drawer-pending-item.is-late { background: #fef2f2; border-color: #fca5a5; }
+.drawer-pending-desc { font-size: 12.5px; font-weight: 600; color: #374151; }
+.drawer-pending-meta { font-size: 11px; color: #9ca3af; margin-top: 1px; }
+.drawer-btn-resolve {
+    width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid #22c55e;
+    background: transparent; color: #22c55e; font-size: 14px; cursor: pointer; line-height: 1;
+    transition: all .15s; flex-shrink: 0;
+}
+.drawer-btn-resolve:hover { background: #22c55e; color: white; }
+
+/* Folder */
+.drawer-folder-row { display: flex; gap: 8px; align-items: center; }
+.drawer-folder-path {
+    flex: 1; padding: 6px 9px; border: 1px solid #e5e7eb; border-radius: 6px;
+    background: #f5f6f8; font-size: 11px; color: #374151;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Timeline */
+.drawer-timeline { display: flex; flex-direction: column; gap: 0; }
+.drawer-timeline-item { display: flex; gap: 10px; padding: 6px 0; }
+.drawer-timeline-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #d1d5db;
+    margin-top: 4px; flex-shrink: 0;
+}
+.drawer-timeline-route { font-size: 12px; font-weight: 600; color: #374151; }
+.drawer-timeline-meta { font-size: 11px; color: #9ca3af; }
+.drawer-timeline-obs { font-size: 11px; color: #6b7280; margin-top: 1px; font-style: italic; }
+
+/* ── MODAIS DE ETAPA ─────────────────────────────── */
+.stage-modal { border: none; border-radius: 10px; overflow: hidden; }
+
+.stage-modal-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 16px 18px; gap: 12px;
+}
+.stage-modal-header--advance { background: #1e40af; color: white; }
+.stage-modal-header--return  { background: #dc2626; color: white; }
+.stage-modal-header--pending { background: #374151; color: white; }
+
+.stage-modal-label { font-size: 10.5px; opacity: .75; text-transform: uppercase; letter-spacing: .07em; }
+.stage-modal-title { font-size: 15px; font-weight: 700; margin-top: 3px; }
+
+.stage-modal-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+.stage-modal-field { display: flex; flex-direction: column; gap: 4px; }
+.stage-modal-field-label { font-size: 12px; font-weight: 600; color: #374151; }
+.stage-modal-field-label--required { color: #dc2626; }
+.stage-modal-optional { font-weight: 400; color: #9ca3af; }
+
+.stage-modal-footer {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 12px 18px; border-top: 1px solid #e5e7eb; background: #f9fafb;
+}
+.stage-modal-cancel {
+    padding: 7px 14px; border: 1px solid #e5e7eb; border-radius: 6px;
+    background: white; color: #374151; font-size: 13px; cursor: pointer;
+}
+.stage-modal-cancel:hover { background: #f3f4f6; }
+.stage-modal-confirm {
+    padding: 7px 16px; border: none; border-radius: 6px;
+    font-size: 13px; font-weight: 600; cursor: pointer; color: white;
+}
+.stage-modal-confirm--advance { background: #2563eb; }
+.stage-modal-confirm--advance:hover { background: #1d4ed8; }
+.stage-modal-confirm--return  { background: #dc2626; }
+.stage-modal-confirm--return:hover  { background: #b91c1c; }
+.stage-modal-confirm--pending { background: #374151; }
+.stage-modal-confirm--pending:hover { background: #1f2937; }
+</style>
+
+<script>
+/* Toggle checklist via API — sem reload */
+function toggleCheck(cb, itemId, stageId) {
+    fetch(`/api/checklist/${itemId}/toggle`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.ok) return;
+        const row = document.getElementById(`check-row-${itemId}`);
+        if (data.concluido) row.classList.add('is-done');
+        else row.classList.remove('is-done');
+
+        // Atualiza contador e barra
+        const counter = document.getElementById(`counter-${stageId}`);
+        if (counter) counter.textContent = `${data.done}/${data.total}`;
+        const bar = document.getElementById(`progress-${stageId}`);
+        if (bar) bar.style.width = data.progress + '%';
+    });
+}
+
+/* Adicionar item no checklist — Enter para confirmar */
+function handleAddCheck(e, stageId) {
+    if (e.key !== 'Enter') return;
+    const input = e.target;
+    const titulo = input.value.trim();
+    if (!titulo) return;
+
+    fetch('/api/checklist/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ titulo, stage_id: stageId })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.ok) return;
+        input.value = '';
+
+        // Injeta item no DOM
+        const list = document.getElementById(`checklist-${stageId}`);
+        const label = document.createElement('label');
+        label.className = 'drawer-check-item';
+        label.id = `check-row-${data.id}`;
+        label.innerHTML = `
+            <input type="checkbox" class="drawer-check-box"
+                onchange="toggleCheck(this, ${data.id}, ${stageId})" />
+            <span class="drawer-check-label" id="check-label-${data.id}">${data.titulo}</span>`;
+        list.appendChild(label);
+
+        // Atualiza contador e barra
+        const counter = document.getElementById(`counter-${stageId}`);
+        if (counter) counter.textContent = `${data.done}/${data.total}`;
+        const bar = document.getElementById(`progress-${stageId}`);
+        if (bar) bar.style.width = data.progress + '%';
+    });
+}
+</script>
+{% endblock %}

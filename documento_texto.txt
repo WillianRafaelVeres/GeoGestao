@@ -1,0 +1,812 @@
+
+
+
+DOCUMENTO TECNICO DE PRODUTO E SOFTWARE
+
+GeoGestao Topografia
+
+Sistema profissional de controle de projetos, etapas, prazos, responsabilidades, pastas e produtividade para empresa de topografia
+
+
+
+Resumo da ideia
+Criar uma central operacional em formato de matriz visual: cada linha representa um projeto; as colunas representam grandes etapas; e cada celula mostra status, responsavel, prazo, subetapa ativa e progresso. O sistema deve funcionar no escritorio como aplicativo desktop integrado as pastas do servidor e tambem no navegador/celular para consulta de missoes, prazos e alertas.
+
+
+Versao
+
+Data
+
+Autor
+
+Objetivo
+0.1
+10/05/2026
+Especificacao gerada com apoio de IA
+Documento base para programador/desenvolvedor iniciar arquitetura e MVP
+
+
+
+
+Sumario
+
+1.  Visao executiva do produto
+
+2.  Problema operacional que o sistema resolve
+
+3.  Conceito principal: matriz visual de projetos x etapas
+
+4.  Modelo de etapas macro e subetapas
+
+5.  Telas principais e experiencia do usuario
+
+6.  Regras de negocio essenciais
+
+7.  Modelo de dados inicial
+
+8.  Arquitetura tecnica recomendada
+
+9.  Automacoes, alertas e WhatsApp
+
+10.  MVP recomendado e fases futuras
+
+11.  Criterios de aceite para o programador
+
+12.  Backlog inicial de desenvolvimento
+
+13.  Referencias tecnicas
+
+
+1. Visao executiva do produto
+GeoGestao Topografia e uma plataforma interna para organizar todos os projetos da empresa de topografia em uma unica central visual. O sistema deve permitir que o gestor veja rapidamente onde cada projeto esta, quem e o responsavel, qual prazo esta correndo, qual etapa esta atrasada e qual parte da empresa esta virando gargalo.
+
+Formula central do sistema
+Todo servico da empresa vira um projeto. Todo projeto passa por grandes etapas. Cada etapa pode ter subetapas e tarefas. Cada celula da matriz mostra status, responsavel, prazo, checklist, tempo e pasta relacionada.
+
+
+
+Substituir controle solto em WhatsApp, memoria, papel, planilhas e pastas desorganizadas.
+
+
+Dar ao gestor uma visao operacional semelhante a um painel de comando.
+
+
+Dar a cada funcionario uma fila clara de missoes, com prioridades e prazos.
+
+
+Medir tempo por etapa para descobrir gargalos reais: campo, escritorio, documentacao, cartorio, exigencias e finalizacao.
+
+
+Integrar o projeto com a pasta fisica/digital do servidor, para reduzir perda de tempo procurando documentos.
+
+
+2. Problema operacional que o sistema resolve
+A empresa possui varios trabalhos simultaneos, cada um com documentos, medicoes, mapas, memoriais, cartorio, prazos e responsaveis diferentes. Sem uma central unica, surgem problemas recorrentes:
+
+
+Nao saber rapidamente qual projeto esta em qual etapa.
+
+
+Nao saber quem e responsavel por uma determinada parte do trabalho.
+
+
+Perder prazo de exigencia ou resposta de cartorio.
+
+
+Gastar tempo procurando a pasta correta no servidor.
+
+
+Nao conseguir medir se o gargalo esta em campo, no processamento, no desenho da planta, na documentacao ou no cartorio.
+
+
+Dificuldade de treinar novas pessoas, pois o fluxo real da empresa fica na cabeca dos funcionarios antigos.
+
+Meta do produto
+Transformar a rotina da empresa em um fluxo padronizado, visual, mensuravel e escalavel, sem obrigar os funcionarios a usar um sistema pesado ou burocratico.
+
+
+
+3. Conceito principal: matriz visual de projetos x etapas
+A tela principal deve ser uma matriz. As linhas representam projetos. As colunas representam grandes etapas. Cada celula mostra como aquela etapa esta naquele projeto.
+
+Projeto
+
+Orcamento
+
+Documentos
+
+Analise
+
+Campo
+
+Escritorio
+
+Cartorio
+
+Finalizacao
+Fazenda Boa Vista
+ConcluidoRafael
+ConcluidoAna
+ConcluidoPedro
+Em andamentoJoao
+Nao iniciado
+Nao iniciado
+Nao iniciado
+Sitio Sao Jose
+ConcluidoRafael
+Em atrasoAna
+Nao iniciado
+Nao iniciado
+Nao iniciado
+Nao iniciado
+Nao iniciado
+Lote Urbano Centro
+ConcluidoRafael
+ConcluidoAna
+ConcluidoPedro
+ConcluidoJoao
+AtencaoMarcos
+Aguardando cartorio
+Nao iniciado
+
+Na interface real, cada celula deve ter cor, icones simples e informacoes resumidas. Ao clicar na celula, abre-se o detalhe daquela etapa do projeto.
+
+Status visual
+
+Cor sugerida
+
+Significado
+
+Acao esperada
+Nao iniciado
+Cinza
+Etapa ainda nao comecou
+Aguardar etapa anterior ou responsavel iniciar
+Em andamento
+Azul
+Responsavel esta trabalhando
+Permitir iniciar/pausar/concluir e registrar observacao
+Concluido
+Verde
+Etapa finalizada
+Liberar proxima etapa ou registrar historico
+Atencao
+Amarelo/Laranja
+Tem pendencia ou risco
+Gestor deve acompanhar
+Atrasado
+Vermelho
+Prazo vencido
+Avisar responsavel e gestor
+Aguardando externo
+Roxo
+Dependendo de cliente, cartorio ou terceiro
+Controlar data de retorno e prazo de acompanhamento
+
+
+Regra de ouro da matriz
+A matriz nao deve tentar mostrar tudo ao mesmo tempo. Ela mostra o essencial. O detalhe fica dentro da celula/projeto. A tela principal precisa ser rapida, limpa e visual.
+
+
+
+3.1. Conteudo da celula da matriz
+
+Elemento
+
+Exemplo
+
+Observacao
+Responsavel
+Joao
+Nome ou iniciais da pessoa responsavel pela etapa
+Status
+Em andamento
+Status padronizado, com cor fixa
+Subetapa ativa
+Levantamento RTK
+Mostra a proxima acao concreta
+Prazo
+12/05/2026
+Exibir em vermelho se estiver vencido
+Checklist
+3/7
+Quantidade de itens concluidos
+Tempo
+6h40
+Opcional no MVP; importante para dashboards
+
+Exemplo visual de celula:+----------------------+| ESCRITORIO           || Marcos               || Planta: 60%          || Prazo: 15/05         || Checklist: 4/8       |+----------------------+
+
+
+
+4. Modelo de etapas macro e subetapas
+A recomendacao e nao criar um fluxo completamente diferente para cada tipo de servico logo no inicio. Em vez disso, criar etapas grandes, comuns a maioria dos projetos de topografia, e permitir subetapas configuraveis dentro delas.
+
+Etapa macro
+
+Objetivo
+
+Subetapas possiveis
+Orcamento / fechamento
+Controlar proposta, aceite e abertura do projeto
+Orcamento enviado; negociacao; contrato; sinal; projeto criado
+Coleta de documentos
+Garantir que os documentos minimos chegaram
+Matricula; documentos pessoais; CCIR/ITR/CAR se rural; planta anterior; autorizacoes
+Analise
+Avaliar documentos, viabilidade e escopo tecnico
+Analise da matricula; confrontantes; pendencias; definicao do tipo de procedimento
+Campo / medicao
+Organizar ida a campo e levantamento
+Agendar campo; equipe; equipamento; coleta RTK/GNSS; croqui; fotos
+Processamento
+Processar dados de campo e validar coordenadas
+Download; processamento; conferencia; ajustes; exportacao
+Escritorio
+Produzir planta, memorial e documentos tecnicos
+Planta; memorial; ART/RRT; requerimento; anexos; conferencia
+Cartorio / orgao externo
+Controlar protocolo, exigencias e prazos externos
+Protocolo; acompanhamento; exigencia; correcao; reprotocolo; deferimento
+Finalizacao / arquivo
+Entregar, cobrar saldo, arquivar e encerrar
+Entrega ao cliente; recebimento; pasta final; backup; status finalizado
+
+
+Como tratar documentacao dentro da etapa Escritorio
+A etapa Escritorio deve ter subetapas e uma terceira camada de checklist. Exemplo: Escritorio &gt; Documentacao &gt; Requerimento, ART, memorial, planta, declaracoes, documentos do proprietario, documentos do imovel. Assim a matriz continua limpa, mas o detalhe fica completo.
+
+
+
+4.1. Hierarquia recomendada
+Projeto  Etapa macro    Subetapa      Tarefa ou item de checklistExemplo:Projeto: Fazenda Boa Vista  Etapa: Escritorio    Subetapa: Documentacao      [ ] Memorial descritivo      [ ] Planta PDF      [ ] Planta DXF/DWG      [ ] ART      [ ] Requerimento ao cartorio      [ ] Conferencia final
+
+
+
+5. Telas principais e experiencia do usuario
+
+
+5.1. Tela Central / Dashboard
+
+
+Cartoes de resumo: projetos ativos, atrasados, vencendo em 7 dias, aguardando cartorio e pendentes com cliente.
+
+
+Grafico de gargalos por etapa: onde ha mais projetos parados.
+
+
+Lista de alertas criticos: prazos vencidos e exigencias de cartorio.
+
+
+Atalhos para criar projeto, abrir matriz e ver minhas missoes.
+
+Indicador
+
+Exemplo
+
+Uso gerencial
+Projetos ativos
+42
+Mostra carga geral da empresa
+Atrasados
+7
+Prioridade de gestao
+Aguardando cartorio
+12
+Separa atraso externo de atraso interno
+Tempo medio em escritorio
+4,8 dias
+Detecta gargalo de planta/documentacao
+Tempo medio em campo
+2,1 dias
+Ajuda a decidir contratacao/equipamento
+
+
+
+5.2. Tela Projetos / Matriz
+
+
+Esta e a tela mais importante do sistema.
+
+
+Deve permitir alternar entre visao de matriz, tabela, kanban, calendario e linha do tempo futuramente.
+
+
+No MVP, priorizar matriz e tabela filtravel.
+
+
+Filtros principais: responsavel, cartorio, cidade, cliente, tipo de processo, mes, prioridade, status, prazo e etapa atual.
+
+
+Ao clicar na celula, abrir painel lateral com detalhe da etapa.
+Wireframe textual da tela Projetos:[Buscar projeto...] [Cidade] [Cartorio] [Responsavel] [Prazo] [Status] [Criar projeto]--------------------------------------------------------------------------------------Projeto          Resp. geral   Orcamento   Documentos   Analise   Campo   Escritorio  CartorioFazenda Boa...   Rafael        verde       verde        verde     azul    cinza       cinzaSitio Sao Jose   Rafael        verde       vermelho     cinza     cinza   cinza       cinzaLote Centro      Pedro         verde       verde        verde     verde   laranja     roxo--------------------------------------------------------------------------------------Ao clicar em uma celula:Painel lateral: Projeto + Etapa + Responsavel + Prazo + Subetapas + Checklist + Historico + Abrir pasta.
+
+
+
+5.3. Tela do Projeto
+
+Aba
+
+Conteudo
+Resumo
+Dados do projeto, cliente, imovel, cidade, cartorio, tipo, prazo, responsavel geral e pasta
+Etapas
+Matriz interna com etapas, subetapas, tarefas e checklists
+Documentos
+Checklist documental e links/caminhos de arquivos
+Cartorio
+Protocolos, exigencias, prazos, respostas e historico
+Tempo
+Apontamentos de tempo por pessoa e etapa
+Historico
+Linha do tempo automatica das alteracoes
+Observacoes
+Comentarios internos do time
+
+
+
+
+5.4. Tela Minhas Missoes
+
+
+Cada usuario ve somente o que esta atribuido a ele.
+
+
+Ordenacao padrao: atrasado, vence hoje, vence esta semana, prioridade alta, demais tarefas.
+
+
+Botoes rapidos: iniciar, pausar, concluir, abrir pasta, comentar e pedir ajuda.
+
+
+Deve funcionar bem no celular/PWA.
+
+Prioridade
+
+Missao
+
+Projeto
+
+Prazo
+
+Acao rapida
+Alta
+Corrigir memorial exigido pelo cartorio
+Fazenda Boa Vista
+12/05/2026
+Abrir etapa
+Media
+Conferir planta final
+Lote Centro
+15/05/2026
+Abrir pasta
+Baixa
+Digitalizar documentos recebidos
+Sitio Sao Jose
+20/05/2026
+Concluir checklist
+
+
+
+6. Regras de negocio essenciais
+
+Regra
+
+Descricao
+Projeto obrigatorio
+Toda tarefa, etapa, checklist, prazo e apontamento de tempo deve estar vinculado a um projeto.
+Responsavel por etapa
+Cada etapa pode ter um responsavel diferente do responsavel geral do projeto.
+Status padronizado
+Usar status fixos para evitar bagunca: nao iniciado, em andamento, concluido, atencao, atrasado, aguardando externo, cancelado.
+Historico automatico
+Toda mudanca importante deve gerar evento: quem alterou, o que alterou, quando alterou.
+Prazo critico
+Prazos de cartorio/exigencia devem ter destaque e notificacao.
+Atraso interno x externo
+O sistema deve separar atraso causado pela empresa de atraso causado por cliente/cartorio/terceiro.
+Pasta do projeto
+Todo projeto deve ter um caminho de pasta. No app desktop, deve existir botao para abrir essa pasta.
+Permissoes
+Usuario comum nao deve alterar configuracoes globais, excluir projeto ou mudar dados sensiveis sem permissao.
+Progressao sequencial de etapas
+Um projeto so pode avancar uma etapa por vez, na ordem definida. Nao e permitido pular etapas.
+Retorno com justificativa obrigatoria
+Um projeto pode retornar a qualquer etapa anterior, mas o responsavel pela movimentacao deve registrar obrigatoriamente a justificativa (ex: "Medicao retornou pois o ponto de referencia estava errado"). Esse registro fica no historico do projeto.
+Avanco automatico de status
+Ao avancar para a proxima etapa, o sistema marca a etapa anterior como concluida e inicia a nova etapa automaticamente.
+Retorno nao apaga historico
+Ao retornar uma etapa, o historico de movimentacoes e preservado integralmente. A etapa anterior fica com status "atencao" indicando retrabalho.
+
+
+6.1.1. Regras de movimentacao de etapa (implementadas em 20/05/2026)
+
+Avancar: so e possivel mover para a PROXIMA etapa em sequencia (ordem + 1). Nao e permitido saltar etapas.
+Retornar: e permitido retornar para qualquer etapa anterior, porem a justificativa (campo observacao) e OBRIGATORIA. O sistema rejeita o retorno sem justificativa.
+Interface: no painel lateral da matriz, existe uma secao "Avancar etapa" (verde, mostra o nome da proxima) e uma secao separada "Retornar etapa" (vermelha, exige justificativa). Isso evita erros acidentais e deixa o fluxo claro.
+Motivo do retorno: sempre registrado como "retorno" no historico de movimentacoes, diferenciando de um avanco normal.
+
+
+6.1. Permissoes iniciais
+
+Perfil
+
+Pode fazer
+Administrador/Gestor
+Criar usuarios, criar projetos, configurar etapas, ver dashboards, alterar responsaveis e prazos, excluir/cancelar.
+Coordenador
+Criar e editar projetos, atribuir tarefas, acompanhar equipe e prazos.
+Funcionario tecnico
+Ver suas missoes, concluir tarefas, registrar tempo, comentar, abrir pastas e anexar informacoes.
+Leitura/Consulta
+Ver projetos autorizados sem alterar dados.
+
+
+
+7. Modelo de dados inicial
+Este modelo e uma proposta inicial para o programador estruturar o banco. Pode ser implementado em PostgreSQL/Supabase.
+
+Tabela
+
+Campos principais
+
+Observacao
+usuarios
+id, nome, email, cargo, ativo, perfil_acesso
+Usuarios do sistema
+clientes
+id, nome, cpf_cnpj, telefone, email, endereco, observacoes
+Cliente contratante
+cartorios
+id, nome, cidade, uf, contato, observacoes
+Cartorios usados nos projetos
+projetos
+id, codigo, nome, cliente_id, cidade, uf, cartorio_id, tipo_servico, prioridade, status, prazo_critico, responsavel_geral_id, caminho_pasta
+Entidade central
+etapas_modelo
+id, nome, ordem, cor_padrao, ativa
+Etapas macro padrao
+subetapas_modelo
+id, etapa_modelo_id, nome, ordem
+Subetapas padrao
+projeto_etapas
+id, projeto_id, etapa_modelo_id, status, responsavel_id, data_inicio, data_fim, prazo, progresso_percentual
+Estado de cada etapa no projeto
+tarefas
+id, projeto_id, projeto_etapa_id, titulo, descricao, responsavel_id, prioridade, status, prazo
+Missoes concretas
+checklist_itens
+id, tarefa_id ou projeto_etapa_id, titulo, concluido, concluido_por, concluido_em
+Itens de conferencia
+exigencias_cartorio
+id, projeto_id, cartorio_id, data_recebimento, prazo_resposta, descricao, status, responsavel_id
+Controle de exigencias
+apontamentos_tempo
+id, projeto_id, etapa_id, tarefa_id, usuario_id, inicio, fim, duracao_minutos, tipo_tempo
+Controle de produtividade
+eventos_historico
+id, projeto_id, usuario_id, tipo_evento, descricao, criado_em
+Auditoria e linha do tempo
+notificacoes
+id, usuario_id, projeto_id, tipo, mensagem, canal, status, enviado_em
+Alertas internos, email e WhatsApp
+
+
+
+8. Arquitetura tecnica recomendada
+
+Decisao tecnica sugerida
+Usar uma aplicacao web/PWA para acesso pelo navegador e celular, combinada com um aplicativo desktop Tauri para os computadores do escritorio. O banco central pode ser PostgreSQL/Supabase, com controle de autenticacao e permissoes.
+
+
+Camada
+
+Tecnologia sugerida
+
+Motivo
+Frontend web
+Next.js + React
+Interface moderna, rapida e com possibilidade de PWA para celular
+App desktop
+Tauri
+Permite usar frontend web e integrar melhor com o sistema operacional/Windows
+Banco de dados
+PostgreSQL via Supabase
+Banco robusto, autenticacao, APIs e seguranca por RLS
+Autenticacao
+Supabase Auth
+Login por email/senha e controle de usuarios
+Interface
+Tailwind/shadcn ou biblioteca visual equivalente
+Design profissional, consistente e responsivo
+Tabela/matriz
+Tabela virtualizada/grade customizada
+A tela principal tera muitas linhas e colunas; precisa ser rapida
+Notificacoes
+Sistema interno + email + WhatsApp API em fase futura
+Alertas de prazo e exigencias
+Arquivos
+Caminho do servidor no projeto + abertura via app desktop
+Evita duplicar arquivos e respeita servidor existente
+
+
+
+8.1. Observacao sobre desktop, web e celular
+
+
+No computador da empresa, o app desktop deve ser a experiencia principal, especialmente por causa da abertura de pastas do servidor.
+
+
+No celular, o usuario nao precisa abrir arquivos pesados; ele precisa ver missoes, prazos, status e registrar andamento.
+
+
+No navegador, o gestor pode acompanhar dashboards e projetos sem depender de um computador especifico.
+
+
+9. Automacoes, alertas e WhatsApp
+A automacao deve ser implementada por fases. Primeiro, alertas internos dentro do sistema. Depois, email. Em fase posterior, WhatsApp via API oficial.
+
+Evento
+
+Automacao
+Projeto criado
+Criar etapas macro padrao e checklists basicos
+Etapa concluida
+Liberar proxima etapa ou sugerir responsavel
+Prazo a 7 dias
+Notificar responsavel
+Prazo a 3 dias
+Notificar responsavel e gestor
+Prazo vencido
+Marcar como atrasado e destacar na matriz
+Exigencia do cartorio registrada
+Criar tarefa de correcao, definir prazo e alertar responsavel
+Tarefa concluida
+Atualizar progresso da etapa e registrar historico
+Pasta nao cadastrada
+Exibir alerta no projeto ate preencher caminho
+
+
+Importante sobre WhatsApp
+Evitar automacoes por WhatsApp Web ou ferramentas improvisadas. O caminho profissional e usar a WhatsApp Business Platform/Cloud API, com templates aprovados para mensagens ativas de prazo e aviso.
+
+
+
+10. MVP recomendado e fases futuras
+
+MVP nao significa amador
+O MVP deve ser pequeno em escopo, mas profissional em arquitetura, visual e regras. A primeira versao deve resolver bem a matriz de projetos, missoes, prazos e pastas.
+
+
+
+10.1. Fase 1 - MVP operacional
+
+
+Login de usuarios e perfis basicos.
+
+
+Cadastro de clientes, cartorios e projetos.
+
+
+Cadastro do caminho da pasta do projeto.
+
+
+Matriz visual de projetos x etapas macro.
+
+
+Responsavel e status por etapa.
+
+
+Prazo por etapa e prazo critico do projeto.
+
+
+Tela Minhas Missoes.
+
+
+Checklist simples dentro das etapas.
+
+
+Historico automatico das principais alteracoes.
+
+
+Dashboard simples de projetos ativos, atrasados e aguardando externo.
+
+
+10.2. Fase 2 - Produtividade e cartorio
+
+
+Controle de exigencias de cartorio.
+
+
+Notificacoes internas e por email.
+
+
+Apontamento de tempo por etapa/tarefa.
+
+
+Dashboard de gargalos por etapa.
+
+
+Relatorio por cartorio, cidade, responsavel e tipo de servico.
+
+
+Criacao padronizada de estrutura de pastas.
+
+
+10.3. Fase 3 - Automacao avancada
+
+
+Alertas por WhatsApp via API oficial.
+
+
+Geracao automatica de pastas e modelos de documentos.
+
+
+Integracao futura com ferramentas de planta, memorial, PDF, DXF e outros scripts internos.
+
+
+Relatorios gerenciais mais avancados, com comparativo de eficiencia mensal.
+
+
+Controle financeiro por projeto, se a empresa quiser cruzar prazo, custo e lucro.
+
+
+11. Criterios de aceite para o programador
+
+Funcionalidade
+
+Criterio de aceite
+Criar projeto
+Usuario gestor consegue criar projeto com nome, cliente, cidade, cartorio, tipo, prioridade, responsavel e pasta.
+Matriz visual
+Projetos aparecem em linhas e etapas em colunas; cada celula mostra status, responsavel e prazo.
+Editar celula
+Ao clicar em uma celula, abre painel com etapa, subetapas, checklist, prazo, responsavel e historico.
+Filtros
+Gestor consegue filtrar por responsavel, cidade, cartorio, status, prioridade, mes e prazo.
+Minhas Missoes
+Usuario comum ve apenas tarefas/etapas atribuidas a ele, ordenadas por urgencia.
+Prazos
+Prazos vencidos ficam destacados em vermelho e aparecem no dashboard.
+Pasta
+No app desktop, botao Abrir pasta tenta abrir o caminho cadastrado no sistema operacional.
+Historico
+Mudancas de status, prazo e responsavel geram registro automatico.
+Permissao
+Usuario comum nao consegue excluir projeto nem alterar configuracoes globais.
+Responsividade
+Tela Minhas Missoes funciona bem no celular; matriz pode ser otimizada para desktop.
+
+
+
+12. Backlog inicial de desenvolvimento
+
+
+12.1. Sprint 1 - Base do sistema
+
+1.  Configurar projeto Next.js/Tauri conforme decisao tecnica.
+
+2.  Configurar Supabase/PostgreSQL e autenticacao.
+
+3.  Criar tabelas base: usuarios, clientes, cartorios, projetos, etapas_modelo, projeto_etapas.
+
+4.  Criar seed inicial com etapas macro padrao.
+
+5.  Criar layout principal com sidebar profissional.
+
+6.  Criar tela de login e protecao de rotas.
+
+
+12.2. Sprint 2 - Projetos e matriz
+
+1.  Criar cadastro/listagem de projetos.
+
+2.  Ao criar projeto, gerar automaticamente as etapas macro.
+
+3.  Criar tela de matriz visual projetos x etapas.
+
+4.  Implementar cores por status.
+
+5.  Implementar filtro por responsavel, status, cidade, cartorio e prazo.
+
+6.  Criar painel lateral de detalhe da etapa.
+
+
+12.3. Sprint 3 - Missoes, checklists e prazos
+
+1.  Criar tarefas/checklists dentro da etapa.
+
+2.  Criar tela Minhas Missoes.
+
+3.  Criar regra de destaque para atrasos.
+
+4.  Criar historico automatico de alteracoes.
+
+5.  Criar dashboard simples.
+
+
+12.4. Sprint 4 - Desktop e pasta integrada
+
+1.  Implementar campo caminho_pasta no projeto.
+
+2.  No desktop, criar botao Abrir pasta.
+
+3.  Tratar erro de pasta inexistente ou inacessivel.
+
+4.  Criar configuracao de raiz padrao do servidor.
+
+5.  Preparar base para criacao automatica de estrutura de pastas em fase futura.
+
+
+13. Diretrizes de design visual
+
+
+Visual limpo, corporativo e tecnico, evitando aparencia de sistema improvisado.
+
+
+Sidebar esquerda com modulos principais.
+
+
+Cores funcionais: cada cor deve significar status, nao decoracao aleatoria.
+
+
+Tabela/matriz com linhas compactas, mas legiveis.
+
+
+Painel lateral para detalhes, evitando trocar de tela toda hora.
+
+
+Botoes de acao claros: Abrir pasta, Iniciar, Pausar, Concluir, Comentar, Registrar exigencia.
+
+
+Priorizar o uso no desktop para a matriz e no celular para missoes e alertas.
+
+Modulo
+
+Estilo visual sugerido
+Central
+Cards grandes, indicadores, alertas criticos e grafico simples
+Projetos
+Matriz densa, filtros no topo, celulas coloridas e painel lateral
+Minhas Missoes
+Lista simples, priorizada, amigavel para celular
+Cartorio
+Tabela de exigencias, prazos e status externo
+Relatorios
+Graficos por etapa, tempo, responsavel e cartorio
+
+
+
+14. Instrucao resumida para o programador
+Criar um sistema profissional chamado GeoGestao Topografia para controle de projetos de uma empresa de topografia. A tela principal deve ser uma matriz visual em que cada linha e um projeto e cada coluna e uma etapa macro. Cada celula deve mostrar status, responsavel, prazo e progresso da etapa, com cores padronizadas. O sistema deve ter cadastro de projetos, clientes, cartorios, etapas, responsaveis, prazos, checklists, tela Minhas Missoes, historico automatico e pasta integrada do projeto. A primeira versao deve priorizar matriz, filtros, tela de projeto, missoes, prazos e dashboard simples. Arquitetura recomendada: Next.js/React para web/PWA, Tauri para desktop, Supabase/PostgreSQL para banco e autenticacao.
+
+
+
+15. Referencias tecnicas usadas como base
+
+
+monday.com - Work platform / planning and execution: https://monday.com/
+
+
+ClickUp - Custom Fields: https://help.clickup.com/hc/en-us/articles/6303536766231-Intro-to-Custom-Fields
+
+
+ClickUp - Time Tracked in Dashboards: https://help.clickup.com/hc/en-us/articles/16702167254679-Time-Tracked-in-Dashboards
+
+
+Trello - Automation: https://trello.com/butler-automation
+
+
+Next.js - Progressive Web Applications: https://nextjs.org/docs/app/guides/progressive-web-apps
+
+
+Tauri - Desktop app framework: https://v2.tauri.app/
+
+
+Supabase - Postgres platform: https://supabase.com/
+
+
+Supabase - Row Level Security: https://supabase.com/docs/guides/database/postgres/row-level-security
+
+
+Meta for Developers - WhatsApp Message Templates: https://developers.facebook.com/docs/whatsapp/api/messages/message-templates/interactive-message-templates/
+

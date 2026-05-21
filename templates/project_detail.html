@@ -1,0 +1,423 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>{{ project.nome }}</h1>
+        <p>{{ project.codigo }} - {{ project.cliente_nome or 'Sem cliente' }} - {{ project.cartorio_nome or 'Sem cartorio' }}</p>
+    </div>
+    <div class="heading-actions">
+        {% if project.caminho_pasta %}
+            <button class="btn btn-outline-secondary" type="button" data-copy="{{ project.caminho_pasta }}">Copiar pasta</button>
+        {% endif %}
+        <a class="btn btn-outline-secondary" href="{{ url_for('projects') }}">Voltar</a>
+    </div>
+</div>
+
+<section class="project-strip">
+    <div>
+        <span>Tipo</span>
+        <strong>{{ project.tipo_servico or '-' }}</strong>
+    </div>
+    <div>
+        <span>Valor</span>
+        <strong>{{ format_currency(project.valor) }}</strong>
+    </div>
+    <div>
+        <span>Tempo apontado</span>
+        <strong>{{ minutes_to_hours(total_minutes) }}</strong>
+    </div>
+</section>
+
+<ul class="nav nav-pills detail-tabs" id="projectTabs" role="tablist">
+    <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#resumo" type="button">Resumo</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#etapas" type="button">Etapas</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tarefas" type="button">Tarefas</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#documentos" type="button">Documentos</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pendencias" type="button">Pendencias</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cartorio" type="button">Cartorio</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tempo" type="button">Tempo</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#historico" type="button">Historico</button></li>
+</ul>
+
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="resumo">
+        <section class="panel form-panel">
+            <div class="panel-header">
+                <h2>Dados do projeto</h2>
+                <span class="badge bg-{{ status_meta[project.status|lower].color if project.status|lower in status_meta else 'secondary' }}">{{ project.status }}</span>
+            </div>
+            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-3">
+                <input type="hidden" name="action" value="update_project" />
+                <div class="col-md-8">
+                    <label class="form-label">Nome</label>
+                    <input class="form-control" name="nome" value="{{ project.nome }}" {% if not can_manage() %}readonly{% endif %} />
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Status</label>
+                    <select class="form-select" name="status" {% if not can_manage() %}disabled{% endif %}>
+                        {% for key, info in status_meta.items() %}
+                            <option value="{{ key }}" {% if project.status|lower == key %}selected{% endif %}>{{ info.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Dono / proprietario</label>
+                    <input class="form-control" name="proprietario" value="{{ project.proprietario or '' }}" {% if not can_manage() %}readonly{% endif %} />
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Cliente</label>
+                    <select class="form-select" name="cliente_id" {% if not can_manage() %}disabled{% endif %}>
+                        <option value="">Sem cliente</option>
+                        {% for cliente in clientes %}
+                            <option value="{{ cliente.id }}" {% if project.cliente_id == cliente.id %}selected{% endif %}>{{ cliente.nome }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Cartorio/orgao</label>
+                    <select class="form-select" name="cartorio_id" {% if not can_manage() %}disabled{% endif %}>
+                        <option value="">Sem cartorio</option>
+                        {% for cartorio in cartorios %}
+                            <option value="{{ cartorio.id }}" {% if project.cartorio_id == cartorio.id %}selected{% endif %}>{{ cartorio.nome }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Cidade</label>
+                    <input class="form-control" name="cidade" value="{{ project.cidade or '' }}" {% if not can_manage() %}readonly{% endif %} />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">UF</label>
+                    <input class="form-control" name="uf" value="{{ project.uf or '' }}" {% if not can_manage() %}readonly{% endif %} />
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Tipo de servico</label>
+                    <input class="form-control" name="tipo_servico" value="{{ project.tipo_servico or '' }}" {% if not can_manage() %}readonly{% endif %} />
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Valor do projeto</label>
+                    <input class="form-control" name="valor" type="text" value="{{ format_currency(project.valor) or '' }}" placeholder="R$ 0,00" {% if not can_manage() %}readonly{% endif %} />
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Caminho da pasta</label>
+                    <input class="form-control" name="caminho_pasta" value="{{ project.caminho_pasta or '' }}" {% if not can_manage() %}readonly{% endif %} />
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Observacoes</label>
+                    <textarea class="form-control" name="observacoes" rows="3" {% if not can_manage() %}readonly{% endif %}>{{ project.observacoes or '' }}</textarea>
+                </div>
+                {% if can_manage() %}
+                    <div class="col-12 text-end"><button class="btn btn-primary" type="submit">Salvar projeto</button></div>
+                {% endif %}
+            </form>
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="etapas">
+        <section class="stage-grid">
+            {% for etapa in etapas %}
+                {% set status_key = etapa.status|lower %}
+                <article class="panel stage-card">
+                    <div class="panel-header">
+                        <div>
+                            <h2>{{ etapa.etapa_nome }}</h2>
+                            <small>{{ etapa.subetapa_ativa or etapa.proximo_checklist or 'Sem subetapa ativa' }}</small>
+                        </div>
+                        <span class="badge bg-{{ status_meta[status_key].color if status_key in status_meta else 'secondary' }}">{{ status_meta[status_key].label if status_key in status_meta else etapa.status }}</span>
+                    </div>
+                    <div class="progress slim-progress" role="progressbar" aria-valuenow="{{ etapa.progresso or 0 }}" aria-valuemin="0" aria-valuemax="100">
+                        <div class="progress-bar" style="width: {{ etapa.progresso or 0 }}%"></div>
+                    </div>
+                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
+                        <input type="hidden" name="action" value="update_stage" />
+                        <input type="hidden" name="etapa_id" value="{{ etapa.id }}" />
+                        <div class="col-md-4">
+                            <label class="form-label">Status</label>
+                            <select class="form-select" name="status">
+                                {% for key, info in status_meta.items() %}
+                                    <option value="{{ key }}" {% if status_key == key %}selected{% endif %}>{{ info.label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Responsavel</label>
+                            <select class="form-select" name="responsavel_id">
+                                <option value="">Sem responsavel</option>
+                                {% for usuario in usuarios %}
+                                    <option value="{{ usuario.id }}" {% if etapa.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Prazo</label>
+                            <input class="form-control" type="date" name="prazo" value="{{ etapa.prazo or '' }}" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">%</label>
+                            <input class="form-control" type="number" min="0" max="100" name="progresso" value="{{ etapa.progresso or 0 }}" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Subetapa ativa</label>
+                            <input class="form-control" name="subetapa_ativa" value="{{ etapa.subetapa_ativa or '' }}" />
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Origem atraso</label>
+                            <select class="form-select" name="atraso_origem">
+                                <option value="">Nao se aplica</option>
+                                <option value="interno" {% if etapa.atraso_origem == 'interno' %}selected{% endif %}>Interno</option>
+                                <option value="externo" {% if etapa.atraso_origem == 'externo' %}selected{% endif %}>Externo</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">&nbsp;</label>
+                            <button class="btn btn-primary w-100" type="submit">Salvar</button>
+                        </div>
+                        <div class="col-12">
+                            <textarea class="form-control" name="observacoes" rows="2" placeholder="Observacoes">{{ etapa.observacoes or '' }}</textarea>
+                        </div>
+                    </form>
+                    <div class="quick-actions mt-3">
+                        <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="start" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
+                        <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="pause" /><button class="btn btn-outline-warning btn-sm" type="submit">Pausar</button></form>
+                        <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="finish" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                    </div>
+                </article>
+            {% endfor %}
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="tarefas">
+        <section class="panel">
+            <div class="panel-header"><h2>Tarefas e missoes</h2></div>
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead><tr><th>Tarefa</th><th>Etapa</th><th>Responsavel</th><th>Prazo</th><th>Status</th><th>Acoes</th></tr></thead>
+                    <tbody>
+                        {% for tarefa in tarefas %}
+                            {% set status_key = tarefa.status|lower %}
+                            <tr>
+                                <td><strong>{{ tarefa.titulo }}</strong><small>{{ tarefa.descricao or '' }}</small></td>
+                                <td>{{ tarefa.etapa_nome or '-' }}</td>
+                                <td>{{ tarefa.responsavel_nome or '-' }}</td>
+                                <td class="{{ 'text-danger fw-semibold' if is_overdue(tarefa.prazo, tarefa.status) else '' }}">{{ format_date(tarefa.prazo) }}</td>
+                                <td><span class="badge bg-{{ status_meta[status_key].color if status_key in status_meta else 'secondary' }}">{{ status_meta[status_key].label if status_key in status_meta else tarefa.status }}</span></td>
+                                <td>
+                                    <div class="quick-actions table-actions">
+                                        <form method="post" action="{{ url_for('task_quick', task_id=tarefa.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
+                                        <form method="post" action="{{ url_for('task_quick', task_id=tarefa.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% else %}
+                            <tr><td colspan="6">Nenhuma tarefa cadastrada.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
+                <input type="hidden" name="action" value="add_task" />
+                <div class="col-md-4"><input class="form-control" name="titulo" placeholder="Nova tarefa" required /></div>
+                <div class="col-md-2"><select class="form-select" name="etapa_id"><option value="">Etapa</option>{% for etapa in etapas %}<option value="{{ etapa.id }}">{{ etapa.etapa_nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><select class="form-select" name="responsavel_id"><option value="">Responsavel</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><select class="form-select" name="prioridade"><option>Baixa</option><option selected>Media</option><option>Alta</option></select></div>
+                <div class="col-md-2"><input class="form-control" type="date" name="prazo" /></div>
+                <div class="col-md-10"><textarea class="form-control" name="descricao" rows="2" placeholder="Descricao"></textarea></div>
+                <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Adicionar</button></div>
+            </form>
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="documentos">
+        <section class="document-grid">
+            {% for etapa in etapas %}
+                <article class="panel">
+                    <div class="panel-header">
+                        <h2>{{ etapa.etapa_nome }}</h2>
+                        <small>{{ etapa.checklist_done }}/{{ etapa.checklist_total }}</small>
+                    </div>
+                    <div class="checklist-list">
+                        {% for item in checklist_by_stage.get(etapa.id, []) %}
+                            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="check-item">
+                                <input type="hidden" name="action" value="toggle_checklist" />
+                                <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                <button type="submit" class="check-toggle {{ 'checked' if item.concluido else '' }}">{{ 'OK' if item.concluido else '' }}</button>
+                                <span>{{ item.titulo }}</span>
+                                <small>{{ item.concluido_por_nome or '' }}</small>
+                            </form>
+                        {% else %}
+                            <div class="empty-state">Sem checklist.</div>
+                        {% endfor %}
+                    </div>
+                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="input-group mt-3">
+                        <input type="hidden" name="action" value="add_checklist" />
+                        <input type="hidden" name="etapa_id" value="{{ etapa.id }}" />
+                        <input class="form-control" name="titulo" placeholder="Novo documento/item" />
+                        <button class="btn btn-outline-primary" type="submit">Adicionar</button>
+                    </form>
+                </article>
+            {% endfor %}
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="pendencias">
+        <section class="panel">
+            <div class="panel-header"><h2>Pendencias vinculadas ao projeto</h2></div>
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead><tr><th>Descricao</th><th>Etapa</th><th>Origem</th><th>Responsavel</th><th>Prazo</th><th>Status</th><th></th></tr></thead>
+                    <tbody>
+                        {% for pendencia in pendencias %}
+                            <tr class="{{ 'table-danger' if is_overdue(pendencia.prazo, pendencia.status) else '' }}">
+                                <td>{{ pendencia.descricao }}</td>
+                                <td>{{ pendencia.etapa_nome or '-' }}</td>
+                                <td>{{ pendencia.origem or '-' }}</td>
+                                <td>{{ pendencia.responsavel_nome or '-' }}</td>
+                                <td>{{ format_date(pendencia.prazo) }}</td>
+                                <td>{{ pendencia.status }}</td>
+                                <td>
+                                    {% if pendencia.status not in ['resolvida', 'cancelada'] %}
+                                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                                            <input type="hidden" name="action" value="resolve_pending" />
+                                            <input type="hidden" name="pendencia_id" value="{{ pendencia.id }}" />
+                                            <button class="btn btn-outline-success btn-sm" type="submit">Resolver</button>
+                                        </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% else %}
+                            <tr><td colspan="7">Nenhuma pendencia registrada.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
+                <input type="hidden" name="action" value="add_pending" />
+                <div class="col-md-3"><select class="form-select" name="etapa_id">{% for etapa in etapas %}<option value="{{ etapa.id }}">{{ etapa.etapa_nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><select class="form-select" name="origem"><option value="interna">Interna</option><option value="cliente">Cliente</option><option value="cartorio">Cartorio</option><option value="campo">Campo</option><option value="escritorio">Escritorio</option></select></div>
+                <div class="col-md-2"><select class="form-select" name="responsavel_id"><option value="">Responsavel</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><input class="form-control" type="date" name="prazo" /></div>
+                <div class="col-md-3"><button class="btn btn-primary w-100" type="submit">Registrar pendencia</button></div>
+                <div class="col-12"><textarea class="form-control" name="descricao" rows="2" placeholder="Descricao da pendencia" required></textarea></div>
+            </form>
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="cartorio">
+        <section class="panel">
+            <div class="panel-header"><h2>Exigencias de cartorio/orgao externo</h2></div>
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead><tr><th>Descricao</th><th>Cartorio/orgao</th><th>Responsavel</th><th>Prazo</th><th>Status</th><th>Salvar</th></tr></thead>
+                    <tbody>
+                        {% for exigencia in exigencias %}
+                            <tr>
+                                <td>{{ exigencia.descricao }}</td>
+                                <td>{{ exigencia.cartorio_nome or '-' }}</td>
+                                <td colspan="4">
+                                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="inline-update">
+                                        <input type="hidden" name="action" value="update_exigencia" />
+                                        <input type="hidden" name="exigencia_id" value="{{ exigencia.id }}" />
+                                        <select class="form-select form-select-sm" name="responsavel_id">
+                                            <option value="">Sem responsavel</option>
+                                            {% for usuario in usuarios %}
+                                                <option value="{{ usuario.id }}" {% if exigencia.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                                            {% endfor %}
+                                        </select>
+                                        <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ exigencia.prazo_resposta or '' }}" />
+                                        <select class="form-select form-select-sm" name="status">
+                                            {% for key, info in status_meta.items() %}
+                                                <option value="{{ key }}" {% if exigencia.status|lower == key %}selected{% endif %}>{{ info.label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                        <button class="btn btn-primary btn-sm" type="submit">Salvar</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {% else %}
+                            <tr><td colspan="6">Nenhuma exigencia registrada.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
+                <input type="hidden" name="action" value="add_exigencia" />
+                <div class="col-md-4"><textarea class="form-control" name="descricao" rows="2" placeholder="Descricao da exigencia" required></textarea></div>
+                <div class="col-md-2"><select class="form-select" name="cartorio_id"><option value="">Cartorio</option>{% for cartorio in cartorios %}<option value="{{ cartorio.id }}" {% if project.cartorio_id == cartorio.id %}selected{% endif %}>{{ cartorio.nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><select class="form-select" name="responsavel_id"><option value="">Responsavel</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><input class="form-control" type="date" name="prazo_resposta" /></div>
+                <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Registrar</button></div>
+            </form>
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="tempo">
+        <section class="panel">
+            <div class="panel-header"><h2>Apontamentos de tempo</h2><strong>{{ minutes_to_hours(total_minutes) }}</strong></div>
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead><tr><th>Usuario</th><th>Etapa</th><th>Tarefa</th><th>Tipo</th><th>Tempo</th><th>Obs.</th></tr></thead>
+                    <tbody>
+                        {% for item in time_entries %}
+                            <tr>
+                                <td>{{ item.usuario_nome or '-' }}</td>
+                                <td>{{ item.etapa_nome or '-' }}</td>
+                                <td>{{ item.tarefa_titulo or '-' }}</td>
+                                <td>{{ item.tipo_tempo or '-' }}</td>
+                                <td>{{ minutes_to_hours(item.duracao_minutos) }}</td>
+                                <td>{{ item.observacoes or '' }}</td>
+                            </tr>
+                        {% else %}
+                            <tr><td colspan="6">Nenhum tempo registrado.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
+                <input type="hidden" name="action" value="add_time" />
+                <div class="col-md-2"><select class="form-select" name="usuario_id">{% for usuario in usuarios %}<option value="{{ usuario.id }}" {% if g.user.id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><select class="form-select" name="etapa_id"><option value="">Etapa</option>{% for etapa in etapas %}<option value="{{ etapa.id }}">{{ etapa.etapa_nome }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><select class="form-select" name="tarefa_id"><option value="">Tarefa</option>{% for tarefa in tarefas %}<option value="{{ tarefa.id }}">{{ tarefa.titulo }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><input class="form-control" type="number" min="1" name="duracao_minutos" placeholder="Minutos" required /></div>
+                <div class="col-md-2"><select class="form-select" name="tipo_tempo"><option value="execucao">Execucao</option><option value="revisao">Revisao</option><option value="retrabalho">Retrabalho</option><option value="atendimento">Atendimento</option></select></div>
+                <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Registrar</button></div>
+                <div class="col-12"><input class="form-control" name="observacoes" placeholder="Observacoes" /></div>
+            </form>
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="historico">
+        <section class="panel">
+            <div class="panel-header"><h2>Linha do tempo</h2></div>
+            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="input-group mb-3">
+                <input type="hidden" name="action" value="add_comment" />
+                <input class="form-control" name="comentario" placeholder="Adicionar comentario interno" />
+                <button class="btn btn-primary" type="submit">Comentar</button>
+            </form>
+            <div class="timeline">
+                {% for evento in historico %}
+                    <div class="timeline-item">
+                        <span>{{ format_datetime(evento.criado_em) }}</span>
+                        <strong>{{ evento.usuario_nome or 'Sistema' }}</strong>
+                        <p>{{ evento.descricao }}</p>
+                    </div>
+                {% else %}
+                    <div class="empty-state">Nenhum evento registrado.</div>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+</div>
+
+<script>
+document.querySelector('input[name="valor"]').addEventListener('blur', function() {
+    let value = this.value.replace(/\D/g, '');
+    if (value) {
+        value = (parseInt(value) / 100).toLocaleString('pt-BR', {
+            style: 'currency',
+            currency: 'BRL'
+        });
+        this.value = value;
+    }
+});
+</script>
+{% endblock %}

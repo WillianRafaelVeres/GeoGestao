@@ -1,0 +1,75 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="workspace-header">
+    <div>
+        <span class="module-label">Area pessoal</span>
+        <h1>Minhas missoes</h1>
+    </div>
+    <div></div>
+    <div class="matrix-actions">
+        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('projects') }}">Abrir matriz</a>
+    </div>
+</div>
+
+<section class="panel mission-table-panel">
+    <div class="panel-header">
+        <h2>Fila de trabalho</h2>
+        <small>Atrasos, vencimentos proximos, prioridade alta e pendencias abertas.</small>
+    </div>
+    <div class="table-responsive">
+        <table class="table compact-table mission-table">
+            <thead>
+                <tr>
+                    <th>Tipo</th>
+                    <th>Missao</th>
+                    <th>Projeto</th>
+                    <th>Etapa</th>
+                    <th>Prazo</th>
+                    <th>Prioridade</th>
+                    <th>Status</th>
+                    <th>Acoes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for mission in missions %}
+                    {% set status_key = mission.status|lower %}
+                    <tr class="{{ 'table-danger' if is_overdue(mission.prazo, mission.status) or mission.status == 'atrasado' else '' }}">
+                        <td>{{ 'Pendencia' if mission.kind == 'pending' else ('Etapa' if mission.kind == 'stage' else 'Tarefa') }}</td>
+                        <td><strong>{{ mission.title }}</strong>{% if mission.origin %}<small>Origem: {{ mission.origin }}</small>{% endif %}</td>
+                        <td><a class="table-link" href="{{ url_for('project_detail', project_id=mission.project_id) }}">{{ mission.project }}</a></td>
+                        <td>{{ mission.stage }}</td>
+                        <td class="{{ 'text-danger fw-semibold' if is_overdue(mission.prazo, mission.status) else '' }}">{{ format_date(mission.prazo) }}</td>
+                        <td>{{ mission.priority or '-' }}</td>
+                        <td>
+                            {% if status_key in status_meta %}
+                                <span class="badge bg-{{ status_meta[status_key].color }}">{{ status_meta[status_key].label }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ mission.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="quick-actions table-actions">
+                                {% if mission.kind == 'stage' %}
+                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
+                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                                {% elif mission.kind == 'task' %}
+                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
+                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                                {% else %}
+                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
+                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Resolver</button></form>
+                                {% endif %}
+                                {% if mission.folder %}
+                                    <button class="btn btn-outline-secondary btn-sm" type="button" data-copy="{{ mission.folder }}">Pasta</button>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="8">Voce nao possui missoes ativas.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

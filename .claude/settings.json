@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python app.py)",
+      "Bash(Start-Sleep -Seconds 2)",
+      "Bash(Invoke-WebRequest -Uri \"http://127.0.0.1:5000\" -UseBasicParsing -TimeoutSec 5)",
+      "Bash(Select-Object -ExpandProperty StatusCode)",
+      "PowerShell(Start-Sleep -Seconds 1; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:5000\" -UseBasicParsing -TimeoutSec 5; $r.StatusCode } catch { \"Not running: $_\" })",
+      "Bash(python -m py_compile app.py)",
+      "Bash(pkill -f \"python app.py\")",
+      "PowerShell(Stop-Process -Name python -ErrorAction SilentlyContinue)",
+      "Bash(curl -s http://127.0.0.1:5000/login)",
+      "Bash(start http://127.0.0.1:5000/login)",
+      "Bash(curl -s -X POST http://127.0.0.1:5000/api/add-cartorio -H 'Content-Type: application/json' -d '{\"nome\": \"Novo Cartorio Teste\"}')",
+      "Bash(python -m json.tool)",
+      "Bash(start http://127.0.0.1:5000/project/create)",
+      "Bash(curl -s -c /tmp/cookie.txt -b /tmp/cookie.txt -X POST http://127.0.0.1:5000/login -d 'email=admin@geogestao.local&senha=admin123' -L -o /dev/null -w '%{http_code}')",
+      "Bash(curl -s -c /tmp/cookie.txt -b /tmp/cookie.txt http://127.0.0.1:5000/project/create)",
+      "Bash(python3 -c ' *)",
+      "Bash(start http://127.0.0.1:5000/projects)"
+    ]
+  }
+}

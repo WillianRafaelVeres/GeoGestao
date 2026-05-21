@@ -1,0 +1,232 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Novo projeto</h1>
+        <p>Ao salvar, o sistema cria automaticamente todas as etapas macro e seus checklists padrao.</p>
+    </div>
+    <div class="heading-actions">
+        <a class="btn btn-outline-secondary" href="{{ url_for('projects') }}">Voltar para matriz</a>
+    </div>
+</div>
+
+<section class="panel form-panel">
+    <form method="post" class="row g-3" id="projectForm">
+        <div class="col-md-12">
+            <label class="form-label">Nome do projeto</label>
+            <input class="form-control" name="nome" required />
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Dono / Cliente</label>
+            <div class="ac-wrapper">
+                <input class="form-control" type="text" name="proprietario" id="proprietarioInput"
+                       placeholder="Digite o nome do cliente..." autocomplete="off" required />
+                <input type="hidden" name="cliente_id" id="clienteIdInput" />
+                <div class="ac-list" id="proprietarioList"></div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Cartorio/orgao externo</label>
+            <div class="ac-wrapper">
+                <input class="form-control" type="text" name="cartorio_nome" id="cartorioInput"
+                       placeholder="Digite o cartório..." autocomplete="off" />
+                <input type="hidden" name="cartorio_id" id="cartorioIdInput" />
+                <div class="ac-list" id="cartorioList"></div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <label class="form-label">Cidade</label>
+            <input class="form-control" name="cidade" />
+        </div>
+        <div class="col-md-2">
+            <label class="form-label">UF</label>
+            <input class="form-control" name="uf" maxlength="2" value="SP" />
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Tipo de servico</label>
+            <select class="form-select" name="tipo_servico" required>
+                <option value="">Selecione um servico</option>
+                <option>Atualização de CCIR</option>
+                <option>Cadastro Ambiental Rural (CAR)</option>
+                <option>Certificação Sigef</option>
+                <option>Desmembramento</option>
+                <option>Destacamento</option>
+                <option>Estremação (Santa Catarina) / Extinção de Condomínio (Paraná)</option>
+                <option>Georreferenciamento (Imóvel Rural)</option>
+                <option>Inventario de imóvel</option>
+                <option>Inventário Florestal</option>
+                <option>Medição</option>
+                <option>Regularização de Titularidade</option>
+                <option>Retificação de Área</option>
+                <option>Unificação</option>
+                <option>Usucapião</option>
+            </select>
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Valor do projeto</label>
+            <input class="form-control" name="valor" type="text" placeholder="R$ 0,00" />
+        </div>
+        <div class="col-12">
+            <label class="form-label">Caminho da pasta no servidor</label>
+            <div class="input-group">
+                <input class="form-control" name="caminho_pasta" id="caminhoInput" placeholder="Ex: C:\Projetos\Cliente\Projeto" />
+                <button class="btn btn-outline-secondary" type="button" id="btnProcurar" onclick="selecionarPasta()">
+                    📁 Procurar
+                </button>
+            </div>
+            <div id="pastaFeedback" class="form-text" style="display:none;color:#198754;">Pasta selecionada.</div>
+        </div>
+        <div class="col-12">
+            <label class="form-label">Observacoes</label>
+            <textarea class="form-control" name="observacoes" rows="3"></textarea>
+        </div>
+        <div class="col-12 text-end">
+            <button class="btn btn-primary" type="submit">Criar projeto</button>
+        </div>
+    </form>
+</section>
+
+<style>
+.ac-wrapper {
+    position: relative;
+}
+.ac-list {
+    display: none;
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    background: #fff;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    max-height: 260px;
+    overflow-y: auto;
+    z-index: 9999;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.ac-list.open { display: block; }
+.ac-item {
+    padding: 9px 14px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    border-bottom: 1px solid #f2f2f2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.ac-item:last-child { border-bottom: none; }
+.ac-item:hover { background: #f0f4ff; }
+.ac-item.ac-new {
+    color: #1a73e8;
+    font-weight: 500;
+}
+.ac-item.ac-new::before { content: "+"; font-size: 1.1rem; font-weight: bold; }
+</style>
+
+<script>
+const clientes = [{% for c in clientes %}{ id: {{ c.id }}, nome: {{ c.nome | tojson }} },{% endfor %}];
+const cartorios = [{% for c in cartorios %}{ id: {{ c.id }}, nome: {{ c.nome | tojson }} },{% endfor %}];
+
+function initAC(inputId, listId, hiddenId, source, apiUrl) {
+    const input = document.getElementById(inputId);
+    const list  = document.getElementById(listId);
+    const hid   = document.getElementById(hiddenId);
+
+    function render(q) {
+        list.innerHTML = '';
+        const lq = q.toLowerCase();
+        const hits = source.filter(x => x.nome.toLowerCase().includes(lq));
+        const exact = source.find(x => x.nome.toLowerCase() === lq);
+
+        hits.forEach(x => {
+            const d = document.createElement('div');
+            d.className = 'ac-item';
+            d.textContent = x.nome;
+            d.onmousedown = e => { e.preventDefault(); pick(x.id, x.nome); };
+            list.appendChild(d);
+        });
+
+        if (!exact) {
+            const d = document.createElement('div');
+            d.className = 'ac-item ac-new';
+            d.textContent = ' Adicionar "' + q + '"';
+            d.onmousedown = e => { e.preventDefault(); createNew(q); };
+            list.appendChild(d);
+        }
+
+        list.classList.toggle('open', list.children.length > 0);
+    }
+
+    function pick(id, name) {
+        input.value = name;
+        hid.value = id;
+        list.classList.remove('open');
+    }
+
+    function createNew(name) {
+        fetch(apiUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ nome: name })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.id) {
+                source.push({ id: data.id, nome: data.nome });
+                pick(data.id, data.nome);
+            }
+        });
+    }
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim();
+        if (q.length === 0) { hid.value = ''; list.classList.remove('open'); return; }
+        render(q);
+    });
+
+    input.addEventListener('focus', () => {
+        if (input.value.trim().length > 0) render(input.value.trim());
+    });
+
+    input.addEventListener('blur', () => {
+        setTimeout(() => list.classList.remove('open'), 150);
+    });
+}
+
+function selecionarPasta() {
+    const btn = document.getElementById('btnProcurar');
+    btn.disabled = true;
+    btn.textContent = '⏳ Aguarde...';
+
+    fetch('/api/select-folder', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.path) {
+                document.getElementById('caminhoInput').value = data.path;
+                const fb = document.getElementById('pastaFeedback');
+                fb.style.display = 'block';
+                setTimeout(() => fb.style.display = 'none', 3000);
+            }
+        })
+        .catch(() => {})
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = '📁 Procurar';
+        });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    initAC('proprietarioInput', 'proprietarioList', 'clienteIdInput', clientes, '/api/add-cliente');
+    initAC('cartorioInput',     'cartorioList',     'cartorioIdInput', cartorios, '/api/add-cartorio');
+
+    // Formatar valor como moeda
+    const v = document.querySelector('input[name="valor"]');
+    if (v) {
+        v.addEventListener('blur', function() {
+            const raw = this.value.replace(/\D/g, '');
+            if (raw) this.value = (parseInt(raw) / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        });
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Clientes</h1>
+        <p>Cadastro simples para vincular projetos, contatos e observacoes.</p>
+    </div>
+</div>
+
+<div class="content-grid two-columns">
+    <section class="panel">
+        <div class="panel-header"><h2>Clientes cadastrados</h2></div>
+        <div class="table-responsive">
+            <table class="table compact-table">
+                <thead><tr><th>Nome</th><th>Contato</th><th>Endereco</th><th>Projetos</th></tr></thead>
+                <tbody>
+                    {% for client in clients %}
+                        <tr>
+                            <td><strong>{{ client.nome }}</strong><small>{{ client.cpf_cnpj or '' }}</small></td>
+                            <td>{{ client.telefone or '-' }}<small>{{ client.email or '' }}</small></td>
+                            <td>{{ client.endereco or '-' }}</td>
+                            <td>{{ client.projetos }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="4">Nenhum cliente cadastrado.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><h2>Novo cliente</h2></div>
+        <form method="post" class="vstack gap-3">
+            <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
+            <div><label class="form-label">CPF/CNPJ</label><input class="form-control" name="cpf_cnpj" /></div>
+            <div><label class="form-label">Telefone</label><input class="form-control" name="telefone" /></div>
+            <div><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" /></div>
+            <div><label class="form-label">Endereco</label><input class="form-control" name="endereco" /></div>
+            <div><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3"></textarea></div>
+            <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Cadastrar cliente</button>
+        </form>
+    </section>
+</div>
+{% endblock %}

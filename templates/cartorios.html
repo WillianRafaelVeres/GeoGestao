@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Cartorios e orgaos</h1>
+        <p>Locais externos usados nos projetos e nas exigencias.</p>
+    </div>
+</div>
+
+<div class="content-grid two-columns">
+    <section class="panel">
+        <div class="panel-header"><h2>Cadastros</h2></div>
+        <div class="table-responsive">
+            <table class="table compact-table">
+                <thead><tr><th>Nome</th><th>Cidade/UF</th><th>Contato</th><th>Projetos</th></tr></thead>
+                <tbody>
+                    {% for item in cartorios %}
+                        <tr>
+                            <td><strong>{{ item.nome }}</strong><small>{{ item.observacoes or '' }}</small></td>
+                            <td>{{ item.cidade or '-' }} / {{ item.uf or '-' }}</td>
+                            <td>{{ item.contato or '-' }}</td>
+                            <td>{{ item.projetos }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="4">Nenhum cadastro encontrado.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><h2>Novo cartorio/orgao</h2></div>
+        <form method="post" class="vstack gap-3">
+            <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
+            <div class="row g-2">
+                <div class="col-8"><label class="form-label">Cidade</label><input class="form-control" name="cidade" /></div>
+                <div class="col-4"><label class="form-label">UF</label><input class="form-control" name="uf" maxlength="2" /></div>
+            </div>
+            <div><label class="form-label">Contato</label><input class="form-control" name="contato" /></div>
+            <div><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3"></textarea></div>
+            <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Cadastrar</button>
+        </form>
+    </section>
+</div>
+{% endblock %}

@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Usuarios</h1>
+        <p>Perfis basicos para validar permissoes e fila de missoes.</p>
+    </div>
+</div>
+
+<div class="content-grid two-columns">
+    <section class="panel">
+        <div class="panel-header"><h2>Usuarios ativos</h2></div>
+        <div class="table-responsive">
+            <table class="table compact-table">
+                <thead><tr><th>Nome</th><th>E-mail</th><th>Cargo</th><th>Perfil</th><th>Status</th></tr></thead>
+                <tbody>
+                    {% for user in users %}
+                        <tr>
+                            <td><strong>{{ user.nome }}</strong></td>
+                            <td>{{ user.email }}</td>
+                            <td>{{ user.cargo or '-' }}</td>
+                            <td>{{ role_labels.get(user.perfil_acesso, user.perfil_acesso) }}</td>
+                            <td>{{ 'Ativo' if user.ativo else 'Inativo' }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="5">Nenhum usuario.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><h2>Novo usuario</h2></div>
+        <form method="post" class="vstack gap-3">
+            <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
+            <div><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" required /></div>
+            <div><label class="form-label">Cargo</label><input class="form-control" name="cargo" /></div>
+            <div>
+                <label class="form-label">Perfil</label>
+                <select class="form-select" name="perfil_acesso">
+                    <option value="tecnico">Tecnico</option>
+                    <option value="coordenador">Coordenador</option>
+                    <option value="consulta">Consulta</option>
+                    <option value="admin">Administrador</option>
+                </select>
+            </div>
+            <div><label class="form-label">Senha inicial</label><input class="form-control" name="senha" value="tecnico123" /></div>
+            <button class="btn btn-primary" type="submit">Cadastrar usuario</button>
+        </form>
+    </section>
+</div>
+{% endblock %}
