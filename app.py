@@ -10,6 +10,35 @@ from urllib.parse import quote
 from flask import Flask, Response, flash, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from documental import (
+    DOCUMENT_FIELD_REQUIREMENTS,
+    ESTADOS_CIVIS,
+    QUEM_ASSINA,
+    REGIMES_CASAMENTO,
+    SEXOS,
+    STATUS_CADASTRO,
+    TIPOS_CLIENTE,
+    UFS,
+    build_documento_context,
+    format_cep,
+    format_cnpj,
+    format_cpf,
+    format_phone,
+    get_cadastro_completeness,
+    get_cliente_pendencias,
+    get_document_readiness,
+    only_digits,
+    parse_decimal_br,
+    requires_conjuge,
+    validate_cep,
+    validate_cidade_uf,
+    validate_cnpj,
+    validate_cpf,
+    validate_date,
+    validate_email,
+    validate_uuid_like,
+)
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE = os.path.join(BASE_DIR, "geo.db")
@@ -227,6 +256,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS clientes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
+            tipo_cliente TEXT DEFAULT 'PESSOA_FISICA',
+            nome_exibicao TEXT,
+            quem_assina TEXT DEFAULT 'PROPRIETARIO',
+            status_cadastro TEXT DEFAULT 'RASCUNHO',
             tipo_pessoa TEXT DEFAULT 'fisica',
             cpf_cnpj TEXT,
             telefone TEXT,
@@ -245,7 +278,186 @@ def init_db():
             procurador_telefone TEXT,
             procurador_email TEXT,
             procurador_endereco TEXT,
-            observacoes TEXT
+            observacoes TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS pessoas_fisicas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL UNIQUE,
+            sexo TEXT,
+            nome_completo TEXT,
+            nacionalidade TEXT,
+            estado_civil TEXT,
+            regime_casamento TEXT,
+            incluir_conjuge INTEGER NOT NULL DEFAULT 0,
+            profissao_ocupacao TEXT,
+            rg TEXT,
+            orgao_expedidor_rg TEXT,
+            cpf TEXT,
+            nome_pai TEXT,
+            nome_mae TEXT,
+            data_nascimento TEXT,
+            uf_nascimento TEXT,
+            cidade_nascimento TEXT,
+            email TEXT,
+            telefone TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT,
+            FOREIGN KEY(cliente_id) REFERENCES clientes(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS conjuges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pessoa_fisica_id INTEGER NOT NULL UNIQUE,
+            sexo TEXT,
+            nome_completo TEXT,
+            cpf TEXT,
+            profissao_ocupacao TEXT,
+            nacionalidade TEXT,
+            rg TEXT,
+            orgao_expedidor_rg TEXT,
+            uf_nascimento TEXT,
+            cidade_nascimento TEXT,
+            data_nascimento TEXT,
+            email TEXT,
+            telefone TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT,
+            FOREIGN KEY(pessoa_fisica_id) REFERENCES pessoas_fisicas(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS pessoas_juridicas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL UNIQUE,
+            razao_social TEXT,
+            nome_fantasia TEXT,
+            cnpj TEXT,
+            logradouro TEXT,
+            uf TEXT,
+            cidade TEXT,
+            bairro TEXT,
+            cep TEXT,
+            numero TEXT,
+            complemento TEXT,
+            email TEXT,
+            telefone TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT,
+            FOREIGN KEY(cliente_id) REFERENCES clientes(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS enderecos_proprietario (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pessoa_fisica_id INTEGER NOT NULL UNIQUE,
+            logradouro TEXT,
+            uf TEXT,
+            cidade TEXT,
+            bairro TEXT,
+            cep TEXT,
+            numero TEXT,
+            complemento TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT,
+            FOREIGN KEY(pessoa_fisica_id) REFERENCES pessoas_fisicas(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS procuradores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL UNIQUE,
+            sexo TEXT,
+            nome_completo TEXT,
+            estado_civil TEXT,
+            regime_casamento TEXT,
+            profissao_ocupacao TEXT,
+            nacionalidade TEXT,
+            rg TEXT,
+            orgao_expedidor_rg TEXT,
+            cpf TEXT,
+            nome_pai TEXT,
+            nome_mae TEXT,
+            data_nascimento TEXT,
+            uf_nascimento TEXT,
+            cidade_nascimento TEXT,
+            email TEXT,
+            telefone TEXT,
+            texto_adicional TEXT,
+            logradouro TEXT,
+            uf TEXT,
+            cidade TEXT,
+            bairro TEXT,
+            cep TEXT,
+            numero TEXT,
+            complemento TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT,
+            FOREIGN KEY(cliente_id) REFERENCES clientes(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS imoveis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome_imovel TEXT,
+            nome_terreno TEXT,
+            cartorio_comarca TEXT,
+            cns_cartorio TEXT,
+            tipo_certidao TEXT,
+            numero_certidao TEXT,
+            estado_imovel TEXT,
+            cidade_imovel TEXT,
+            localidade_denominacao TEXT,
+            valor_imovel_terra_nua REAL,
+            area_antiga_m2 REAL,
+            nova_area_m2 REAL,
+            perimetro_m REAL,
+            codigo_certificacao_sigef TEXT,
+            codigo_sncr TEXT,
+            estrada_acesso TEXT,
+            ponto_referencia TEXT,
+            distancia_ponto_referencia_km REAL,
+            observacoes TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS clientes_imoveis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL,
+            imovel_id INTEGER NOT NULL,
+            papel TEXT DEFAULT 'PROPRIETARIO',
+            percentual_participacao REAL,
+            principal INTEGER NOT NULL DEFAULT 0,
+            criado_em TEXT,
+            atualizado_em TEXT,
+            FOREIGN KEY(cliente_id) REFERENCES clientes(id),
+            FOREIGN KEY(imovel_id) REFERENCES imoveis(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS vertices_imovel (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            imovel_id INTEGER NOT NULL,
+            ordem INTEGER NOT NULL,
+            codigo_vertice TEXT,
+            longitude TEXT,
+            latitude TEXT,
+            altitude_m REAL,
+            codigo_vertice_destino TEXT,
+            azimute TEXT,
+            distancia_m REAL,
+            confrontacao TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT,
+            FOREIGN KEY(imovel_id) REFERENCES imoveis(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS document_field_requirements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo_documento TEXT NOT NULL,
+            campo TEXT NOT NULL,
+            obrigatorio INTEGER NOT NULL DEFAULT 1,
+            origem TEXT,
+            label TEXT,
+            mensagem_erro TEXT
         );
 
         CREATE TABLE IF NOT EXISTS cartorios (
@@ -436,6 +648,10 @@ def init_db():
     add_column_if_missing(db, "projetos", "observacoes", "TEXT")
     add_column_if_missing(db, "projetos", "atualizado_em", "TEXT")
     add_column_if_missing(db, "clientes", "tipo_pessoa", "TEXT DEFAULT 'fisica'")
+    add_column_if_missing(db, "clientes", "tipo_cliente", "TEXT DEFAULT 'PESSOA_FISICA'")
+    add_column_if_missing(db, "clientes", "nome_exibicao", "TEXT")
+    add_column_if_missing(db, "clientes", "quem_assina", "TEXT DEFAULT 'PROPRIETARIO'")
+    add_column_if_missing(db, "clientes", "status_cadastro", "TEXT DEFAULT 'RASCUNHO'")
     add_column_if_missing(db, "clientes", "inscricao_estadual", "TEXT")
     add_column_if_missing(db, "clientes", "estado_civil", "TEXT")
     add_column_if_missing(db, "clientes", "regime_casamento", "TEXT")
@@ -449,17 +665,154 @@ def init_db():
     add_column_if_missing(db, "clientes", "procurador_telefone", "TEXT")
     add_column_if_missing(db, "clientes", "procurador_email", "TEXT")
     add_column_if_missing(db, "clientes", "procurador_endereco", "TEXT")
+    add_column_if_missing(db, "clientes", "criado_em", "TEXT")
+    add_column_if_missing(db, "clientes", "atualizado_em", "TEXT")
+    add_column_if_missing(db, "conjuges", "email", "TEXT")
+    add_column_if_missing(db, "conjuges", "telefone", "TEXT")
+    add_column_if_missing(db, "procuradores", "telefone", "TEXT")
     add_column_if_missing(db, "projetos", "valor", "REAL")
+    add_column_if_missing(db, "projetos", "ordem_prioridade", "INTEGER")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "atraso_origem", "TEXT")
     add_column_if_missing(db, "tarefas", "data_inicio", "TEXT")
     add_column_if_missing(db, "tarefas", "concluido_em", "TEXT")
     add_column_if_missing(db, "tarefas", "comentarios", "TEXT")
     seed_initial_data(db)
+    seed_document_requirements(db)
+    migrate_legacy_clients(db)
     normalize_stage_models(db)
     ensure_project_structure(db)
+    initialize_project_order(db)
     db.commit()
     db.close()
+
+
+def seed_document_requirements(db):
+    if scalar(db, "SELECT COUNT(*) FROM document_field_requirements") > 0:
+        return
+    for tipo_documento, requirements in DOCUMENT_FIELD_REQUIREMENTS.items():
+        for campo, label, mensagem in requirements:
+            origem = campo.split(".")[0]
+            db.execute(
+                """
+                INSERT INTO document_field_requirements
+                    (tipo_documento, campo, obrigatorio, origem, label, mensagem_erro)
+                VALUES (?, ?, 1, ?, ?, ?)
+                """,
+                (tipo_documento, campo, origem, label, mensagem),
+            )
+
+
+def migrate_legacy_clients(db):
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = db.execute("SELECT * FROM clientes").fetchall()
+    for client in rows:
+        tipo_cliente = client["tipo_cliente"] or ("PESSOA_JURIDICA" if client["tipo_pessoa"] == "juridica" else "PESSOA_FISICA")
+        quem_assina = "PROCURADOR" if tipo_cliente == "PESSOA_JURIDICA" or client["tem_procurador"] else (client["quem_assina"] or "PROPRIETARIO")
+        nome_exibicao = client["nome_exibicao"] or client["nome"]
+        db.execute(
+            """
+            UPDATE clientes
+            SET tipo_cliente = ?, nome_exibicao = ?, quem_assina = ?, status_cadastro = COALESCE(status_cadastro, 'RASCUNHO'),
+                criado_em = COALESCE(criado_em, ?), atualizado_em = COALESCE(atualizado_em, ?)
+            WHERE id = ?
+            """,
+            (tipo_cliente, nome_exibicao, quem_assina, now, now, client["id"]),
+        )
+
+        if tipo_cliente == "PESSOA_JURIDICA":
+            if not first_row(db, "SELECT id FROM pessoas_juridicas WHERE cliente_id = ?", (client["id"],)):
+                db.execute(
+                    """
+                    INSERT INTO pessoas_juridicas
+                        (cliente_id, razao_social, cnpj, email, telefone, criado_em, atualizado_em)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (client["id"], client["nome"], only_digits(client["cpf_cnpj"]), client["email"], client["telefone"], now, now),
+                )
+        else:
+            pf = first_row(db, "SELECT id FROM pessoas_fisicas WHERE cliente_id = ?", (client["id"],))
+            if not pf:
+                pf_id = db.execute(
+                    """
+                    INSERT INTO pessoas_fisicas
+                        (cliente_id, nome_completo, estado_civil, regime_casamento, cpf, email, telefone, criado_em, atualizado_em)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        client["id"],
+                        client["nome"],
+                        legacy_estado_civil(client["estado_civil"]),
+                        legacy_regime_casamento(client["regime_casamento"]),
+                        only_digits(client["cpf_cnpj"]),
+                        client["email"],
+                        client["telefone"],
+                        now,
+                        now,
+                    ),
+                ).lastrowid
+            else:
+                pf_id = pf["id"]
+            if client["endereco"] and not first_row(db, "SELECT id FROM enderecos_proprietario WHERE pessoa_fisica_id = ?", (pf_id,)):
+                db.execute(
+                    """
+                    INSERT INTO enderecos_proprietario
+                        (pessoa_fisica_id, logradouro, criado_em, atualizado_em)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (pf_id, client["endereco"], now, now),
+                )
+            if client["conjuge_nome"] and not first_row(db, "SELECT id FROM conjuges WHERE pessoa_fisica_id = ?", (pf_id,)):
+                db.execute(
+                    """
+                    INSERT INTO conjuges
+                        (pessoa_fisica_id, nome_completo, cpf, criado_em, atualizado_em)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (pf_id, client["conjuge_nome"], only_digits(client["conjuge_cpf_cnpj"]), now, now),
+                )
+        if client["procurador_nome"] and not first_row(db, "SELECT id FROM procuradores WHERE cliente_id = ?", (client["id"],)):
+            db.execute(
+                """
+                INSERT INTO procuradores
+                    (cliente_id, nome_completo, cpf, email, telefone, logradouro, criado_em, atualizado_em)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    client["id"],
+                    client["procurador_nome"],
+                    only_digits(client["procurador_cpf_cnpj"]),
+                    client["procurador_email"],
+                    client["procurador_telefone"],
+                    client["procurador_endereco"],
+                    now,
+                    now,
+                ),
+            )
+
+
+def legacy_estado_civil(value):
+    mapping = {
+        "solteiro": "SOLTEIRO",
+        "casado": "CASADO",
+        "divorciado": "DIVORCIADO",
+        "viuvo": "VIUVO",
+        "viúvo": "VIUVO",
+        "separado": "SEPARADO_JUDICIALMENTE",
+        "uniao_estavel": "UNIAO_ESTAVEL",
+    }
+    return mapping.get((value or "").lower(), value or None)
+
+
+def legacy_regime_casamento(value):
+    mapping = {
+        "comunhao_parcial": "COMUNHAO_PARCIAL",
+        "comunhao_universal": "COMUNHAO_UNIVERSAL",
+        "separacao_total": "SEPARACAO_TOTAL",
+        "participacao_acertos": "PARTICIPACAO_FINAL_AQUESTOS",
+        "participacao_final_aquestos": "PARTICIPACAO_FINAL_AQUESTOS",
+    }
+    return mapping.get((value or "").lower(), value or None)
 
 
 def seed_initial_data(db):
@@ -551,6 +904,22 @@ def seed_initial_data(db):
                 "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (?, ?, ?, ?, ?)",
                 (project_id, users.get("Administrador"), "projeto_criado", "Projeto de demonstracao criado.", now),
             )
+
+
+def initialize_project_order(db):
+    """Atribui ordem_prioridade sequencial a projetos que ainda nao tem valor definido."""
+    unordered = db.execute(
+        """
+        SELECT id FROM projetos WHERE ordem_prioridade IS NULL
+        ORDER BY
+            CASE prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
+            COALESCE(criado_em, ''), id
+        """
+    ).fetchall()
+    if unordered:
+        max_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) FROM projetos").fetchone()[0]
+        for i, row in enumerate(unordered, max_order + 1):
+            db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (i, row["id"]))
 
 
 def default_checklist_for_stage(stage_name):
@@ -997,6 +1366,10 @@ def utility_processor():
         "file_url": file_url,
         "minutes_to_hours": minutes_to_hours,
         "format_currency": format_currency,
+        "format_cpf": format_cpf,
+        "format_cnpj": format_cnpj,
+        "format_cep": format_cep,
+        "format_phone": format_phone,
         "can_manage": can_manage,
         "can_admin": can_admin,
         "today_iso": date.today().isoformat(),
@@ -1128,6 +1501,9 @@ def dashboard():
 @login_required
 def projects():
     refresh_due_statuses()
+    for client_row in query_db("SELECT id FROM clientes"):
+        refresh_cliente_status(client_row["id"])
+
     filters = request.args.to_dict()
     sql_filters = []
     params = []
@@ -1231,8 +1607,8 @@ def projects():
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
         {where_clause}
         ORDER BY
-            CASE p.prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
-            COALESCE(p.prazo_critico, '9999-12-31'),
+            COALESCE(p.ordem_prioridade, 99999),
+            COALESCE(p.criado_em, ''),
             p.nome
         """,
         params,
@@ -1425,6 +1801,8 @@ def project_create():
         )
         db = get_db()
         create_stage_rows(db, project_id, None, None)
+        next_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) + 1 FROM projetos WHERE id != ?", (project_id,)).fetchone()[0]
+        db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (next_order, project_id))
         db.commit()
         record_event(project_id, "projeto_criado", f"Projeto {codigo} criado.")
         flash("Projeto criado com sucesso.", "success")
@@ -1435,6 +1813,42 @@ def project_create():
         clientes=clientes,
         cartorios=cartorios,
     )
+
+
+@app.route("/api/projects/reorder", methods=["POST"])
+@login_required
+def api_projects_reorder():
+    """Salva nova ordem de prioridade da matriz. Recebe lista de IDs na nova ordem."""
+    if not can_manage():
+        return jsonify({"ok": False, "error": "Permissao negada"}), 403
+    data = request.get_json() or {}
+    ids = data.get("ids", [])
+    if not ids:
+        return jsonify({"ok": False, "error": "Sem IDs"}), 400
+    db = get_db()
+    for i, project_id in enumerate(ids, 1):
+        db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (i, project_id))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/project/<int:project_id>/set-top", methods=["POST"])
+@login_required
+def api_project_set_top(project_id):
+    """Move o projeto para a posicao 1 da matriz (maior prioridade)."""
+    if not can_manage():
+        return jsonify({"ok": False, "error": "Permissao negada"}), 403
+    db = get_db()
+    all_ids = [row["id"] for row in db.execute(
+        "SELECT id FROM projetos ORDER BY COALESCE(ordem_prioridade, 99999), COALESCE(criado_em, ''), id"
+    ).fetchall()]
+    if project_id in all_ids:
+        all_ids.remove(project_id)
+    all_ids.insert(0, project_id)
+    for i, pid in enumerate(all_ids, 1):
+        db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (i, pid))
+    db.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/add-cartorio", methods=["POST"])
@@ -1488,28 +1902,20 @@ def api_add_cliente():
 
     try:
         cliente_id = execute_db(
-            "INSERT INTO clientes (nome, tipo_pessoa, cpf_cnpj, telefone, email, inscricao_estadual, endereco, estado_civil, regime_casamento, conjuge_nome, conjuge_cpf_cnpj, conjuge_telefone, conjuge_email, tem_procurador, procurador_nome, procurador_cpf_cnpj, procurador_telefone, procurador_email, procurador_endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO clientes
+                (nome, tipo_cliente, nome_exibicao, quem_assina, status_cadastro, tipo_pessoa, cpf_cnpj, telefone, email, observacoes, criado_em, atualizado_em)
+            VALUES (?, 'PESSOA_FISICA', ?, 'PROPRIETARIO', 'RASCUNHO', 'fisica', ?, ?, ?, ?, ?, ?)
+            """,
             (
                 nome,
-                data.get("tipo_pessoa", "fisica"),
+                nome,
                 (data.get("cpf_cnpj") or "").strip(),
                 (data.get("telefone") or "").strip(),
                 (data.get("email") or "").strip(),
-                (data.get("inscricao_estadual") or "").strip(),
-                (data.get("endereco") or "").strip(),
-                (data.get("estado_civil") or "").strip(),
-                (data.get("regime_casamento") or "").strip(),
-                (data.get("conjuge_nome") or "").strip(),
-                (data.get("conjuge_cpf_cnpj") or "").strip(),
-                (data.get("conjuge_telefone") or "").strip(),
-                (data.get("conjuge_email") or "").strip(),
-                1 if data.get("tem_procurador") else 0,
-                (data.get("procurador_nome") or "").strip(),
-                (data.get("procurador_cpf_cnpj") or "").strip(),
-                (data.get("procurador_telefone") or "").strip(),
-                (data.get("procurador_email") or "").strip(),
-                (data.get("procurador_endereco") or "").strip(),
                 (data.get("observacoes") or "").strip(),
+                datetime.now().isoformat(timespec="seconds"),
+                datetime.now().isoformat(timespec="seconds"),
             ),
         )
         return {"id": cliente_id, "nome": nome}, 201
@@ -2220,6 +2626,673 @@ def pending_quick(pending_id):
     return redirect(request.form.get("next") or url_for("my_missions"))
 
 
+def get_first_imovel_for_client(cliente_id):
+    return query_db(
+        """
+        SELECT i.*, ci.id AS vinculo_id, ci.papel, ci.percentual_participacao, ci.principal
+        FROM clientes_imoveis ci
+        JOIN imoveis i ON i.id = ci.imovel_id
+        WHERE ci.cliente_id = ?
+        ORDER BY ci.principal DESC, ci.id
+        LIMIT 1
+        """,
+        (cliente_id,),
+        one=True,
+    )
+
+
+def load_cliente_documental(cliente_id):
+    cliente = query_db("SELECT * FROM clientes WHERE id = ?", (cliente_id,), one=True)
+    if not cliente:
+        return None
+    pf = query_db("SELECT * FROM pessoas_fisicas WHERE cliente_id = ?", (cliente_id,), one=True)
+    conjuge = None
+    endereco = None
+    if pf:
+        conjuge = query_db("SELECT * FROM conjuges WHERE pessoa_fisica_id = ?", (pf["id"],), one=True)
+        endereco = query_db("SELECT * FROM enderecos_proprietario WHERE pessoa_fisica_id = ?", (pf["id"],), one=True)
+    pj = query_db("SELECT * FROM pessoas_juridicas WHERE cliente_id = ?", (cliente_id,), one=True)
+    procurador = query_db("SELECT * FROM procuradores WHERE cliente_id = ?", (cliente_id,), one=True)
+    imoveis = query_db(
+        """
+        SELECT i.*, ci.id AS vinculo_id, ci.papel, ci.percentual_participacao, ci.principal
+        FROM clientes_imoveis ci
+        JOIN imoveis i ON i.id = ci.imovel_id
+        WHERE ci.cliente_id = ?
+        ORDER BY ci.principal DESC, i.nome_imovel
+        """,
+        (cliente_id,),
+    )
+    vertices_by_imovel = {}
+    for imovel in imoveis:
+        vertices_by_imovel[imovel["id"]] = query_db(
+            "SELECT * FROM vertices_imovel WHERE imovel_id = ? ORDER BY ordem, id",
+            (imovel["id"],),
+        )
+    context = {
+        "cliente": row_to_plain_dict(cliente),
+        "pessoa_fisica": row_to_plain_dict(pf),
+        "conjuge": row_to_plain_dict(conjuge),
+        "pessoa_juridica": row_to_plain_dict(pj),
+        "endereco": row_to_plain_dict(endereco),
+        "procurador": row_to_plain_dict(procurador),
+        "imoveis": [row_to_plain_dict(row) for row in imoveis],
+        "vertices_by_imovel": {key: [row_to_plain_dict(row) for row in rows] for key, rows in vertices_by_imovel.items()},
+    }
+    context["completeness"] = get_cadastro_completeness(context)
+    context["cliente_pendencias"] = get_cliente_pendencias(context)
+    context["document_readiness"] = get_document_readiness(context)
+    context["document_context"] = build_documento_context(
+        context,
+        context["imoveis"][0] if context["imoveis"] else {},
+        context["vertices_by_imovel"].get(context["imoveis"][0]["id"], []) if context["imoveis"] else [],
+    )
+    return context
+
+
+def row_to_plain_dict(row):
+    if row is None:
+        return {}
+    return {key: row[key] for key in row.keys()}
+
+
+def get_form_value(name, default=""):
+    return request.form.get(name, default).strip()
+
+
+def form_decimal(name):
+    value = parse_decimal_br(get_form_value(name))
+    return float(value) if value not in (None, "") else None
+
+
+def validate_cliente_form(form):
+    errors = []
+    warnings = []
+    tipo_cliente = form.get("tipo_cliente") or "PESSOA_FISICA"
+    pf_cpf = only_digits(form.get("pf_cpf"))
+    pj_cnpj = only_digits(form.get("pj_cnpj"))
+    proc_cpf = only_digits(form.get("proc_cpf"))
+    conj_cpf = only_digits(form.get("conj_cpf"))
+    sigef = form.get("imovel_codigo_certificacao_sigef") or ""
+    cep_fields = [
+        ("pf_end_cep", "CEP do proprietario"),
+        ("pj_cep", "CEP da empresa"),
+        ("proc_cep", "CEP do procurador"),
+    ]
+    cidade_fields = [
+        ("pf_end_cidade", "pf_end_uf", "cidade do proprietario"),
+        ("pj_cidade", "pj_uf", "cidade da empresa"),
+        ("proc_cidade", "proc_uf", "cidade do procurador"),
+    ]
+
+    if pf_cpf and not validate_cpf(pf_cpf):
+        errors.append("CPF da pessoa fisica invalido.")
+    if conj_cpf and not validate_cpf(conj_cpf):
+        errors.append("CPF do conjuge invalido.")
+    if proc_cpf and not validate_cpf(proc_cpf):
+        errors.append("CPF do procurador/representante invalido.")
+    if pj_cnpj and not validate_cnpj(pj_cnpj):
+        errors.append("CNPJ invalido.")
+
+    for field, label in [
+        ("pf_email", "E-mail da pessoa fisica"),
+        ("conj_email", "E-mail do conjuge"),
+        ("pj_email", "E-mail da empresa"),
+        ("proc_email", "E-mail do procurador"),
+    ]:
+        if form.get(field) and not validate_email(form.get(field)):
+            errors.append(f"{label} invalido.")
+
+    for field, label in cep_fields:
+        if form.get(field) and not validate_cep(form.get(field)):
+            errors.append(f"{label} invalido.")
+
+    for city_field, uf_field, label in cidade_fields:
+        if form.get(city_field) and form.get(uf_field) and not validate_cidade_uf(form.get(city_field), form.get(uf_field)):
+            warnings.append(f"Verifique se a {label} corresponde ao UF selecionado.")
+
+    for field, label in [
+        ("pf_data_nascimento", "Data de nascimento da pessoa fisica"),
+        ("conj_data_nascimento", "Data de nascimento do conjuge"),
+        ("proc_data_nascimento", "Data de nascimento do procurador"),
+    ]:
+        if form.get(field) and not validate_date(form.get(field)):
+            errors.append(f"{label} invalida.")
+
+    if sigef and not validate_uuid_like(sigef):
+        warnings.append("Codigo SIGEF nao parece um UUID. O cadastro foi salvo como rascunho para revisao.")
+
+    if tipo_cliente == "PESSOA_JURIDICA":
+        if not pj_cnpj:
+            warnings.append("Pessoa juridica sem CNPJ fica como cadastro incompleto.")
+        if not form.get("pj_razao_social"):
+            warnings.append("Pessoa juridica sem razao social fica como cadastro incompleto.")
+        if not proc_cpf or not form.get("proc_nome_completo"):
+            warnings.append("Pessoa juridica exige representante/procurador para documentos.")
+    else:
+        if not pf_cpf:
+            warnings.append("Pessoa fisica sem CPF fica como cadastro incompleto.")
+        if not form.get("pf_nome_completo"):
+            warnings.append("Pessoa fisica sem nome completo fica como cadastro incompleto.")
+
+    return errors, warnings
+
+
+def save_cliente_documental():
+    form = request.form
+    errors, warnings = validate_cliente_form(form)
+    if errors:
+        for error in errors:
+            flash(error, "danger")
+        return None
+
+    now = datetime.now().isoformat(timespec="seconds")
+    cliente_id = form.get("cliente_id") or None
+    tipo_cliente = form.get("tipo_cliente") or "PESSOA_FISICA"
+    quem_assina = "PROCURADOR" if tipo_cliente == "PESSOA_JURIDICA" else (form.get("quem_assina") or "PROPRIETARIO")
+    nome_exibicao = (
+        form.get("pj_razao_social")
+        if tipo_cliente == "PESSOA_JURIDICA"
+        else form.get("pf_nome_completo")
+    ) or form.get("nome_exibicao") or "Cliente em rascunho"
+    tipo_pessoa = "juridica" if tipo_cliente == "PESSOA_JURIDICA" else "fisica"
+    cpf_cnpj = only_digits(form.get("pj_cnpj") if tipo_cliente == "PESSOA_JURIDICA" else form.get("pf_cpf"))
+    telefone = form.get("pj_telefone") if tipo_cliente == "PESSOA_JURIDICA" else form.get("pf_telefone")
+    email = form.get("pj_email") if tipo_cliente == "PESSOA_JURIDICA" else form.get("pf_email")
+
+    if cliente_id:
+        execute_db(
+            """
+            UPDATE clientes
+            SET nome = ?, tipo_cliente = ?, nome_exibicao = ?, quem_assina = ?, tipo_pessoa = ?,
+                cpf_cnpj = ?, telefone = ?, email = ?, observacoes = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            (
+                nome_exibicao,
+                tipo_cliente,
+                nome_exibicao,
+                quem_assina,
+                tipo_pessoa,
+                cpf_cnpj,
+                telefone,
+                email,
+                form.get("observacoes", "").strip(),
+                now,
+                cliente_id,
+            ),
+        )
+        cliente_id = int(cliente_id)
+    else:
+        cliente_id = execute_db(
+            """
+            INSERT INTO clientes
+                (nome, tipo_cliente, nome_exibicao, quem_assina, status_cadastro, tipo_pessoa, cpf_cnpj, telefone, email, observacoes, criado_em, atualizado_em)
+            VALUES (?, ?, ?, ?, 'RASCUNHO', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                nome_exibicao,
+                tipo_cliente,
+                nome_exibicao,
+                quem_assina,
+                tipo_pessoa,
+                cpf_cnpj,
+                telefone,
+                email,
+                form.get("observacoes", "").strip(),
+                now,
+                now,
+            ),
+        )
+
+    if tipo_cliente == "PESSOA_JURIDICA":
+        upsert_pessoa_juridica(cliente_id, now)
+    else:
+        pf_id = upsert_pessoa_fisica(cliente_id, now)
+        upsert_endereco_pf(pf_id, now)
+        upsert_conjuge(pf_id, now)
+
+    if quem_assina == "PROCURADOR" or tipo_cliente == "PESSOA_JURIDICA":
+        upsert_procurador(cliente_id, now)
+    else:
+        execute_db("DELETE FROM procuradores WHERE cliente_id = ?", (cliente_id,))
+
+    upsert_imovel_vinculado(cliente_id, now)
+    refresh_cliente_status(cliente_id)
+
+    for warning in warnings:
+        flash(warning, "warning")
+    flash("Cadastro de cliente salvo.", "success")
+    return cliente_id
+
+
+def upsert_pessoa_fisica(cliente_id, now):
+    existing = query_db("SELECT id FROM pessoas_fisicas WHERE cliente_id = ?", (cliente_id,), one=True)
+    estado_civil = get_form_value("pf_estado_civil") or None
+    regime_casamento = get_form_value("pf_regime_casamento") if estado_civil in ("CASADO", "UNIAO_ESTAVEL") else None
+    incluir_conjuge = 1 if estado_civil in ("CASADO", "UNIAO_ESTAVEL") and request.form.get("pf_incluir_conjuge") else 0
+    values = (
+        get_form_value("pf_sexo") or None,
+        get_form_value("pf_nome_completo") or None,
+        get_form_value("pf_nacionalidade") or None,
+        estado_civil,
+        regime_casamento,
+        incluir_conjuge,
+        get_form_value("pf_profissao_ocupacao") or None,
+        get_form_value("pf_rg") or None,
+        get_form_value("pf_orgao_expedidor_rg") or None,
+        only_digits(get_form_value("pf_cpf")) or None,
+        get_form_value("pf_nome_pai") or None,
+        get_form_value("pf_nome_mae") or None,
+        get_form_value("pf_data_nascimento") or None,
+        get_form_value("pf_uf_nascimento") or None,
+        get_form_value("pf_cidade_nascimento") or None,
+        get_form_value("pf_email") or None,
+        get_form_value("pf_telefone") or None,
+        now,
+    )
+    if existing:
+        execute_db(
+            """
+            UPDATE pessoas_fisicas
+            SET sexo = ?, nome_completo = ?, nacionalidade = ?, estado_civil = ?, regime_casamento = ?,
+                incluir_conjuge = ?, profissao_ocupacao = ?, rg = ?, orgao_expedidor_rg = ?, cpf = ?,
+                nome_pai = ?, nome_mae = ?, data_nascimento = ?, uf_nascimento = ?, cidade_nascimento = ?,
+                email = ?, telefone = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            values + (existing["id"],),
+        )
+        return existing["id"]
+    return execute_db(
+        """
+        INSERT INTO pessoas_fisicas
+            (sexo, nome_completo, nacionalidade, estado_civil, regime_casamento, incluir_conjuge,
+             profissao_ocupacao, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae, data_nascimento,
+             uf_nascimento, cidade_nascimento, email, telefone, atualizado_em, cliente_id, criado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values + (cliente_id, now),
+    )
+
+
+def upsert_conjuge(pessoa_fisica_id, now):
+    existing = query_db("SELECT id FROM conjuges WHERE pessoa_fisica_id = ?", (pessoa_fisica_id,), one=True)
+    pf = query_db("SELECT estado_civil, regime_casamento, incluir_conjuge FROM pessoas_fisicas WHERE id = ?", (pessoa_fisica_id,), one=True)
+    if not pf or not requires_conjuge(pf["estado_civil"], pf["regime_casamento"], bool(pf["incluir_conjuge"])):
+        if existing:
+            execute_db("DELETE FROM conjuges WHERE id = ?", (existing["id"],))
+        return None
+    has_data = any(get_form_value(field) for field in [
+        "conj_nome_completo", "conj_cpf", "conj_profissao_ocupacao", "conj_rg", "conj_data_nascimento",
+        "conj_email", "conj_telefone",
+    ])
+    if not has_data:
+        if existing:
+            execute_db("DELETE FROM conjuges WHERE id = ?", (existing["id"],))
+        return None
+    values = (
+        get_form_value("conj_sexo") or None,
+        get_form_value("conj_nome_completo") or None,
+        only_digits(get_form_value("conj_cpf")) or None,
+        get_form_value("conj_profissao_ocupacao") or None,
+        get_form_value("conj_nacionalidade") or None,
+        get_form_value("conj_rg") or None,
+        get_form_value("conj_orgao_expedidor_rg") or None,
+        get_form_value("conj_uf_nascimento") or None,
+        get_form_value("conj_cidade_nascimento") or None,
+        get_form_value("conj_data_nascimento") or None,
+        get_form_value("conj_email") or None,
+        get_form_value("conj_telefone") or None,
+        now,
+    )
+    if existing:
+        execute_db(
+            """
+            UPDATE conjuges
+            SET sexo = ?, nome_completo = ?, cpf = ?, profissao_ocupacao = ?, nacionalidade = ?, rg = ?,
+                orgao_expedidor_rg = ?, uf_nascimento = ?, cidade_nascimento = ?, data_nascimento = ?,
+                email = ?, telefone = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            values + (existing["id"],),
+        )
+        return existing["id"]
+    return execute_db(
+        """
+        INSERT INTO conjuges
+            (sexo, nome_completo, cpf, profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg,
+             uf_nascimento, cidade_nascimento, data_nascimento, email, telefone, atualizado_em, pessoa_fisica_id, criado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values + (pessoa_fisica_id, now),
+    )
+
+
+def upsert_endereco_pf(pessoa_fisica_id, now):
+    existing = query_db("SELECT id FROM enderecos_proprietario WHERE pessoa_fisica_id = ?", (pessoa_fisica_id,), one=True)
+    values = (
+        get_form_value("pf_end_logradouro") or None,
+        get_form_value("pf_end_uf") or None,
+        get_form_value("pf_end_cidade") or None,
+        get_form_value("pf_end_bairro") or None,
+        only_digits(get_form_value("pf_end_cep")) or None,
+        get_form_value("pf_end_numero") or None,
+        get_form_value("pf_end_complemento") or None,
+        now,
+    )
+    if existing:
+        execute_db(
+            """
+            UPDATE enderecos_proprietario
+            SET logradouro = ?, uf = ?, cidade = ?, bairro = ?, cep = ?, numero = ?, complemento = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            values + (existing["id"],),
+        )
+        return existing["id"]
+    return execute_db(
+        """
+        INSERT INTO enderecos_proprietario
+            (logradouro, uf, cidade, bairro, cep, numero, complemento, atualizado_em, pessoa_fisica_id, criado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values + (pessoa_fisica_id, now),
+    )
+
+
+def upsert_pessoa_juridica(cliente_id, now):
+    existing = query_db("SELECT id FROM pessoas_juridicas WHERE cliente_id = ?", (cliente_id,), one=True)
+    values = (
+        get_form_value("pj_razao_social") or None,
+        get_form_value("pj_nome_fantasia") or None,
+        only_digits(get_form_value("pj_cnpj")) or None,
+        get_form_value("pj_logradouro") or None,
+        get_form_value("pj_uf") or None,
+        get_form_value("pj_cidade") or None,
+        get_form_value("pj_bairro") or None,
+        only_digits(get_form_value("pj_cep")) or None,
+        get_form_value("pj_numero") or None,
+        get_form_value("pj_complemento") or None,
+        get_form_value("pj_email") or None,
+        get_form_value("pj_telefone") or None,
+        now,
+    )
+    if existing:
+        execute_db(
+            """
+            UPDATE pessoas_juridicas
+            SET razao_social = ?, nome_fantasia = ?, cnpj = ?, logradouro = ?, uf = ?, cidade = ?, bairro = ?,
+                cep = ?, numero = ?, complemento = ?, email = ?, telefone = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            values + (existing["id"],),
+        )
+        return existing["id"]
+    return execute_db(
+        """
+        INSERT INTO pessoas_juridicas
+            (razao_social, nome_fantasia, cnpj, logradouro, uf, cidade, bairro, cep, numero, complemento,
+             email, telefone, atualizado_em, cliente_id, criado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values + (cliente_id, now),
+    )
+
+
+def upsert_procurador(cliente_id, now):
+    existing = query_db("SELECT id FROM procuradores WHERE cliente_id = ?", (cliente_id,), one=True)
+    values = (
+        get_form_value("proc_sexo") or None,
+        get_form_value("proc_nome_completo") or None,
+        get_form_value("proc_estado_civil") or None,
+        get_form_value("proc_regime_casamento") or None,
+        get_form_value("proc_profissao_ocupacao") or None,
+        get_form_value("proc_nacionalidade") or None,
+        get_form_value("proc_rg") or None,
+        get_form_value("proc_orgao_expedidor_rg") or None,
+        only_digits(get_form_value("proc_cpf")) or None,
+        get_form_value("proc_nome_pai") or None,
+        get_form_value("proc_nome_mae") or None,
+        get_form_value("proc_data_nascimento") or None,
+        get_form_value("proc_uf_nascimento") or None,
+        get_form_value("proc_cidade_nascimento") or None,
+        get_form_value("proc_email") or None,
+        get_form_value("proc_telefone") or None,
+        get_form_value("proc_texto_adicional") or None,
+        get_form_value("proc_logradouro") or None,
+        get_form_value("proc_uf") or None,
+        get_form_value("proc_cidade") or None,
+        get_form_value("proc_bairro") or None,
+        only_digits(get_form_value("proc_cep")) or None,
+        get_form_value("proc_numero") or None,
+        get_form_value("proc_complemento") or None,
+        now,
+    )
+    if existing:
+        execute_db(
+            """
+            UPDATE procuradores
+            SET sexo = ?, nome_completo = ?, estado_civil = ?, regime_casamento = ?, profissao_ocupacao = ?,
+                nacionalidade = ?, rg = ?, orgao_expedidor_rg = ?, cpf = ?, nome_pai = ?, nome_mae = ?,
+                data_nascimento = ?, uf_nascimento = ?, cidade_nascimento = ?, email = ?, telefone = ?, texto_adicional = ?,
+                logradouro = ?, uf = ?, cidade = ?, bairro = ?, cep = ?, numero = ?, complemento = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            values + (existing["id"],),
+        )
+        return existing["id"]
+    return execute_db(
+        """
+        INSERT INTO procuradores
+            (sexo, nome_completo, estado_civil, regime_casamento, profissao_ocupacao, nacionalidade,
+             rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae, data_nascimento, uf_nascimento,
+             cidade_nascimento, email, telefone, texto_adicional, logradouro, uf, cidade, bairro, cep, numero,
+             complemento, atualizado_em, cliente_id, criado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values + (cliente_id, now),
+    )
+
+
+def upsert_imovel_vinculado(cliente_id, now):
+    existing_id = request.form.get("imovel_id") or None
+    linked_existing = request.form.get("existing_imovel_id") or None
+    has_new_data = any(get_form_value(field) for field in [
+        "imovel_nome_imovel", "imovel_cartorio_comarca", "imovel_numero_certidao",
+        "imovel_codigo_certificacao_sigef", "imovel_codigo_sncr"
+    ])
+    if linked_existing and not existing_id:
+        ensure_cliente_imovel_link(cliente_id, int(linked_existing), now, principal=1)
+        return int(linked_existing)
+    if not has_new_data and not existing_id:
+        return None
+
+    values = (
+        get_form_value("imovel_nome_imovel") or None,
+        get_form_value("imovel_nome_terreno") or None,
+        get_form_value("imovel_cartorio_comarca") or None,
+        get_form_value("imovel_cns_cartorio") or None,
+        get_form_value("imovel_tipo_certidao") or None,
+        get_form_value("imovel_numero_certidao") or None,
+        get_form_value("imovel_estado_imovel") or None,
+        get_form_value("imovel_cidade_imovel") or None,
+        get_form_value("imovel_localidade_denominacao") or None,
+        form_decimal("imovel_valor_imovel_terra_nua"),
+        form_decimal("imovel_area_antiga_m2"),
+        form_decimal("imovel_nova_area_m2"),
+        form_decimal("imovel_perimetro_m"),
+        get_form_value("imovel_codigo_certificacao_sigef") or None,
+        get_form_value("imovel_codigo_sncr") or None,
+        get_form_value("imovel_estrada_acesso") or None,
+        get_form_value("imovel_ponto_referencia") or None,
+        form_decimal("imovel_distancia_ponto_referencia_km"),
+        get_form_value("imovel_observacoes") or None,
+        now,
+    )
+    if existing_id:
+        execute_db(
+            """
+            UPDATE imoveis
+            SET nome_imovel = ?, nome_terreno = ?, cartorio_comarca = ?, cns_cartorio = ?, tipo_certidao = ?,
+                numero_certidao = ?, estado_imovel = ?, cidade_imovel = ?, localidade_denominacao = ?,
+                valor_imovel_terra_nua = ?, area_antiga_m2 = ?, nova_area_m2 = ?, perimetro_m = ?,
+                codigo_certificacao_sigef = ?, codigo_sncr = ?, estrada_acesso = ?, ponto_referencia = ?,
+                distancia_ponto_referencia_km = ?, observacoes = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            values + (existing_id,),
+        )
+        imovel_id = int(existing_id)
+    else:
+        imovel_id = execute_db(
+            """
+            INSERT INTO imoveis
+                (nome_imovel, nome_terreno, cartorio_comarca, cns_cartorio, tipo_certidao, numero_certidao,
+                 estado_imovel, cidade_imovel, localidade_denominacao, valor_imovel_terra_nua, area_antiga_m2,
+                 nova_area_m2, perimetro_m, codigo_certificacao_sigef, codigo_sncr, estrada_acesso,
+                 ponto_referencia, distancia_ponto_referencia_km, observacoes, atualizado_em, criado_em)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values + (now,),
+        )
+    ensure_cliente_imovel_link(cliente_id, imovel_id, now, principal=1)
+    upsert_vertices(imovel_id, now)
+    return imovel_id
+
+
+def ensure_cliente_imovel_link(cliente_id, imovel_id, now, principal=0):
+    existing = query_db(
+        "SELECT id FROM clientes_imoveis WHERE cliente_id = ? AND imovel_id = ?",
+        (cliente_id, imovel_id),
+        one=True,
+    )
+    if principal:
+        execute_db("UPDATE clientes_imoveis SET principal = 0 WHERE cliente_id = ?", (cliente_id,))
+    if existing:
+        execute_db(
+            """
+            UPDATE clientes_imoveis
+            SET papel = ?, percentual_participacao = ?, principal = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            (
+                get_form_value("vinculo_papel") or "PROPRIETARIO",
+                form_decimal("vinculo_percentual_participacao"),
+                1 if principal or request.form.get("vinculo_principal") else 0,
+                now,
+                existing["id"],
+            ),
+        )
+        return existing["id"]
+    return execute_db(
+        """
+        INSERT INTO clientes_imoveis
+            (cliente_id, imovel_id, papel, percentual_participacao, principal, criado_em, atualizado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            cliente_id,
+            imovel_id,
+            get_form_value("vinculo_papel") or "PROPRIETARIO",
+            form_decimal("vinculo_percentual_participacao"),
+            1 if principal or request.form.get("vinculo_principal") else 0,
+            now,
+            now,
+        ),
+    )
+
+
+def upsert_vertices(imovel_id, now):
+    codigos = request.form.getlist("vert_codigo_vertice[]")
+    if not codigos:
+        return
+    execute_db("DELETE FROM vertices_imovel WHERE imovel_id = ?", (imovel_id,))
+    longitudes = request.form.getlist("vert_longitude[]")
+    latitudes = request.form.getlist("vert_latitude[]")
+    altitudes = request.form.getlist("vert_altitude_m[]")
+    destinos = request.form.getlist("vert_codigo_vertice_destino[]")
+    azimutes = request.form.getlist("vert_azimute[]")
+    distancias = request.form.getlist("vert_distancia_m[]")
+    confrontacoes = request.form.getlist("vert_confrontacao[]")
+    for index, codigo in enumerate(codigos):
+        if not any([
+            codigo.strip(),
+            value_at(longitudes, index),
+            value_at(latitudes, index),
+            value_at(destinos, index),
+            value_at(confrontacoes, index),
+        ]):
+            continue
+        execute_db(
+            """
+            INSERT INTO vertices_imovel
+                (imovel_id, ordem, codigo_vertice, longitude, latitude, altitude_m, codigo_vertice_destino,
+                 azimute, distancia_m, confrontacao, criado_em, atualizado_em)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                imovel_id,
+                index + 1,
+                codigo.strip(),
+                value_at(longitudes, index),
+                value_at(latitudes, index),
+                parse_float_at(altitudes, index),
+                value_at(destinos, index),
+                value_at(azimutes, index),
+                parse_float_at(distancias, index),
+                value_at(confrontacoes, index),
+                now,
+                now,
+            ),
+        )
+
+
+def value_at(values, index):
+    return values[index].strip() if index < len(values) and values[index] else None
+
+
+def parse_float_at(values, index):
+    value = value_at(values, index)
+    parsed = parse_decimal_br(value)
+    return float(parsed) if parsed not in (None, "") else None
+
+
+def refresh_cliente_status(cliente_id):
+    context = load_cliente_documental(cliente_id)
+    pendencias = context["cliente_pendencias"]
+    status = pendencias["statusCadastro"]
+    execute_db(
+        "UPDATE clientes SET status_cadastro = ?, atualizado_em = ? WHERE id = ?",
+        (status, datetime.now().isoformat(timespec="seconds"), cliente_id),
+    )
+
+
+def empty_cliente_context():
+    context = {
+        "cliente": {
+            "id": "",
+            "tipo_cliente": "PESSOA_FISICA",
+            "nome_exibicao": "",
+            "quem_assina": "PROPRIETARIO",
+            "status_cadastro": "RASCUNHO",
+            "observacoes": "",
+        },
+        "pessoa_fisica": {},
+        "conjuge": {},
+        "pessoa_juridica": {},
+        "endereco": {},
+        "procurador": {},
+        "imoveis": [],
+        "vertices_by_imovel": {},
+    }
+    context["completeness"] = get_cadastro_completeness(context)
+    context["cliente_pendencias"] = get_cliente_pendencias(context)
+    context["document_readiness"] = get_document_readiness(context)
+    context["document_context"] = build_documento_context(context, {}, [])
+    return context
+
+
 @app.route("/my-missions")
 @login_required
 def my_missions():
@@ -2324,45 +3397,79 @@ def clients():
         if not can_manage():
             flash("Permissao negada.", "danger")
             return redirect(url_for("clients"))
-        name = request.form.get("nome", "").strip()
-        if name:
-            execute_db(
-                "INSERT INTO clientes (nome, tipo_pessoa, cpf_cnpj, telefone, email, inscricao_estadual, endereco, estado_civil, regime_casamento, conjuge_nome, conjuge_cpf_cnpj, conjuge_telefone, conjuge_email, tem_procurador, procurador_nome, procurador_cpf_cnpj, procurador_telefone, procurador_email, procurador_endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    name,
-                    request.form.get("tipo_pessoa", "fisica"),
-                    request.form.get("cpf_cnpj", "").strip(),
-                    request.form.get("telefone", "").strip(),
-                    request.form.get("email", "").strip(),
-                    request.form.get("inscricao_estadual", "").strip(),
-                    request.form.get("endereco", "").strip(),
-                    request.form.get("estado_civil", "").strip(),
-                    request.form.get("regime_casamento", "").strip(),
-                    request.form.get("conjuge_nome", "").strip(),
-                    request.form.get("conjuge_cpf_cnpj", "").strip(),
-                    request.form.get("conjuge_telefone", "").strip(),
-                    request.form.get("conjuge_email", "").strip(),
-                    1 if request.form.get("tem_procurador") else 0,
-                    request.form.get("procurador_nome", "").strip(),
-                    request.form.get("procurador_cpf_cnpj", "").strip(),
-                    request.form.get("procurador_telefone", "").strip(),
-                    request.form.get("procurador_email", "").strip(),
-                    request.form.get("procurador_endereco", "").strip(),
-                    request.form.get("observacoes", "").strip(),
-                ),
-            )
-            flash("Cliente cadastrado.", "success")
+        cliente_id = save_cliente_documental()
+        if cliente_id:
+            return redirect(url_for("clients"))
         return redirect(url_for("clients"))
+
+    filters = request.args.to_dict()
+    where = []
+    params = []
+    if filters.get("tipo_cliente"):
+        where.append("c.tipo_cliente = ?")
+        params.append(filters["tipo_cliente"])
+    if filters.get("status_cadastro"):
+        where.append("c.status_cadastro = ?")
+        params.append(filters["status_cadastro"])
+    if filters.get("cidade"):
+        where.append("(ep.cidade LIKE ? OR pj.cidade LIKE ?)")
+        params.extend([f"%{filters['cidade']}%", f"%{filters['cidade']}%"])
+    if filters.get("com_procurador") == "1":
+        where.append("pr.id IS NOT NULL")
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
     rows = query_db(
-        """
-        SELECT c.*, COUNT(p.id) AS projetos
+        f"""
+        SELECT
+            c.*,
+            pf.cpf AS pf_cpf,
+            pf.nome_completo AS pf_nome_completo,
+            pf.email AS pf_email_doc,
+            pf.telefone AS pf_telefone_doc,
+            pj.cnpj AS pj_cnpj,
+            pj.razao_social AS pj_razao_social,
+            pj.nome_fantasia AS pj_nome_fantasia,
+            pj.email AS pj_email_doc,
+            pj.telefone AS pj_telefone_doc,
+            COALESCE(ep.uf, pj.uf) AS uf_cadastro,
+            COALESCE(ep.cidade, pj.cidade) AS cidade_cadastro,
+            pr.nome_completo AS procurador_nome_doc,
+            pr.cpf AS procurador_cpf_doc,
+            COUNT(DISTINCT p.id) AS projetos
         FROM clientes c
         LEFT JOIN projetos p ON p.cliente_id = c.id
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        LEFT JOIN enderecos_proprietario ep ON ep.pessoa_fisica_id = pf.id
+        LEFT JOIN procuradores pr ON pr.cliente_id = c.id
+        {where_clause}
         GROUP BY c.id
-        ORDER BY c.nome
-        """
+        ORDER BY c.nome_exibicao COLLATE NOCASE, c.nome COLLATE NOCASE
+        """,
+        params,
     )
-    return render_template("clients.html", clients=rows)
+    client_contexts = {}
+    client_meta = {}
+    for row in rows:
+        context = load_cliente_documental(row["id"])
+        if not context:
+            continue
+        client_contexts[row["id"]] = context
+        client_meta[row["id"]] = context["cliente_pendencias"]
+    return render_template(
+        "clients.html",
+        clients=rows,
+        filters=filters,
+        active=empty_cliente_context(),
+        client_contexts=client_contexts,
+        client_meta=client_meta,
+        tipos_cliente=TIPOS_CLIENTE,
+        quem_assina_options=QUEM_ASSINA,
+        sexos=SEXOS,
+        estados_civis=ESTADOS_CIVIS,
+        regimes_casamento=REGIMES_CASAMENTO,
+        status_cadastro_options=STATUS_CADASTRO,
+        ufs=UFS,
+    )
 
 
 @app.route("/cartorios", methods=["GET", "POST"])

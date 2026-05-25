@@ -1,231 +1,448 @@
 {% extends 'base.html' %}
+
+{% macro field_text(label, name, value='', type='text', mask='', extra_class='', placeholder='', data_extra='') -%}
+    <label class="{{ extra_class }}">{{ label }}
+        <input type="{{ type }}" name="{{ name }}" value="{{ value or '' }}" placeholder="{{ placeholder }}" {% if mask %}data-mask="{{ mask }}"{% endif %} {{ data_extra|safe }}>
+        <small class="field-error" data-error-for="{{ name }}"></small>
+    </label>
+{%- endmacro %}
+
+{% macro uf_select(label, name, value='', extra_class='', data_extra='') -%}
+    <label class="{{ extra_class }}">{{ label }}
+        <select name="{{ name }}" {{ data_extra|safe }}>
+            <option value="">UF</option>
+            {% for uf in ufs %}
+                <option value="{{ uf }}" {% if value == uf %}selected{% endif %}>{{ uf }}</option>
+            {% endfor %}
+        </select>
+        <small class="field-error" data-error-for="{{ name }}"></small>
+    </label>
+{%- endmacro %}
+
+{% macro cliente_modal(modal_id, title, context) -%}
+    {% set cliente = context.cliente or {} %}
+    {% set pf = context.pessoa_fisica or {} %}
+    {% set conjuge = context.conjuge or {} %}
+    {% set pj = context.pessoa_juridica or {} %}
+    {% set endereco = context.endereco or {} %}
+    {% set procurador = context.procurador or {} %}
+    {% set pend = context.cliente_pendencias or {} %}
+    <div class="modal fade client-modal" id="{{ modal_id }}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+            <form class="modal-content cliente-form" method="post" novalidate>
+                <input type="hidden" name="cliente_id" value="{{ cliente.id or '' }}">
+                <div class="modal-header">
+                    <div>
+                        <span class="module-label">{{ 'Editar cadastro' if cliente.id else 'Novo cadastro' }}</span>
+                        <h2 class="modal-title">{{ title }}</h2>
+                        <p>Cadastre somente os dados do cliente. Pendencias podem ficar para depois.</p>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+
+                <div class="modal-body client-modal-body">
+                    <aside class="client-modal-summary">
+                        <div class="completion-card compact">
+                            <span>Completude</span>
+                            <strong data-completeness-value>{{ pend.percentualCompletude or 0 }}%</strong>
+                            <div class="completion-bar"><i style="width: {{ pend.percentualCompletude or 0 }}%"></i></div>
+                            <small>{{ pend.status_label or 'Rascunho' }}</small>
+                        </div>
+                        <div class="summary-list">
+                            <strong>Revisao rapida</strong>
+                            <span data-summary-type>{{ tipos_cliente.get(cliente.tipo_cliente or 'PESSOA_FISICA') }}</span>
+                            <span data-summary-sign>{{ quem_assina_options.get(cliente.quem_assina or 'PROPRIETARIO') }}</span>
+                            <span>{{ (pend.pendenciasObrigatorias or [])|length }} obrigatoria(s)</span>
+                            <span>{{ (pend.pendenciasRecomendadas or [])|length }} recomendada(s)</span>
+                        </div>
+                    </aside>
+
+                    <div class="client-form-sections">
+                        <section class="client-section" data-client-section="dados-principais">
+                            <div class="client-section-title">
+                                <h3>1. Tipo de cliente</h3>
+                                <small>Pessoa juridica exige representante/procurador.</small>
+                            </div>
+                            <div class="form-grid three">
+                                <label>Tipo de cliente
+                                    <select name="tipo_cliente" data-role="tipo-cliente">
+                                        {% for key, label in tipos_cliente.items() %}
+                                            <option value="{{ key }}" {% if (cliente.tipo_cliente or 'PESSOA_FISICA') == key %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                <label>Quem assina
+                                    <select name="quem_assina" data-role="quem-assina">
+                                        {% for key, label in quem_assina_options.items() %}
+                                            <option value="{{ key }}" {% if (cliente.quem_assina or 'PROPRIETARIO') == key %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                {{ field_text('Nome para exibicao', 'nome_exibicao', cliente.nome_exibicao, 'text', '', '', 'Opcional para buscas') }}
+                            </div>
+                            <div class="form-note pj-notice">Pessoa juridica sera salva com assinatura por representante/procurador.</div>
+                        </section>
+
+                        <section class="client-section conditional-section" data-section="pf" data-client-section="pessoa-fisica">
+                            <div class="client-section-title">
+                                <h3>2. Dados principais - Pessoa fisica</h3>
+                                <small>Campos essenciais para identificar o proprietario.</small>
+                            </div>
+                            <div class="form-subsection-title">
+                                <strong>Dados principais</strong>
+                            </div>
+                            <div class="form-grid four">
+                                {{ field_text('Nome completo', 'pf_nome_completo', pf.nome_completo) }}
+                                {{ field_text('CPF', 'pf_cpf', format_cpf(pf.cpf), 'text', 'cpf') }}
+                                {{ field_text('RG', 'pf_rg', pf.rg, 'text', '', '', '', 'maxlength="20"') }}
+                                {{ field_text('Orgao RG', 'pf_orgao_expedidor_rg', pf.orgao_expedidor_rg, 'text', '', '', '', 'maxlength="20"') }}
+                                {{ field_text('Nacionalidade', 'pf_nacionalidade', pf.nacionalidade or '', 'text', '', '', 'brasileiro(a)', 'data-role="pf-nacionalidade" data-default-nationality') }}
+                                {{ field_text('Profissao/ocupacao', 'pf_profissao_ocupacao', pf.profissao_ocupacao) }}
+                                <label>Sexo
+                                    <select name="pf_sexo" data-role="pf-sexo">
+                                        <option value="">Selecione</option>
+                                        {% for key, label in sexos.items() %}
+                                            <option value="{{ key }}" {% if pf.sexo == key %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                <label>Estado civil
+                                    <select name="pf_estado_civil" data-role="estado-civil">
+                                        <option value="">Selecione</option>
+                                        {% for key, label in estados_civis.items() %}
+                                            <option value="{{ key }}" {% if pf.estado_civil == key %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                <label data-role="regime-field">Regime de casamento
+                                    <select name="pf_regime_casamento" data-role="regime-casamento">
+                                        <option value="">Selecione</option>
+                                        {% for key, label in regimes_casamento.items() %}
+                                            <option value="{{ key }}" {% if pf.regime_casamento == key %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <small class="field-error" data-error-for="pf_regime_casamento"></small>
+                                </label>
+                            </div>
+                            <label class="inline-check spouse-opt-in">
+                                <input type="checkbox" name="pf_incluir_conjuge" value="1" data-role="incluir-conjuge" {% if pf.incluir_conjuge %}checked{% endif %}>
+                                Incluir dados do conjuge mesmo assim
+                            </label>
+                            <div class="form-subsection" data-client-section="nascimento-filiacao">
+                                <div class="form-subsection-title">
+                                    <strong>Dados de nascimento e filiacao</strong>
+                                </div>
+                                <div class="form-grid four">
+                                    {{ field_text('Data de nascimento', 'pf_data_nascimento', pf.data_nascimento, 'date') }}
+                                    {{ uf_select('UF nascimento', 'pf_uf_nascimento', pf.uf_nascimento) }}
+                                    {{ field_text('Cidade nascimento', 'pf_cidade_nascimento', pf.cidade_nascimento) }}
+                                    {{ field_text('Nome do pai', 'pf_nome_pai', pf.nome_pai) }}
+                                    {{ field_text('Nome da mae', 'pf_nome_mae', pf.nome_mae) }}
+                                </div>
+                            </div>
+                            <div class="form-subsection" data-client-section="contato">
+                                <div class="form-subsection-title">
+                                    <strong>Contato</strong>
+                                </div>
+                                <div class="form-grid four">
+                                    {{ field_text('E-mail', 'pf_email', pf.email, 'email') }}
+                                    {{ field_text('Telefone', 'pf_telefone', format_phone(pf.telefone), 'text', 'phone') }}
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="client-section conditional-section" data-section="conjuge" data-client-section="conjuge">
+                            <div class="client-section-title">
+                                <h3>3. Estado civil e conjuge</h3>
+                                <small>So aparece quando o regime exige ou quando incluido manualmente.</small>
+                            </div>
+                            <div class="form-grid four">
+                                {{ field_text('Nome completo', 'conj_nome_completo', conjuge.nome_completo) }}
+                                {{ field_text('CPF', 'conj_cpf', format_cpf(conjuge.cpf), 'text', 'cpf') }}
+                                {{ field_text('RG', 'conj_rg', conjuge.rg, 'text', '', '', '', 'maxlength="20"') }}
+                                {{ field_text('Orgao RG', 'conj_orgao_expedidor_rg', conjuge.orgao_expedidor_rg, 'text', '', '', '', 'maxlength="20"') }}
+                                {{ field_text('Nacionalidade', 'conj_nacionalidade', conjuge.nacionalidade) }}
+                                {{ field_text('Profissao/ocupacao', 'conj_profissao_ocupacao', conjuge.profissao_ocupacao) }}
+                                {{ field_text('E-mail', 'conj_email', conjuge.email, 'email') }}
+                                {{ field_text('Telefone', 'conj_telefone', format_phone(conjuge.telefone), 'text', 'phone') }}
+                            </div>
+                        </section>
+
+                        <section class="client-section conditional-section" data-section="pj" data-client-section="pessoa-juridica">
+                            <div class="client-section-title">
+                                <h3>2. Dados principais - Pessoa juridica</h3>
+                                <small>Endereco da empresa fica no proprio cadastro da PJ.</small>
+                            </div>
+                            <div class="form-grid four">
+                                {{ field_text('Razao social', 'pj_razao_social', pj.razao_social) }}
+                                {{ field_text('Nome fantasia', 'pj_nome_fantasia', pj.nome_fantasia) }}
+                                {{ field_text('CNPJ', 'pj_cnpj', format_cnpj(pj.cnpj), 'text', 'cnpj') }}
+                                {{ field_text('E-mail', 'pj_email', pj.email, 'email') }}
+                                {{ field_text('Telefone', 'pj_telefone', format_phone(pj.telefone), 'text', 'phone') }}
+                                {{ field_text('CEP', 'pj_cep', format_cep(pj.cep), 'text', 'cep', '', '', 'data-cep-prefix="pj"') }}
+                                {{ uf_select('UF', 'pj_uf', pj.uf, '', 'data-city-uf') }}
+                                {{ field_text('Cidade', 'pj_cidade', pj.cidade, 'text', '', '', '', 'data-city-input') }}
+                                {{ field_text('Bairro', 'pj_bairro', pj.bairro) }}
+                                {{ field_text('Logradouro', 'pj_logradouro', pj.logradouro) }}
+                                {{ field_text('Numero', 'pj_numero', pj.numero) }}
+                                {{ field_text('Complemento', 'pj_complemento', pj.complemento) }}
+                            </div>
+                            <div class="city-warning">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
+                        </section>
+
+                        <section class="client-section conditional-section" data-section="pf-address" data-client-section="endereco-pf">
+                            <div class="client-section-title">
+                                <h3>4. Endereco do proprietario</h3>
+                                <small>Para pessoa juridica, use o endereco da empresa.</small>
+                            </div>
+                            <div class="form-grid four">
+                                {{ field_text('CEP', 'pf_end_cep', format_cep(endereco.cep), 'text', 'cep', '', '', 'data-cep-prefix="pf_end"') }}
+                                {{ uf_select('UF', 'pf_end_uf', endereco.uf, '', 'data-city-uf') }}
+                                {{ field_text('Cidade', 'pf_end_cidade', endereco.cidade, 'text', '', '', '', 'data-city-input') }}
+                                {{ field_text('Bairro', 'pf_end_bairro', endereco.bairro) }}
+                                {{ field_text('Logradouro', 'pf_end_logradouro', endereco.logradouro) }}
+                                {{ field_text('Numero', 'pf_end_numero', endereco.numero) }}
+                                {{ field_text('Complemento', 'pf_end_complemento', endereco.complemento) }}
+                            </div>
+                            <div class="city-warning">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
+                        </section>
+
+                        <section class="client-section conditional-section" data-section="procurador" data-client-section="procurador">
+                            <div class="client-section-title">
+                                <h3>5. Procurador / representante</h3>
+                                <small>Exibido somente quando quem assina e procurador ou quando o cliente e PJ.</small>
+                            </div>
+                            <div class="form-grid four">
+                                {{ field_text('Nome completo', 'proc_nome_completo', procurador.nome_completo) }}
+                                {{ field_text('CPF', 'proc_cpf', format_cpf(procurador.cpf), 'text', 'cpf') }}
+                                {{ field_text('RG', 'proc_rg', procurador.rg, 'text', '', '', '', 'maxlength="20"') }}
+                                {{ field_text('Orgao RG', 'proc_orgao_expedidor_rg', procurador.orgao_expedidor_rg, 'text', '', '', '', 'maxlength="20"') }}
+                                {{ field_text('Nacionalidade', 'proc_nacionalidade', procurador.nacionalidade) }}
+                                {{ field_text('Profissao/ocupacao', 'proc_profissao_ocupacao', procurador.profissao_ocupacao) }}
+                                <label>Sexo
+                                    <select name="proc_sexo">
+                                        <option value="">Selecione</option>
+                                        {% for key, label in sexos.items() %}
+                                            <option value="{{ key }}" {% if procurador.sexo == key %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                <label>Estado civil
+                                    <select name="proc_estado_civil">
+                                        <option value="">Selecione</option>
+                                        {% for key, label in estados_civis.items() %}
+                                            <option value="{{ key }}" {% if procurador.estado_civil == key %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                {{ field_text('E-mail', 'proc_email', procurador.email, 'email') }}
+                                {{ field_text('Telefone', 'proc_telefone', format_phone(procurador.telefone), 'text', 'phone') }}
+                                {{ field_text('CEP', 'proc_cep', format_cep(procurador.cep), 'text', 'cep', '', '', 'data-cep-prefix="proc"') }}
+                                {{ uf_select('UF', 'proc_uf', procurador.uf, '', 'data-city-uf') }}
+                                {{ field_text('Cidade', 'proc_cidade', procurador.cidade, 'text', '', '', '', 'data-city-input') }}
+                                {{ field_text('Bairro', 'proc_bairro', procurador.bairro) }}
+                                {{ field_text('Logradouro', 'proc_logradouro', procurador.logradouro) }}
+                                {{ field_text('Numero', 'proc_numero', procurador.numero) }}
+                                {{ field_text('Complemento', 'proc_complemento', procurador.complemento) }}
+                                {{ field_text('Texto adicional/habilitacao', 'proc_texto_adicional', procurador.texto_adicional, 'text', '', 'span-2', 'Ex.: profissional habilitado, CFTA no ...') }}
+                            </div>
+                            <div class="city-warning">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
+                        </section>
+
+                        <section class="client-section">
+                            <div class="client-section-title">
+                                <h3>6. Revisao rapida</h3>
+                                <small>O cadastro pode ser salvo incompleto.</small>
+                            </div>
+                            <textarea name="observacoes" rows="3" class="full-textarea" placeholder="Observacoes internas do cliente">{{ cliente.observacoes or '' }}</textarea>
+                            <div class="review-box">
+                                <strong>Pendencias atuais</strong>
+                                <span>{{ (pend.pendenciasObrigatorias or [])|length }} obrigatoria(s) e {{ (pend.pendenciasRecomendadas or [])|length }} recomendada(s).</span>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Salvar cadastro</button>
+                </div>
+            </form>
+        </div>
+    </div>
+{%- endmacro %}
+
+{% macro pendencias_modal(row, context, meta) -%}
+    <div class="modal fade pending-client-modal" id="modal-pendencias-{{ row.id }}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div>
+                        <span class="module-label">Pendencias do cliente</span>
+                        <h2 class="modal-title">{{ row.nome_exibicao or row.nome }}</h2>
+                        <p>{{ tipos_cliente.get(row.tipo_cliente, row.tipo_pessoa or '-') }} - {{ meta.status_label or status_cadastro_options.get(row.status_cadastro or 'RASCUNHO') }}</p>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="pending-summary">
+                        <strong>{{ meta.percentualCompletude or 0 }}%</strong>
+                        <span>{{ (meta.pendenciasObrigatorias or [])|length }} obrigatoria(s)</span>
+                        <span>{{ (meta.pendenciasRecomendadas or [])|length }} recomendada(s)</span>
+                    </div>
+                    <p class="pending-hint">Clique em uma pendencia para abrir o cadastro no campo correspondente.</p>
+
+                    <div class="pending-groups">
+                        <h3>Obrigatorias</h3>
+                        {% for section, items in (meta.obrigatorias_por_secao or {}).items() %}
+                            <div class="pending-group">
+                                <strong>{{ section }}</strong>
+                                {% for item in items %}
+                                    <button type="button" class="pending-action" data-pending-focus data-edit-modal="#modal-client-{{ row.id }}" data-section="{{ item.section or item.secao_id }}" data-field="{{ item.field or item.campo }}">
+                                        <i>Obrigatorio</i>
+                                        <span><b>{{ item.label }}</b>{{ item.message }}</span>
+                                    </button>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <div class="pending-empty">Nenhuma pendencia obrigatoria.</div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="pending-groups">
+                        <h3>Recomendadas</h3>
+                        {% for section, items in (meta.recomendadas_por_secao or {}).items() %}
+                            <div class="pending-group muted">
+                                <strong>{{ section }}</strong>
+                                {% for item in items %}
+                                    <button type="button" class="pending-action" data-pending-focus data-edit-modal="#modal-client-{{ row.id }}" data-section="{{ item.section or item.secao_id }}" data-field="{{ item.field or item.campo }}">
+                                        <i>Recomendado</i>
+                                        <span><b>{{ item.label }}</b>{{ item.message }}</span>
+                                    </button>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <div class="pending-empty">Nenhuma recomendacao pendente.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
+                    <button type="button" class="btn btn-primary" data-bs-target="#modal-client-{{ row.id }}" data-bs-toggle="modal">Editar cadastro</button>
+                </div>
+            </div>
+        </div>
+    </div>
+{%- endmacro %}
+
 {% block content %}
-<div class="page-heading d-flex justify-content-between align-items-center">
+<div class="workspace-header clients-header">
     <div>
+        <span class="module-label">Base de clientes</span>
         <h1>Clientes</h1>
-        <p>Visualização estilo planilha dos clientes.</p>
+        <p>Base de proprietarios, empresas e representantes.</p>
     </div>
-    <div>
-        <button id="btnNewClient" class="btn btn-primary btn-lg">Novo cliente</button>
-    </div>
+    <form class="global-search client-live-search" method="get" data-client-search-form>
+        <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar por nome, CPF, CNPJ, cidade..." autocomplete="off" data-client-search-input>
+        <button type="button" class="search-clear" data-client-search-clear aria-label="Limpar busca">Limpar</button>
+    </form>
+    <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#modal-client-new" {% if not can_manage() %}disabled{% endif %}>Novo cliente</button>
 </div>
 
-<section class="panel">
-    <div class="panel-header"><h2>Base de clientes</h2></div>
+<section class="client-filter-bar">
+    {% set q = filters.q or '' %}
+    <a class="{{ 'active' if not filters.tipo_cliente and not filters.status_cadastro else '' }}" href="{{ url_for('clients', q=q) }}">Todos</a>
+    <a class="{{ 'active' if filters.tipo_cliente == 'PESSOA_FISICA' else '' }}" href="{{ url_for('clients', q=q, tipo_cliente='PESSOA_FISICA') }}">Pessoa Fisica</a>
+    <a class="{{ 'active' if filters.tipo_cliente == 'PESSOA_JURIDICA' else '' }}" href="{{ url_for('clients', q=q, tipo_cliente='PESSOA_JURIDICA') }}">Pessoa Juridica</a>
+    <a class="{{ 'active' if filters.status_cadastro == 'COMPLETO' else '' }}" href="{{ url_for('clients', q=q, status_cadastro='COMPLETO') }}">Cadastro completo</a>
+    <a class="{{ 'active' if filters.status_cadastro == 'INCOMPLETO' else '' }}" href="{{ url_for('clients', q=q, status_cadastro='INCOMPLETO') }}">Cadastro incompleto</a>
+    <a class="{{ 'active' if filters.status_cadastro == 'COM_PENDENCIAS' else '' }}" href="{{ url_for('clients', q=q, status_cadastro='COM_PENDENCIAS') }}">Com pendencias</a>
+</section>
+
+<section class="panel client-list-panel">
+    <div class="panel-header">
+        <h2>Base de clientes</h2>
+        <small data-client-result-count data-total="{{ clients|length }}">{{ clients|length }} clientes encontrados</small>
+    </div>
     <div class="table-responsive">
-        <table class="table table-striped table-sm" id="clientsTable">
+        <table class="table client-table">
             <thead>
                 <tr>
-                    <th>Nome / Razão</th>
+                    <th>Nome / Razao Social</th>
                     <th>Tipo</th>
-                    <th>CPF/CNPJ</th>
-                    <th>Telefone</th>
-                    <th>E-mail</th>
-                    <th>Endereço</th>
-                    <th>Estado civil / Regime</th>
-                    <th>Cônjuge</th>
-                    <th>Procurador</th>
+                    <th>CPF / CNPJ</th>
+                    <th>Cidade</th>
                     <th>Projetos</th>
+                    <th>Status</th>
+                    <th>Acoes</th>
                 </tr>
             </thead>
             <tbody>
-                {% for client in clients %}
-                    <tr>
-                        <td>{{ client.nome }}</td>
-                        <td>{{ client.tipo_pessoa|capitalize }}</td>
-                        <td>{{ client.cpf_cnpj or '-' }}</td>
-                        <td>{{ client.telefone or '-' }}</td>
-                        <td>{{ client.email or '-' }}</td>
-                        <td>{{ client.endereco or '-' }}</td>
-                        <td>{% if client.estado_civil %}{{ client.estado_civil }}{% if client.regime_casamento %} · {{ client.regime_casamento }}{% endif %}{% else %}-{% endif %}</td>
-                        <td>{% if client.conjuge_nome %}{{ client.conjuge_nome }} ({{ client.conjuge_cpf_cnpj or '' }}){% else %}-{% endif %}</td>
-                        <td>{% if client.tem_procurador %}{{ client.procurador_nome or '-' }}{% else %}-{% endif %}</td>
-                        <td>{{ client.projetos }}</td>
+                {% for row in clients %}
+                    {% set context = client_contexts.get(row.id) %}
+                    {% set meta = client_meta.get(row.id, {}) %}
+                    {% set is_pj = row.tipo_cliente == 'PESSOA_JURIDICA' %}
+                    {% set doc_number = row.pj_cnpj if is_pj else row.pf_cpf %}
+                    <tr data-client-row data-search-text="{{ [
+                        row.nome_exibicao,
+                        row.nome,
+                        row.pf_nome_completo,
+                        row.pj_razao_social,
+                        row.pj_nome_fantasia,
+                        row.pf_cpf,
+                        row.pj_cnpj,
+                        row.cpf_cnpj,
+                        row.cidade_cadastro,
+                        row.uf_cadastro,
+                        row.telefone,
+                        row.email,
+                        row.pf_telefone_doc,
+                        row.pf_email_doc,
+                        row.pj_telefone_doc,
+                        row.pj_email_doc,
+                        row.procurador_nome_doc,
+                        row.procurador_cpf_doc
+                    ]|join(' ')|e }}">
+                        <td>
+                            <strong>{{ row.nome_exibicao or row.nome or 'Cliente em rascunho' }}</strong>
+                            <small>{{ row.email or '' }}</small>
+                        </td>
+                        <td>{{ tipos_cliente.get(row.tipo_cliente or 'PESSOA_FISICA') }}</td>
+                        <td>
+                            {% if doc_number %}
+                                {{ format_cnpj(doc_number) if is_pj else format_cpf(doc_number) }}
+                            {% else %}
+                                <span class="pending-token">Pendente</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ row.cidade_cadastro or 'Pendente' }}</td>
+                        <td>{{ row.projetos or 0 }}</td>
+                        <td><span class="status-chip status-chip-{{ (meta.statusCadastro or row.status_cadastro or 'RASCUNHO')|lower }}">{{ meta.status_label or status_cadastro_options.get(row.status_cadastro or 'RASCUNHO') }}</span></td>
+                        <td class="table-actions-cell">
+                            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-client-{{ row.id }}">Ver/Editar</button>
+                            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-pendencias-{{ row.id }}">Pendencias</button>
+                        </td>
                     </tr>
                 {% else %}
-                    <tr><td colspan="10">Nenhum cliente cadastrado.</td></tr>
+                    <tr><td colspan="7">Nenhum cliente encontrado.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+    <div class="client-empty-state" data-client-empty-state hidden>
+        <strong>Nenhum cliente encontrado</strong>
+        <span>Tente buscar por nome, CPF, CNPJ, cidade ou telefone.</span>
+    </div>
 </section>
 
-<!-- Modal popup para novo cliente -->
-<div id="clientModal" role="dialog" aria-modal="true" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;z-index:1050;">
-    <div style="background:#fff;border-radius:8px;max-width:900px;width:100%;box-shadow:0 8px 24px rgba(0,0,0,0.2);">
-        <div style="padding:16px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;">
-            <h3 style="margin:0;">Novo cliente</h3>
-            <button id="closeModal" class="btn btn-sm">Fechar</button>
-        </div>
-        <form method="post" id="clientForm" style="padding:16px;">
-            <div style="display:flex;gap:12px;flex-wrap:wrap;">
-                <div style="flex:1 1 220px;min-width:200px;">
-                    <label class="form-label">Tipo de pessoa</label>
-                    <select class="form-select" name="tipo_pessoa" id="tipoPessoa">
-                        <option value="fisica">Pessoa Física</option>
-                        <option value="juridica">Pessoa Jurídica</option>
-                    </select>
-                </div>
-                <div style="flex:2 1 320px;min-width:250px;">
-                    <label class="form-label">Nome / Razão social</label>
-                    <input class="form-control" name="nome" id="nomeInput" required />
-                </div>
-                <div style="flex:1 1 180px;min-width:140px;">
-                    <label class="form-label">CPF / CNPJ</label>
-                    <input class="form-control" name="cpf_cnpj" id="docInput" />
-                </div>
-                <div style="flex:1 1 180px;min-width:140px;">
-                    <label class="form-label">Inscrição estadual</label>
-                    <input class="form-control" name="inscricao_estadual" />
-                </div>
-                <div style="flex:1 1 180px;min-width:140px;">
-                    <label class="form-label">Telefone</label>
-                    <input class="form-control" name="telefone" />
-                </div>
-                <div style="flex:1 1 220px;min-width:180px;">
-                    <label class="form-label">E-mail</label>
-                    <input class="form-control" type="email" name="email" />
-                </div>
-                <div style="flex:1 1 100%;">
-                    <label class="form-label">Endereço</label>
-                    <input class="form-control" name="endereco" />
-                </div>
+{{ cliente_modal('modal-client-new', 'Novo cliente', active) }}
 
-                <div id="fisicaFields" style="flex:1 1 100%;">
-                    <div style="display:flex;gap:12px;flex-wrap:wrap;">
-                        <div style="flex:1 1 220px;min-width:200px;">
-                            <label class="form-label">Estado civil</label>
-                            <select class="form-select" name="estado_civil">
-                                <option value="">Escolha</option>
-                                <option value="solteiro">Solteiro</option>
-                                <option value="casado">Casado</option>
-                                <option value="divorciado">Divorciado</option>
-                                <option value="viuvo">Viúvo</option>
-                            </select>
-                        </div>
-                        <div id="regimeField" style="flex:1 1 220px;min-width:200px;display:none;transition:opacity 0.3s ease;">
-                            <label class="form-label">Regime de casamento</label>
-                            <select class="form-select" name="regime_casamento" id="regimeCasamento">
-                                <option value="">Escolha</option>
-                                <option value="comunhao_parcial">Comunhão parcial de bens</option>
-                                <option value="separacao_total">Separação total</option>
-                                <option value="comunhao_universal">Comunhão universal</option>
-                                <option value="participacao_acertos">Participação nos acertos</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div id="conjugeSection" style="margin-top:8px;display:none;transition:opacity 0.3s ease;">
-                        <strong>Dados do cônjuge</strong>
-                        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
-                            <div style="flex:1 1 220px;min-width:200px;"><input class="form-control" name="conjuge_nome" placeholder="Nome do cônjuge" /></div>
-                            <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="conjuge_cpf_cnpj" placeholder="CPF" /></div>
-                            <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="conjuge_telefone" placeholder="Telefone" /></div>
-                            <div style="flex:1 1 220px;min-width:180px;"><input class="form-control" type="email" name="conjuge_email" placeholder="E-mail" /></div>
-                        </div>
-                    </div>
-                </div>
-
-                <div style="flex:1 1 100%;margin-top:8px;">
-                    <label class="form-check"><input type="checkbox" id="temProcuradorChk" name="tem_procurador" value="1" /> Possui procurador</label>
-                </div>
-
-                <div id="procuradorFields" style="display:none;flex:1 1 100%;margin-top:8px;">
-                    <strong>Dados do procurador</strong>
-                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
-                        <div style="flex:1 1 220px;min-width:200px;"><input class="form-control" name="procurador_nome" placeholder="Nome do procurador" /></div>
-                        <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="procurador_cpf_cnpj" placeholder="CPF/CNPJ" /></div>
-                        <div style="flex:1 1 180px;min-width:140px;"><input class="form-control" name="procurador_telefone" placeholder="Telefone" /></div>
-                        <div style="flex:1 1 220px;min-width:180px;"><input class="form-control" type="email" name="procurador_email" placeholder="E-mail" /></div>
-                        <div style="flex:1 1 100%;min-width:200px;"><input class="form-control" name="procurador_endereco" placeholder="Endereço" /></div>
-                    </div>
-                </div>
-
-                <div style="flex:1 1 100%;margin-top:12px;">
-                    <label class="form-label">Observações</label>
-                    <textarea class="form-control" name="observacoes" rows="3"></textarea>
-                </div>
-            </div>
-
-            <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px;border-top:1px solid #eee;">
-                <button type="button" id="cancelBtn" class="btn">Cancelar</button>
-                <button type="submit" class="btn btn-primary" {% if not can_manage() %}disabled{% endif %}>Salvar cliente</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<script>
-document.addEventListener('DOMContentLoaded', function(){
-    const modal = document.getElementById('clientModal');
-    const btn = document.getElementById('btnNewClient');
-    const close = document.getElementById('closeModal');
-    const cancel = document.getElementById('cancelBtn');
-    const tipo = document.getElementById('tipoPessoa');
-    const fisicaFields = document.getElementById('fisicaFields');
-    const temProcuradorChk = document.getElementById('temProcuradorChk');
-    const procuradorFields = document.getElementById('procuradorFields');
-    const estadoCivil = document.querySelector('select[name="estado_civil"]');
-    const regimeCasamento = document.getElementById('regimeCasamento');
-    const regimeField = document.getElementById('regimeField');
-    const conjugeSection = document.getElementById('conjugeSection');
-
-    function updateFieldsVisibility(){
-        // Show/hide civil status fields based on person type
-        if(tipo.value === 'fisica'){
-            fisicaFields.style.display = '';
-        } else {
-            fisicaFields.style.display = 'none';
-        }
-        
-        // Show/hide regime field based on civil status
-        const civiStatus = estadoCivil.value;
-        const regime = regimeCasamento.value;
-        
-        if(civiStatus === 'casado' || civiStatus === 'viuvo'){
-            regimeField.style.display = '';
-        } else {
-            regimeField.style.display = 'none';
-            regimeCasamento.value = '';
-        }
-        
-        // Show/hide conjugeSection based on civil status and regime
-        if((civiStatus === 'casado' || civiStatus === 'viuvo') && regime !== 'separacao_total' && regime !== ''){
-            conjugeSection.style.display = '';
-        } else {
-            conjugeSection.style.display = 'none';
-        }
-    }
-
-    function showModal(){
-        modal.style.display = 'flex';
-        // reset form
-        document.getElementById('clientForm').reset();
-        tipo.value = 'fisica';
-        estadoCivil.value = '';
-        regimeCasamento.value = '';
-        updateFieldsVisibility();
-        procuradorFields.style.display = 'none';
-    }
-    function hideModal(){ modal.style.display = 'none'; }
-
-    btn.addEventListener('click', showModal);
-    close.addEventListener('click', hideModal);
-    cancel.addEventListener('click', hideModal);
-
-    tipo.addEventListener('change', updateFieldsVisibility);
-    estadoCivil.addEventListener('change', updateFieldsVisibility);
-    regimeCasamento.addEventListener('change', updateFieldsVisibility);
-
-    temProcuradorChk.addEventListener('change', function(){
-        procuradorFields.style.display = this.checked ? '' : 'none';
-    });
-
-    // close modal when clicking outside
-    window.addEventListener('click', function(e){
-        if(e.target === modal){ hideModal(); }
-    });
-});
-</script>
-
+{% for row in clients %}
+    {% set context = client_contexts.get(row.id) %}
+    {% set meta = client_meta.get(row.id, {}) %}
+    {% if context %}
+        {{ cliente_modal('modal-client-' ~ row.id, row.nome_exibicao or row.nome or 'Cliente', context) }}
+        {{ pendencias_modal(row, context, meta) }}
+    {% endif %}
+{% endfor %}
 {% endblock %}

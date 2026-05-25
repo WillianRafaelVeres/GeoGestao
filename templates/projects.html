@@ -15,7 +15,6 @@
         <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Kanban</button>
         <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Calendario</button>
         <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('dashboard') }}">Dashboard</a>
-        <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Colunas</button>
     </div>
 </div>
 
@@ -121,13 +120,14 @@
     </div>
 </section>
 
+{# ===== MATRIZ ===== #}
 <section class="matrix-shell" data-matrix-density="comfortable">
     <table class="ops-matrix">
         <thead>
             <tr>
-                <th class="sticky-col owner-col">Proprietario</th>
+                <th class="sticky-col owner-col">Proprietario / Dono</th>
                 <th class="sticky-col project-name-col">Projeto</th>
-                <th class="sticky-col valor-col">Valor</th>
+                <th class="sticky-col cartorio-col">Cartorio</th>
                 {% for etapa in etapas %}
                     <th class="stage-head">{{ etapa.nome }}</th>
                 {% endfor %}
@@ -135,7 +135,6 @@
         </thead>
         <tbody>
             {% for project, etapas_projeto in projects %}
-                {# Determinar a ordem da etapa atual para classificar as demais #}
                 {% set ns_row = namespace(active_ordem=0) %}
                 {% for etapa in etapas_projeto %}
                     {% if project.etapa_atual_id == etapa.id %}
@@ -143,16 +142,17 @@
                     {% endif %}
                 {% endfor %}
                 {% set project_pendings = pending_by_project.get(project.id, []) %}
-                <tr class="matrix-project-row">
+                <tr class="matrix-project-row" data-project-id="{{ project.id }}">
                     <td class="sticky-col owner-col">
                         <span class="owner-name">{{ project.proprietario or project.cliente_nome or '-' }}</span>
                     </td>
-                    <td class="sticky-col project-name-col">
+                    <td class="sticky-col project-name-col drag-handle" title="Arraste para reordenar">
+                        <span class="drag-grip">⠿</span>
                         <span class="project-name-text">{{ project.nome }}</span>
                         <small class="project-code">{{ project.codigo }}</small>
                     </td>
-                    <td class="sticky-col valor-col">
-                        <span class="valor-text">{{ format_currency(project.valor) }}</span>
+                    <td class="sticky-col cartorio-col">
+                        <span class="cartorio-text">{{ project.cartorio_nome or '—' }}</span>
                     </td>
                     {% for etapa in etapas_projeto %}
                         {% set status_key = etapa.status|lower %}
@@ -161,9 +161,15 @@
                         {% set stage_pendings = pending_by_stage.get(etapa.id, []) %}
                         <td class="stage-slot">
                             {% if active %}
-                                <button class="active-stage-cell tone-{{ status_meta[status_key].tone if status_key in status_meta else 'muted' }} {{ 'is-late' if is_overdue(etapa.prazo, etapa.status) else '' }}"
-                                    type="button" data-bs-toggle="offcanvas" data-bs-target="#project-drawer-{{ project.id }}">
+                                {% set s_tone = status_meta[status_key].tone if status_key in status_meta else 'muted' %}
+                                {% set s_label = status_meta[status_key].label if status_key in status_meta else etapa.status %}
+                                <button class="active-stage-cell tone-{{ s_tone }} {{ 'is-late' if is_overdue(etapa.prazo, etapa.status) else '' }}"
+                                    type="button"
+                                    data-bs-toggle="modal"
+                                    data-bs-target="#project-modal-{{ project.id }}">
                                     <strong>{{ etapa.responsavel_nome or project.responsavel_nome or 'Sem resp.' }}</strong>
+                                    <span class="asc-status">{{ s_label }}</span>
+                                    {% if etapa.prazo %}<small class="asc-deadline{{ ' asc-late' if is_overdue(etapa.prazo, etapa.status) else '' }}">{{ format_date(etapa.prazo) }}</small>{% endif %}
                                     {% if stage_pendings %}<em>{{ stage_pendings|length }} pend.</em>{% endif %}
                                 </button>
                             {% elif is_past %}
@@ -181,6 +187,7 @@
     </table>
 </section>
 
+{# ===== MODAIS DE PROJETO ===== #}
 {% for project, etapas_projeto in projects %}
     {% set ns = namespace(active_stage=None) %}
     {% for etapa in etapas_projeto %}
@@ -200,173 +207,191 @@
         {% endif %}
     {% endfor %}
 
-    {# ===== DRAWER ===== #}
-    <div class="offcanvas offcanvas-end project-drawer" tabindex="-1" id="project-drawer-{{ project.id }}">
+    {# ===== MODAL PRINCIPAL DO PROJETO ===== #}
+    <div class="modal fade" id="project-modal-{{ project.id }}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered pmodal-dialog">
+            <div class="modal-content pmodal-content">
 
-        {# Cabeçalho #}
-        <div class="drawer-header">
-            <div class="drawer-header-info">
-                <span class="drawer-code">{{ project.codigo }}</span>
-                <h2 class="drawer-title">{{ project.nome }}</h2>
-                <p class="drawer-sub">{{ project.proprietario or project.cliente_nome or '—' }}{% if project.cartorio_nome %} · {{ project.cartorio_nome }}{% endif %}</p>
-            </div>
-            <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
-        </div>
-
-        <div class="drawer-body">
-
-            {# Etapa atual + status #}
-            <div class="drawer-stage-row">
-                <div>
-                    <div class="drawer-label">Etapa atual</div>
-                    <div class="drawer-stage-name">{{ active_stage.etapa_nome }}</div>
-                    {% if active_stage.proximo_checklist %}
-                    <div class="drawer-stage-sub">→ {{ active_stage.proximo_checklist }}</div>
-                    {% endif %}
-                </div>
-                <span class="status-pill tone-{{ status_meta[active_status].tone if active_status in status_meta else 'muted' }}">
-                    {{ status_meta[active_status].label if active_status in status_meta else active_stage.status }}
-                </span>
-            </div>
-
-            {# Metadados: responsavel + prazo + valor + pendencias #}
-            <div class="drawer-meta-grid">
-                <div class="drawer-meta-card">
-                    <div class="drawer-meta-label">Responsável</div>
-                    <div class="drawer-meta-value">{{ active_stage.responsavel_nome or '—' }}</div>
-                </div>
-                <div class="drawer-meta-card {{ 'drawer-meta-card--warn' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">
-                    <div class="drawer-meta-label">Prazo</div>
-                    <div class="drawer-meta-value {{ 'text-danger' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">{{ format_date(active_stage.prazo) or '—' }}</div>
-                </div>
-                <div class="drawer-meta-card">
-                    <div class="drawer-meta-label">Valor</div>
-                    <div class="drawer-meta-value">{{ format_currency(project.valor) }}</div>
-                </div>
-                <div class="drawer-meta-card {{ 'drawer-meta-card--danger' if project_pendings else '' }}">
-                    <div class="drawer-meta-label">Pendências</div>
-                    <div class="drawer-meta-value {{ 'text-danger' if project_pendings else '' }}">{{ project_pendings|length or '—' }}</div>
-                </div>
-            </div>
-
-            {# Ações principais #}
-            <div class="drawer-actions">
-                {% if ns_next.proxima %}
-                <button class="drawer-btn-advance" type="button"
-                    data-bs-toggle="modal" data-bs-target="#modal-avancar-{{ project.id }}">
-                    Avançar → {{ ns_next.proxima.etapa_nome }}
-                </button>
-                {% endif %}
-                <div class="drawer-actions-secondary">
-                    {% if ns_next.anteriores %}
-                    <button class="drawer-btn-ghost drawer-btn-danger" type="button"
-                        data-bs-toggle="modal" data-bs-target="#modal-retornar-{{ project.id }}">
-                        ← Retornar
-                    </button>
-                    {% endif %}
-                    <button class="drawer-btn-ghost" type="button"
-                        data-bs-toggle="modal" data-bs-target="#modal-pendencia-{{ project.id }}">
-                        + Pendência
-                    </button>
-                    <a class="drawer-btn-ghost" href="{{ url_for('project_detail', project_id=project.id) }}">
-                        Abrir projeto ↗
-                    </a>
-                </div>
-            </div>
-
-            {# Checklist — estilo Trello #}
-            <div class="drawer-section">
-                <div class="drawer-section-header">
-                    <span class="drawer-section-title">Checklist</span>
-                    <span class="drawer-checklist-counter" id="counter-{{ active_stage.id }}">
-                        {{ active_stage.checklist_done }}/{{ active_stage.checklist_total }}
-                    </span>
-                </div>
-
-                {# Barra de progresso #}
-                {% set pct = ((active_stage.checklist_done / active_stage.checklist_total * 100) | int) if active_stage.checklist_total else 0 %}
-                <div class="drawer-progress-bar">
-                    <div class="drawer-progress-fill" id="progress-{{ active_stage.id }}" style="width:{{ pct }}%"></div>
-                </div>
-
-                {# Itens #}
-                <div class="drawer-checklist" id="checklist-{{ active_stage.id }}">
-                    {% for item in matrix_checklists.get(active_stage.id, []) %}
-                    <label class="drawer-check-item {{ 'is-done' if item.concluido else '' }}" id="check-row-{{ item.id }}">
-                        <input type="checkbox" class="drawer-check-box"
-                            {{ 'checked' if item.concluido else '' }}
-                            onchange="toggleCheck(this, {{ item.id }}, {{ active_stage.id }})" />
-                        <span class="drawer-check-label" id="check-label-{{ item.id }}">{{ item.titulo }}</span>
-                    </label>
-                    {% endfor %}
-                </div>
-
-                {# Campo inline para adicionar item — como Trello #}
-                <div class="drawer-add-check" id="add-check-wrap-{{ active_stage.id }}">
-                    <input type="text" class="drawer-add-check-input"
-                        id="add-check-input-{{ active_stage.id }}"
-                        placeholder="+ Adicionar item..."
-                        onkeydown="handleAddCheck(event, {{ active_stage.id }})" />
-                </div>
-            </div>
-
-            {# Pendências abertas #}
-            {% if project_pendings %}
-            <div class="drawer-section">
-                <div class="drawer-section-header">
-                    <span class="drawer-section-title">Pendências abertas</span>
-                </div>
-                <div class="drawer-pending-list">
-                    {% for pending in project_pendings %}
-                    <div class="drawer-pending-item {{ 'is-late' if is_overdue(pending.prazo, pending.status) else '' }}">
-                        <div class="drawer-pending-info">
-                            <div class="drawer-pending-desc">{{ pending.descricao }}</div>
-                            <div class="drawer-pending-meta">{{ pending.origem or 'interna' }} · {{ pending.responsavel_nome or 'Sem resp.' }}{% if pending.prazo %} · {{ format_date(pending.prazo) }}{% endif %}</div>
-                        </div>
-                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" style="flex-shrink:0;">
-                            <input type="hidden" name="action" value="resolve_pending">
-                            <input type="hidden" name="pendencia_id" value="{{ pending.id }}">
-                            <input type="hidden" name="next" value="{{ request.full_path }}">
-                            <button class="drawer-btn-resolve" type="submit">✓</button>
-                        </form>
+                {# Cabeçalho fixo #}
+                <div class="pmodal-header">
+                    <div class="pmodal-header-main">
+                        <span class="pmodal-code">{{ project.codigo }}</span>
+                        <h2 class="pmodal-title">{{ project.nome }}</h2>
+                        <p class="pmodal-sub">
+                            {{- project.proprietario or project.cliente_nome or '—' -}}
+                            {%- if project.cartorio_nome %} · {{ project.cartorio_nome }}{% endif -%}
+                            {%- if project.cidade %} · {{ project.cidade }}{% endif -%}
+                        </p>
                     </div>
-                    {% endfor %}
+                    <div class="pmodal-header-right">
+                        <div class="pmodal-etapa-badge">
+                            <span class="pmodal-etapa-label">Etapa atual</span>
+                            <strong class="pmodal-etapa-name">{{ active_stage.etapa_nome }}</strong>
+                        </div>
+                        <span class="status-pill tone-{{ status_meta[active_status].tone if active_status in status_meta else 'muted' }}">
+                            {{ status_meta[active_status].label if active_status in status_meta else active_stage.status }}
+                        </span>
+                        {% if project.prioridade == 'Alta' %}<span class="pmodal-priority-badge">Alta prioridade</span>{% endif %}
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
-            </div>
-            {% endif %}
 
-            {# Pasta do servidor #}
-            {% if project.caminho_pasta %}
-            <div class="drawer-section">
-                <div class="drawer-folder-row">
-                    <code class="drawer-folder-path">{{ project.caminho_pasta }}</code>
-                    <button class="drawer-btn-ghost" type="button" data-copy="{{ project.caminho_pasta }}">Copiar</button>
-                </div>
-            </div>
-            {% endif %}
+                {# Corpo com scroll interno #}
+                <div class="pmodal-body">
 
-            {# Movimentações recentes #}
-            {% set recent_moves = movements_by_project.get(project.id, [])[:3] %}
-            {% if recent_moves %}
-            <div class="drawer-section">
-                <div class="drawer-section-header">
-                    <span class="drawer-section-title">Movimentações</span>
-                </div>
-                <div class="drawer-timeline">
-                    {% for move in recent_moves %}
-                    <div class="drawer-timeline-item">
-                        <div class="drawer-timeline-dot"></div>
-                        <div class="drawer-timeline-content">
-                            <div class="drawer-timeline-route">{{ move.etapa_anterior or '—' }} → {{ move.etapa_nova or '—' }}</div>
-                            <div class="drawer-timeline-meta">{{ format_datetime(move.criado_em) }} · {{ move.usuario_nome or 'Sistema' }}</div>
-                            {% if move.observacao %}<div class="drawer-timeline-obs">{{ move.observacao }}</div>{% endif %}
+                    {# Linha de metadados rápidos #}
+                    <div class="pmodal-meta-row">
+                        <div class="pmodal-meta-card">
+                            <span>Responsavel</span>
+                            <strong>{{ active_stage.responsavel_nome or project.responsavel_nome or '—' }}</strong>
+                        </div>
+                        <div class="pmodal-meta-card {{ 'is-warn' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">
+                            <span>Prazo da etapa</span>
+                            <strong class="{{ 'text-danger' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">
+                                {{ format_date(active_stage.prazo) or '—' }}
+                            </strong>
+                        </div>
+                        <div class="pmodal-meta-card {{ 'is-danger' if project_pendings else '' }}">
+                            <span>Pendencias</span>
+                            <strong class="{{ 'text-danger' if project_pendings else '' }}">{{ project_pendings|length or '—' }}</strong>
+                        </div>
+                        <div class="pmodal-meta-card">
+                            <span>Prox. checklist</span>
+                            <strong title="{{ active_stage.proximo_checklist or '' }}">
+                                {{ (active_stage.proximo_checklist or '—')[:32] }}
+                            </strong>
                         </div>
                     </div>
-                    {% endfor %}
+
+                    {# Ações rápidas #}
+                    <div class="pmodal-actions">
+                        {% if ns_next.proxima %}
+                        <button class="pmodal-btn-advance" type="button"
+                            onclick="openSubModal('project-modal-{{ project.id }}', 'modal-avancar-{{ project.id }}')">
+                            Avancar → {{ ns_next.proxima.etapa_nome }}
+                        </button>
+                        {% endif %}
+                        <button class="pmodal-btn-set-top" type="button"
+                            onclick="setProjectTop({{ project.id }}, this)"
+                            title="Move este projeto para o topo da lista">
+                            ↑ Prioridade maxima
+                        </button>
+                        <div class="pmodal-actions-sec">
+                            {% if ns_next.anteriores %}
+                            <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="button"
+                                onclick="openSubModal('project-modal-{{ project.id }}', 'modal-retornar-{{ project.id }}')">
+                                ← Retornar etapa
+                            </button>
+                            {% endif %}
+                            <button class="pmodal-btn-ghost" type="button"
+                                onclick="openSubModal('project-modal-{{ project.id }}', 'modal-pendencia-{{ project.id }}')">
+                                + Pendencia
+                            </button>
+                            <a class="pmodal-btn-ghost" href="{{ url_for('project_detail', project_id=project.id) }}">
+                                Detalhes completos ↗
+                            </a>
+                        </div>
+                    </div>
+
+                    {# Grid: checklist | pendências + movimentações + pasta #}
+                    <div class="pmodal-grid">
+
+                        {# Coluna esquerda: checklist #}
+                        <div class="pmodal-col">
+                            <div class="pmodal-section">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Checklist</span>
+                                    <span class="pmodal-section-count" id="counter-{{ active_stage.id }}">
+                                        {{ active_stage.checklist_done }}/{{ active_stage.checklist_total }}
+                                    </span>
+                                </div>
+                                {% set pct = ((active_stage.checklist_done / active_stage.checklist_total * 100) | int) if active_stage.checklist_total else 0 %}
+                                <div class="pmodal-progress">
+                                    <div class="pmodal-progress-fill" id="progress-{{ active_stage.id }}" style="width:{{ pct }}%"></div>
+                                </div>
+                                <div class="pmodal-checklist" id="checklist-{{ active_stage.id }}">
+                                    {% for item in matrix_checklists.get(active_stage.id, []) %}
+                                    <label class="pmodal-check-item {{ 'is-done' if item.concluido else '' }}" id="check-row-{{ item.id }}">
+                                        <input type="checkbox" class="pmodal-check-box"
+                                            {{ 'checked' if item.concluido else '' }}
+                                            onchange="toggleCheck(this, {{ item.id }}, {{ active_stage.id }})" />
+                                        <span class="pmodal-check-label" id="check-label-{{ item.id }}">{{ item.titulo }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                                <input type="text" class="pmodal-add-check-input"
+                                    id="add-check-input-{{ active_stage.id }}"
+                                    placeholder="+ Adicionar item..."
+                                    onkeydown="handleAddCheck(event, {{ active_stage.id }})" />
+                            </div>
+                        </div>
+
+                        {# Coluna direita: pendências + movimentações + pasta #}
+                        <div class="pmodal-col">
+
+                            {% if project_pendings %}
+                            <div class="pmodal-section">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Pendencias abertas</span>
+                                    <span class="pmodal-section-count pmodal-section-count--danger">{{ project_pendings|length }}</span>
+                                </div>
+                                <div class="pmodal-pending-list">
+                                    {% for pending in project_pendings %}
+                                    <div class="pmodal-pending-item {{ 'is-late' if is_overdue(pending.prazo, pending.status) else '' }}">
+                                        <div class="pmodal-pending-info">
+                                            <div class="pmodal-pending-desc">{{ pending.descricao }}</div>
+                                            <div class="pmodal-pending-meta">
+                                                {{ pending.origem or 'interna' }} · {{ pending.responsavel_nome or 'Sem resp.' -}}
+                                                {%- if pending.prazo %} · {{ format_date(pending.prazo) }}{% endif %}
+                                            </div>
+                                        </div>
+                                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" style="flex-shrink:0;">
+                                            <input type="hidden" name="action" value="resolve_pending">
+                                            <input type="hidden" name="pendencia_id" value="{{ pending.id }}">
+                                            <input type="hidden" name="next" value="{{ request.full_path }}">
+                                            <button class="pmodal-btn-resolve" type="submit" title="Resolver">✓</button>
+                                        </form>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% set recent_moves = movements_by_project.get(project.id, [])[:3] %}
+                            {% if recent_moves %}
+                            <div class="pmodal-section">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Movimentacoes recentes</span>
+                                </div>
+                                <div class="pmodal-timeline">
+                                    {% for move in recent_moves %}
+                                    <div class="pmodal-timeline-item">
+                                        <div class="pmodal-timeline-dot"></div>
+                                        <div class="pmodal-timeline-content">
+                                            <div class="pmodal-timeline-route">{{ move.etapa_anterior or '—' }} → {{ move.etapa_nova or '—' }}</div>
+                                            <div class="pmodal-timeline-meta">{{ format_datetime(move.criado_em) }} · {{ move.usuario_nome or 'Sistema' }}</div>
+                                            {% if move.observacao %}<div class="pmodal-timeline-obs">{{ move.observacao }}</div>{% endif %}
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if project.caminho_pasta %}
+                            <div class="pmodal-section">
+                                <div class="pmodal-folder-row">
+                                    <code class="pmodal-folder-path" title="{{ project.caminho_pasta }}">{{ project.caminho_pasta }}</code>
+                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--copy" type="button" data-copy="{{ project.caminho_pasta }}">Copiar</button>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                        </div>
+                    </div>
+
                 </div>
             </div>
-            {% endif %}
-
         </div>
     </div>
 
@@ -377,7 +402,7 @@
             <div class="modal-content stage-modal">
                 <div class="stage-modal-header stage-modal-header--advance">
                     <div>
-                        <div class="stage-modal-label">Avançar etapa</div>
+                        <div class="stage-modal-label">Avancar etapa</div>
                         <div class="stage-modal-title">{{ active_stage.etapa_nome }} → {{ ns_next.proxima.etapa_nome }}</div>
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -389,9 +414,9 @@
                     <input type="hidden" name="motivo" value="avanco">
                     <div class="stage-modal-body">
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Responsável</label>
+                            <label class="stage-modal-field-label">Responsavel</label>
                             <select class="form-select form-select-sm" name="responsavel_id">
-                                <option value="">Manter atual ({{ active_stage.responsavel_nome or 'sem responsável' }})</option>
+                                <option value="">Manter atual ({{ active_stage.responsavel_nome or 'sem responsavel' }})</option>
                                 {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
                             </select>
                         </div>
@@ -400,13 +425,13 @@
                             <input type="date" class="form-control form-control-sm" name="prazo">
                         </div>
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Observação <span class="stage-modal-optional">(opcional)</span></label>
-                            <textarea class="form-control form-control-sm" name="observacao" rows="2" placeholder="Alguma nota sobre este avanço?"></textarea>
+                            <label class="stage-modal-field-label">Observacao <span class="stage-modal-optional">(opcional)</span></label>
+                            <textarea class="form-control form-control-sm" name="observacao" rows="2" placeholder="Alguma nota sobre este avanco?"></textarea>
                         </div>
                     </div>
                     <div class="stage-modal-footer">
                         <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--advance">Confirmar avanço →</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--advance">Confirmar avanco →</button>
                     </div>
                 </form>
             </div>
@@ -441,16 +466,16 @@
                             </select>
                         </div>
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Responsável</label>
+                            <label class="stage-modal-field-label">Responsavel</label>
                             <select class="form-select form-select-sm" name="responsavel_id">
                                 <option value="">Manter atual</option>
                                 {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
                             </select>
                         </div>
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label stage-modal-field-label--required">Justificativa <span class="stage-modal-optional">(obrigatória)</span></label>
+                            <label class="stage-modal-field-label stage-modal-field-label--required">Justificativa <span class="stage-modal-optional">(obrigatoria)</span></label>
                             <textarea class="form-control form-control-sm" name="observacao" rows="3" required
-                                placeholder="Ex: Medição retornou — ponto de referência incorreto"></textarea>
+                                placeholder="Ex: Medicao retornou — ponto de referencia incorreto"></textarea>
                         </div>
                     </div>
                     <div class="stage-modal-footer">
@@ -470,7 +495,7 @@
                 <div class="stage-modal-header stage-modal-header--pending">
                     <div>
                         <div class="stage-modal-label">{{ project.nome }}</div>
-                        <div class="stage-modal-title">Nova pendência</div>
+                        <div class="stage-modal-title">Nova pendencia</div>
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
@@ -479,8 +504,8 @@
                     <input type="hidden" name="next" value="{{ request.full_path }}">
                     <div class="stage-modal-body">
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Descrição</label>
-                            <textarea class="form-control form-control-sm" name="descricao" rows="2" required placeholder="Descreva a pendência..."></textarea>
+                            <label class="stage-modal-field-label">Descricao</label>
+                            <textarea class="form-control form-control-sm" name="descricao" rows="2" required placeholder="Descreva a pendencia..."></textarea>
                         </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
                             <div class="stage-modal-field">
@@ -488,9 +513,9 @@
                                 <select class="form-select form-select-sm" name="origem">
                                     <option value="interna">Interna</option>
                                     <option value="cliente">Cliente</option>
-                                    <option value="cartorio">Cartório</option>
+                                    <option value="cartorio">Cartorio</option>
                                     <option value="campo">Campo</option>
-                                    <option value="escritorio">Escritório</option>
+                                    <option value="escritorio">Escritorio</option>
                                 </select>
                             </div>
                             <div class="stage-modal-field">
@@ -499,9 +524,9 @@
                             </div>
                         </div>
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Responsável</label>
+                            <label class="stage-modal-field-label">Responsavel</label>
                             <select class="form-select form-select-sm" name="responsavel_id">
-                                <option value="">Sem responsável</option>
+                                <option value="">Sem responsavel</option>
                                 {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
                             </select>
                         </div>
@@ -509,7 +534,7 @@
                     </div>
                     <div class="stage-modal-footer">
                         <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending">Registrar pendência</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending">Registrar pendencia</button>
                     </div>
                 </form>
             </div>
@@ -517,160 +542,441 @@
     </div>
 
 {% endfor %}
-<style>
-/* ── DRAWER ─────────────────────────────────────── */
-.project-drawer { width: 360px !important; display: flex; flex-direction: column; }
 
-.drawer-header {
-    display: flex; justify-content: space-between; align-items: flex-start;
-    padding: 16px 18px 14px; border-bottom: 1px solid #e5e7eb; gap: 10px;
+<style>
+/* ── DRAG HANDLE ─────────────────────────────────────── */
+.drag-grip {
+    display: inline-block;
+    color: #d1d5db;
+    font-size: 13px;
+    margin-right: 5px;
+    cursor: grab;
+    vertical-align: middle;
+    line-height: 1;
+    transition: color .15s;
+}
+.matrix-project-row:hover .drag-grip { color: #9ca3af; }
+.matrix-project-row.sortable-chosen { background: #f0f7ff !important; }
+.matrix-project-row.sortable-chosen td { background: #f0f7ff !important; }
+.matrix-project-row.sortable-ghost td { opacity: .4; }
+.matrix-project-row.sortable-drag { box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+
+/* ── BOTÃO PRIORIDADE MÁXIMA ─────────────────────────── */
+.pmodal-btn-set-top {
+    padding: 7px 13px;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #374151;
+    cursor: pointer;
+    transition: all .15s;
+    font-family: inherit;
+    white-space: nowrap;
+}
+.pmodal-btn-set-top:hover { background: #fefce8; border-color: #fbbf24; color: #92400e; }
+.pmodal-btn-set-top.is-loading { opacity: .6; pointer-events: none; }
+.pmodal-btn-set-top.is-done { background: #f0fdf4; border-color: #86efac; color: #166534; }
+
+/* ── CÉLULA ATIVA — MELHORIAS ─────────────────────────── */
+.asc-status { display: block; font-size: 10.5px; color: #6b7280; }
+.asc-deadline { display: block; font-size: 10.5px; color: #6b7280; }
+.asc-deadline.asc-late { color: #dc2626; font-weight: 600; }
+
+/* ── MODAL PRINCIPAL DO PROJETO ──────────────────────── */
+.pmodal-dialog {
+    max-width: 960px;
+    width: 96vw;
+    margin: auto;
+}
+
+.pmodal-content {
+    display: flex;
+    flex-direction: column;
+    max-height: 85vh;
+    border: none;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.18);
+}
+
+/* Header */
+.pmodal-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid #e5e7eb;
+    background: #fff;
+    flex-shrink: 0;
+}
+
+.pmodal-header-main { flex: 1; min-width: 0; }
+
+.pmodal-code {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+}
+
+.pmodal-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #111827;
+    margin: 2px 0 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pmodal-sub {
+    font-size: 12px;
+    color: #6b7280;
+    margin: 0;
+}
+
+.pmodal-header-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.pmodal-etapa-badge {
+    text-align: right;
+}
+
+.pmodal-etapa-label {
+    display: block;
+    font-size: 10px;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+}
+
+.pmodal-etapa-name {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    color: #111827;
+}
+
+.pmodal-priority-badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 10.5px;
+    font-weight: 600;
+    border: 1px solid #fcd34d;
+}
+
+/* Body */
+.pmodal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    background: #f9fafb;
+}
+
+/* Meta row */
+.pmodal-meta-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.pmodal-meta-card {
+    padding: 9px 11px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
     background: #fff;
 }
-.drawer-header-info { min-width: 0; }
-.drawer-code { font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .07em; }
-.drawer-title { font-size: 15px; font-weight: 700; margin: 2px 0 3px; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.drawer-sub { font-size: 12px; color: #6b7280; margin: 0; }
 
-.drawer-body {
-    flex: 1; overflow-y: auto; padding: 14px 16px;
-    display: flex; flex-direction: column; gap: 14px;
+.pmodal-meta-card.is-warn { border-color: #fde68a; background: #fffbeb; }
+.pmodal-meta-card.is-danger { border-color: #fca5a5; background: #fef2f2; }
+
+.pmodal-meta-card > span {
+    display: block;
+    font-size: 10px;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-bottom: 3px;
 }
 
-.drawer-stage-row {
-    display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
-    padding: 10px 12px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;
+.pmodal-meta-card > strong {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #111827;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
-.drawer-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .06em; }
-.drawer-stage-name { font-size: 14px; font-weight: 700; color: #111827; margin-top: 2px; }
-.drawer-stage-sub { font-size: 11px; color: #6b7280; margin-top: 2px; }
 
-.drawer-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.drawer-meta-card {
-    padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 7px;
-    background: #fafafa;
+/* Actions */
+.pmodal-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
 }
-.drawer-meta-card--warn { border-color: #fde68a; background: #fffbeb; }
-.drawer-meta-card--danger { border-color: #fca5a5; background: #fef2f2; }
-.drawer-meta-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: .05em; }
-.drawer-meta-value { font-size: 13px; font-weight: 600; color: #111827; margin-top: 2px; }
 
-.drawer-actions { display: flex; flex-direction: column; gap: 6px; }
-.drawer-btn-advance {
-    width: 100%; padding: 9px 14px; background: #2563eb; color: white;
-    border: none; border-radius: 7px; font-size: 13px; font-weight: 600;
-    cursor: pointer; transition: background .15s;
+.pmodal-btn-advance {
+    padding: 8px 16px;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+    white-space: nowrap;
 }
-.drawer-btn-advance:hover { background: #1d4ed8; }
-.drawer-actions-secondary { display: flex; gap: 6px; flex-wrap: wrap; }
-.drawer-btn-ghost {
-    padding: 6px 12px; background: transparent; border: 1px solid #e5e7eb;
-    border-radius: 6px; font-size: 12px; color: #374151; cursor: pointer;
-    text-decoration: none; transition: background .12s;
+.pmodal-btn-advance:hover { background: #1d4ed8; }
+
+.pmodal-actions-sec {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
 }
-.drawer-btn-ghost:hover { background: #f3f4f6; color: #111827; }
-.drawer-btn-ghost.drawer-btn-danger { color: #dc2626; border-color: #fca5a5; }
-.drawer-btn-ghost.drawer-btn-danger:hover { background: #fef2f2; }
+
+.pmodal-btn-ghost {
+    padding: 6px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 5px;
+    background: #fff;
+    color: #374151;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background .12s;
+    white-space: nowrap;
+    font-family: inherit;
+}
+.pmodal-btn-ghost:hover { background: #f3f4f6; color: #111827; }
+.pmodal-btn-ghost--danger { color: #dc2626; border-color: #fca5a5; }
+.pmodal-btn-ghost--danger:hover { background: #fef2f2; color: #b91c1c; }
+
+/* Grid 2 colunas */
+.pmodal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+.pmodal-col { display: flex; flex-direction: column; gap: 10px; }
 
 /* Sections */
-.drawer-section { display: flex; flex-direction: column; gap: 7px; }
-.drawer-section-header { display: flex; justify-content: space-between; align-items: center; }
-.drawer-section-title { font-size: 11.5px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: .05em; }
-.drawer-checklist-counter { font-size: 11px; color: #6b7280; font-weight: 600; }
+.pmodal-section {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 11px 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.pmodal-section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.pmodal-section-title {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #374151;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+}
+
+.pmodal-section-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: #9ca3af;
+}
+
+.pmodal-section-count--danger { color: #dc2626; }
 
 /* Progress bar */
-.drawer-progress-bar { height: 4px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
-.drawer-progress-fill { height: 100%; background: #22c55e; border-radius: 999px; transition: width .3s ease; }
+.pmodal-progress {
+    height: 4px;
+    background: #e5e7eb;
+    border-radius: 999px;
+    overflow: hidden;
+}
 
-/* Checklist items */
-.drawer-checklist { display: flex; flex-direction: column; gap: 1px; }
-.drawer-check-item {
-    display: flex; align-items: center; gap: 9px;
-    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+.pmodal-progress-fill {
+    height: 100%;
+    background: #22c55e;
+    border-radius: 999px;
+    transition: width .3s ease;
+}
+
+/* Checklist */
+.pmodal-checklist {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.pmodal-check-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 6px;
+    border-radius: 5px;
+    cursor: pointer;
     transition: background .1s;
 }
-.drawer-check-item:hover { background: #f9fafb; }
-.drawer-check-item.is-done .drawer-check-label { color: #9ca3af; text-decoration: line-through; }
-.drawer-check-box { width: 15px; height: 15px; accent-color: #2563eb; cursor: pointer; flex-shrink: 0; }
-.drawer-check-label { font-size: 13px; color: #374151; line-height: 1.3; }
+.pmodal-check-item:hover { background: #f9fafb; }
+.pmodal-check-item.is-done .pmodal-check-label { color: #9ca3af; text-decoration: line-through; }
 
-/* Add check input — Trello-style */
-.drawer-add-check { margin-top: 4px; }
-.drawer-add-check-input {
-    width: 100%; padding: 7px 10px; border: 1.5px dashed #d1d5db;
-    border-radius: 6px; font-size: 13px; color: #374151; background: transparent;
-    outline: none; transition: border .15s;
+.pmodal-check-box { width: 14px; height: 14px; accent-color: #2563eb; cursor: pointer; flex-shrink: 0; }
+.pmodal-check-label { font-size: 12.5px; color: #374151; line-height: 1.3; }
+
+.pmodal-add-check-input {
+    width: 100%;
+    padding: 6px 9px;
+    border: 1.5px dashed #d1d5db;
+    border-radius: 5px;
+    font-size: 12px;
+    color: #374151;
+    background: transparent;
+    outline: none;
+    font-family: inherit;
+    transition: border-color .15s;
 }
-.drawer-add-check-input:focus { border-color: #2563eb; background: #f0f7ff; }
-.drawer-add-check-input::placeholder { color: #9ca3af; }
+.pmodal-add-check-input:focus { border-color: #2563eb; background: #f0f7ff; }
+.pmodal-add-check-input::placeholder { color: #9ca3af; }
 
 /* Pending */
-.drawer-pending-list { display: flex; flex-direction: column; gap: 5px; }
-.drawer-pending-item {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    padding: 8px 10px; background: #fafafa; border: 1px solid #e5e7eb;
-    border-radius: 7px;
-}
-.drawer-pending-item.is-late { background: #fef2f2; border-color: #fca5a5; }
-.drawer-pending-desc { font-size: 12.5px; font-weight: 600; color: #374151; }
-.drawer-pending-meta { font-size: 11px; color: #9ca3af; margin-top: 1px; }
-.drawer-btn-resolve {
-    width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid #22c55e;
-    background: transparent; color: #22c55e; font-size: 14px; cursor: pointer; line-height: 1;
-    transition: all .15s; flex-shrink: 0;
-}
-.drawer-btn-resolve:hover { background: #22c55e; color: white; }
+.pmodal-pending-list { display: flex; flex-direction: column; gap: 5px; }
 
-/* Folder */
-.drawer-folder-row { display: flex; gap: 8px; align-items: center; }
-.drawer-folder-path {
-    flex: 1; padding: 6px 9px; border: 1px solid #e5e7eb; border-radius: 6px;
-    background: #f5f6f8; font-size: 11px; color: #374151;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.pmodal-pending-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 7px 9px;
+    background: #fafafa;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
 }
+
+.pmodal-pending-item.is-late { background: #fef2f2; border-color: #fca5a5; }
+.pmodal-pending-desc { font-size: 12px; font-weight: 600; color: #374151; }
+.pmodal-pending-meta { font-size: 10.5px; color: #9ca3af; margin-top: 1px; }
+
+.pmodal-btn-resolve {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    border: 1.5px solid #22c55e;
+    background: transparent;
+    color: #22c55e;
+    font-size: 13px;
+    cursor: pointer;
+    line-height: 1;
+    transition: all .15s;
+    flex-shrink: 0;
+}
+.pmodal-btn-resolve:hover { background: #22c55e; color: #fff; }
 
 /* Timeline */
-.drawer-timeline { display: flex; flex-direction: column; gap: 0; }
-.drawer-timeline-item { display: flex; gap: 10px; padding: 6px 0; }
-.drawer-timeline-dot {
-    width: 8px; height: 8px; border-radius: 50%; background: #d1d5db;
-    margin-top: 4px; flex-shrink: 0;
+.pmodal-timeline { display: flex; flex-direction: column; gap: 0; }
+.pmodal-timeline-item { display: flex; gap: 9px; padding: 5px 0; }
+.pmodal-timeline-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #d1d5db;
+    margin-top: 4px;
+    flex-shrink: 0;
 }
-.drawer-timeline-route { font-size: 12px; font-weight: 600; color: #374151; }
-.drawer-timeline-meta { font-size: 11px; color: #9ca3af; }
-.drawer-timeline-obs { font-size: 11px; color: #6b7280; margin-top: 1px; font-style: italic; }
+.pmodal-timeline-route { font-size: 12px; font-weight: 600; color: #374151; }
+.pmodal-timeline-meta { font-size: 10.5px; color: #9ca3af; }
+.pmodal-timeline-obs { font-size: 11px; color: #6b7280; margin-top: 1px; font-style: italic; }
 
-/* ── MODAIS DE ETAPA ─────────────────────────────── */
+/* Folder */
+.pmodal-folder-row { display: flex; gap: 7px; align-items: center; }
+.pmodal-folder-path {
+    flex: 1;
+    padding: 5px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 5px;
+    background: #f5f6f8;
+    font-size: 11px;
+    color: #374151;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── MODAIS DE ETAPA (avancar/retornar/pendencia) ──── */
 .stage-modal { border: none; border-radius: 10px; overflow: hidden; }
 
 .stage-modal-header {
-    display: flex; justify-content: space-between; align-items: flex-start;
-    padding: 16px 18px; gap: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 14px 16px;
+    gap: 12px;
 }
-.stage-modal-header--advance { background: #1e40af; color: white; }
-.stage-modal-header--return  { background: #dc2626; color: white; }
-.stage-modal-header--pending { background: #374151; color: white; }
+.stage-modal-header--advance { background: #1e40af; color: #fff; }
+.stage-modal-header--return  { background: #dc2626; color: #fff; }
+.stage-modal-header--pending { background: #374151; color: #fff; }
 
-.stage-modal-label { font-size: 10.5px; opacity: .75; text-transform: uppercase; letter-spacing: .07em; }
-.stage-modal-title { font-size: 15px; font-weight: 700; margin-top: 3px; }
+.stage-modal-label { font-size: 10px; opacity: .75; text-transform: uppercase; letter-spacing: .07em; }
+.stage-modal-title { font-size: 14px; font-weight: 700; margin-top: 3px; }
 
-.stage-modal-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+.stage-modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 11px; }
 .stage-modal-field { display: flex; flex-direction: column; gap: 4px; }
 .stage-modal-field-label { font-size: 12px; font-weight: 600; color: #374151; }
 .stage-modal-field-label--required { color: #dc2626; }
 .stage-modal-optional { font-weight: 400; color: #9ca3af; }
 
 .stage-modal-footer {
-    display: flex; justify-content: flex-end; gap: 8px;
-    padding: 12px 18px; border-top: 1px solid #e5e7eb; background: #f9fafb;
+    display: flex;
+    justify-content: flex-end;
+    gap: 7px;
+    padding: 10px 16px;
+    border-top: 1px solid #e5e7eb;
+    background: #f9fafb;
 }
+
 .stage-modal-cancel {
-    padding: 7px 14px; border: 1px solid #e5e7eb; border-radius: 6px;
-    background: white; color: #374151; font-size: 13px; cursor: pointer;
+    padding: 6px 13px;
+    border: 1px solid #e5e7eb;
+    border-radius: 5px;
+    background: #fff;
+    color: #374151;
+    font-size: 12.5px;
+    cursor: pointer;
+    font-family: inherit;
 }
 .stage-modal-cancel:hover { background: #f3f4f6; }
+
 .stage-modal-confirm {
-    padding: 7px 16px; border: none; border-radius: 6px;
-    font-size: 13px; font-weight: 600; cursor: pointer; color: white;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 5px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    color: #fff;
+    font-family: inherit;
 }
 .stage-modal-confirm--advance { background: #2563eb; }
 .stage-modal-confirm--advance:hover { background: #1d4ed8; }
@@ -681,7 +987,22 @@
 </style>
 
 <script>
-/* Toggle checklist via API — sem reload */
+/* Abre sub-modal fechando o modal principal antes */
+function openSubModal(mainId, subId) {
+    const mainEl = document.getElementById(mainId);
+    const subEl = document.getElementById(subId);
+    if (!mainEl || !subEl) return;
+    const main = bootstrap.Modal.getInstance(mainEl);
+    const sub = new bootstrap.Modal(subEl);
+    if (main) {
+        mainEl.addEventListener('hidden.bs.modal', function() { sub.show(); }, { once: true });
+        main.hide();
+    } else {
+        sub.show();
+    }
+}
+
+/* Toggle checklist via API */
 function toggleCheck(cb, itemId, stageId) {
     fetch(`/api/checklist/${itemId}/toggle`, { method: 'POST' })
     .then(r => r.json())
@@ -690,8 +1011,6 @@ function toggleCheck(cb, itemId, stageId) {
         const row = document.getElementById(`check-row-${itemId}`);
         if (data.concluido) row.classList.add('is-done');
         else row.classList.remove('is-done');
-
-        // Atualiza contador e barra
         const counter = document.getElementById(`counter-${stageId}`);
         if (counter) counter.textContent = `${data.done}/${data.total}`;
         const bar = document.getElementById(`progress-${stageId}`);
@@ -715,24 +1034,89 @@ function handleAddCheck(e, stageId) {
     .then(data => {
         if (!data.ok) return;
         input.value = '';
-
-        // Injeta item no DOM
         const list = document.getElementById(`checklist-${stageId}`);
         const label = document.createElement('label');
-        label.className = 'drawer-check-item';
+        label.className = 'pmodal-check-item';
         label.id = `check-row-${data.id}`;
         label.innerHTML = `
-            <input type="checkbox" class="drawer-check-box"
+            <input type="checkbox" class="pmodal-check-box"
                 onchange="toggleCheck(this, ${data.id}, ${stageId})" />
-            <span class="drawer-check-label" id="check-label-${data.id}">${data.titulo}</span>`;
+            <span class="pmodal-check-label" id="check-label-${data.id}">${data.titulo}</span>`;
         list.appendChild(label);
-
-        // Atualiza contador e barra
         const counter = document.getElementById(`counter-${stageId}`);
         if (counter) counter.textContent = `${data.done}/${data.total}`;
         const bar = document.getElementById(`progress-${stageId}`);
         if (bar) bar.style.width = data.progress + '%';
     });
 }
+
+/* ── DRAG-AND-DROP: reordenação de prioridade ───────── */
+let _reorderTimer = null;
+
+function initMatrixSort() {
+    const tbody = document.querySelector('.ops-matrix tbody');
+    if (!tbody || typeof Sortable === 'undefined') return;
+
+    Sortable.create(tbody, {
+        handle: '.drag-handle',   // arrastar pela coluna do nome do projeto
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        dragClass: 'sortable-drag',
+        onEnd: function() {
+            /* Debounce: espera 400ms após parar de mover antes de salvar */
+            clearTimeout(_reorderTimer);
+            _reorderTimer = setTimeout(saveMatrixOrder, 400);
+        }
+    });
+}
+
+function saveMatrixOrder() {
+    const rows = document.querySelectorAll('.ops-matrix tbody tr[data-project-id]');
+    const ids = Array.from(rows).map(r => parseInt(r.dataset.projectId, 10));
+    fetch('/api/projects/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.ok) console.warn('Erro ao salvar ordem:', data.error);
+    });
+}
+
+/* ── BOTÃO: mover projeto para o topo ───────────────── */
+function setProjectTop(projectId, btn) {
+    btn.classList.add('is-loading');
+    btn.textContent = 'Subindo...';
+    fetch(`/api/project/${projectId}/set-top`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            btn.classList.remove('is-loading');
+            btn.classList.add('is-done');
+            btn.textContent = '↑ Prioridade maxima definida';
+            /* Recarrega a matriz após fechar o modal */
+            const modalEl = btn.closest('.modal');
+            if (modalEl) {
+                modalEl.addEventListener('hidden.bs.modal', function() {
+                    window.location.reload();
+                }, { once: true });
+            }
+        } else {
+            btn.classList.remove('is-loading');
+            btn.textContent = '↑ Prioridade maxima';
+        }
+    })
+    .catch(() => {
+        btn.classList.remove('is-loading');
+        btn.textContent = '↑ Prioridade maxima';
+    });
+}
+
+/* Inicializar Sortable quando a página carregar */
+document.addEventListener('DOMContentLoaded', initMatrixSort);
 </script>
+
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.4/Sortable.min.js"></script>
 {% endblock %}
