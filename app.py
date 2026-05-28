@@ -38,6 +38,42 @@ from documental import (
     validate_email,
     validate_uuid_like,
 )
+from process_types import PROCESS_TYPES, process_type_name, resolve_process_type_key
+from report_helpers import (
+    calculate_stage_metrics_v2,
+    calculate_process_type_metrics,
+    calculate_responsible_metrics_v2,
+    calculate_city_metrics_v2,
+    calculate_external_actor_metrics,
+    calculate_stopped_projects_v2,
+    calculate_checklist_pending_report,
+    build_bottleneck_suggestions_v2,
+    build_operational_summary_v2,
+    THRESHOLDS as REPORT_THRESHOLDS_V2,
+)
+from process_stage_templates import (
+    APPLICABILITY_CONDITIONAL,
+    APPLICABILITY_NOT_APPLICABLE,
+    APPLICABILITY_OPTIONAL,
+    APPLICABILITY_REQUIRED,
+    PROCESS_STAGE_TEMPLATES,
+    get_applicable_stages_for_process as get_config_applicable_stages_for_process,
+    get_stage_template_for_process as get_config_stage_template_for_process,
+)
+from process_checklist_templates import (
+    CHECKLIST_STATUS_DONE,
+    CHECKLIST_STATUS_IN_PROGRESS,
+    CHECKLIST_STATUS_NOT_APPLICABLE,
+    CHECKLIST_STATUS_NOT_STARTED,
+    CRITICALITY_CRITICAL,
+    PROCESS_CHECKLIST_TEMPLATES,
+    REQUIREMENT_CONDITIONAL,
+    REQUIREMENT_OPTIONAL,
+    REQUIREMENT_RECOMMENDED,
+    REQUIREMENT_REQUIRED,
+    get_checklist_template_for_process as get_config_checklist_template_for_process,
+    get_checklist_template_for_process_stage as get_config_checklist_template_for_process_stage,
+)
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +88,15 @@ STATUS_META = {
     "atrasado": {"label": "Atrasado", "color": "danger", "tone": "red"},
     "aguardando externo": {"label": "Aguardando externo", "color": "purple", "tone": "purple"},
     "retrabalho": {"label": "Retrabalho", "color": "purple", "tone": "purple"},
+    "nao aplicavel": {"label": "Nao aplicavel", "color": "secondary", "tone": "muted"},
     "cancelado": {"label": "Cancelado", "color": "dark", "tone": "dark"},
+}
+
+APPLICABILITY_META = {
+    APPLICABILITY_REQUIRED: {"label": "Obrigatoria", "color": "primary"},
+    APPLICABILITY_OPTIONAL: {"label": "Opcional", "color": "secondary"},
+    APPLICABILITY_CONDITIONAL: {"label": "Condicional", "color": "warning"},
+    APPLICABILITY_NOT_APPLICABLE: {"label": "Nao aplicavel", "color": "secondary"},
 }
 
 ROLE_LABELS = {
@@ -63,6 +107,34 @@ ROLE_LABELS = {
 }
 
 PRIORITY_WEIGHT = {"Alta": 0, "Media": 1, "Baixa": 2, "": 3, None: 3}
+
+REPORT_THRESHOLDS = {
+    "attention_days": 5,
+    "bottleneck_days": 10,
+    "attention_active_count": 5,
+    "bottleneck_active_count": 10,
+    "stopped_days": 7,
+    "responsible_attention_active": 5,
+    "responsible_overload_active": 12,
+}
+
+REPORT_STAGE_DEFAULT_DAYS = {
+    "orcamento": 3,
+    "documentos": 4,
+    "analise": 3,
+    "preparacao": 3,
+    "medicao": 2,
+    "processamento": 10,
+    "escritorio": 9,
+    "conferencia": 4,
+    "planta": 6,
+    "documentacao": 5,
+    "assinaturas": 4,
+    "cartorio": 14,
+    "pendencia": 7,
+    "finalizado": 1,
+    "arquivado": 1,
+}
 
 DEFAULT_STAGES = [
     {
@@ -144,6 +216,54 @@ STAGE_ALIASES = {
     "medicao": "medicao",
     "finalizacao": "finalizado",
     "finalizado": "finalizado",
+}
+
+PROCESS_STAGE_TO_LEGACY_STAGE = {
+    "ORCAMENTO": "orcamento",
+    "DOCUMENTOS": "documentos",
+    "ANALISE": "analise",
+    "PREPARACAO": "analise",
+    "MEDICAO": "medicao",
+    "PROCESSAMENTO": "processamento",
+    "ESCRITORIO": "escritorio",
+    "CONFERENCIA": "escritorio",
+    "ASSINATURAS": "assinaturas",
+    "ORGAO_EXTERNO": "cartorio",
+    "PENDENCIAS": "pendencia",
+    "ENTREGA": "finalizado",
+    "FINALIZADO": "finalizado",
+}
+
+PROCESS_CHECKLIST_STAGE_ORDER = {
+    "ORCAMENTO": 1,
+    "DOCUMENTOS": 2,
+    "ANALISE": 3,
+    "PREPARACAO": 4,
+    "MEDICAO": 5,
+    "PROCESSAMENTO": 6,
+    "ESCRITORIO": 7,
+    "CONFERENCIA": 8,
+    "ASSINATURAS": 9,
+    "ORGAO_EXTERNO": 10,
+    "PENDENCIAS": 11,
+    "ENTREGA": 12,
+    "FINALIZADO": 13,
+}
+
+PROCESS_CHECKLIST_STAGE_NAMES = {
+    "ORCAMENTO": "Orcamento",
+    "DOCUMENTOS": "Documentos",
+    "ANALISE": "Analise / Viabilidade",
+    "PREPARACAO": "Preparacao",
+    "MEDICAO": "Medicao / Campo",
+    "PROCESSAMENTO": "Processamento",
+    "ESCRITORIO": "Escritorio / Pecas tecnicas",
+    "CONFERENCIA": "Conferencia",
+    "ASSINATURAS": "Assinaturas / Anuencias",
+    "ORGAO_EXTERNO": "Orgao externo",
+    "PENDENCIAS": "Pendencias / Exigencias",
+    "ENTREGA": "Entrega / Encerramento",
+    "FINALIZADO": "Finalizado",
 }
 
 FUTURE_AUTOMATIONS = [
@@ -477,6 +597,68 @@ def init_db():
             ativa INTEGER NOT NULL DEFAULT 1
         );
 
+        CREATE TABLE IF NOT EXISTS tipos_processo (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chave TEXT NOT NULL UNIQUE,
+            nome TEXT NOT NULL,
+            descricao TEXT,
+            categoria TEXT,
+            usa_campo TEXT,
+            usa_cartorio TEXT,
+            usa_orgao_externo TEXT,
+            possui_documentos_especificos INTEGER NOT NULL DEFAULT 0,
+            ativo INTEGER NOT NULL DEFAULT 1,
+            ordem INTEGER NOT NULL DEFAULT 999,
+            criado_em TEXT,
+            atualizado_em TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS process_stage_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            process_type_key TEXT NOT NULL,
+            stage_key TEXT NOT NULL,
+            stage_name TEXT NOT NULL,
+            stage_order INTEGER NOT NULL,
+            applicability TEXT NOT NULL,
+            description TEXT,
+            default_responsible_role TEXT,
+            default_deadline_days INTEGER,
+            can_skip INTEGER NOT NULL DEFAULT 0,
+            blocks_completion INTEGER NOT NULL DEFAULT 0,
+            show_in_matrix INTEGER NOT NULL DEFAULT 1,
+            show_in_project INTEGER NOT NULL DEFAULT 1,
+            external_actor_type TEXT,
+            notes TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE(process_type_key, stage_key),
+            FOREIGN KEY(process_type_key) REFERENCES tipos_processo(chave)
+        );
+
+        CREATE TABLE IF NOT EXISTS process_checklist_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            process_type_key TEXT NOT NULL,
+            stage_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            requirement_level TEXT NOT NULL,
+            criticality TEXT NOT NULL,
+            default_responsible_role TEXT,
+            blocks_stage_completion INTEGER NOT NULL DEFAULT 0,
+            blocks_process_completion INTEGER NOT NULL DEFAULT 0,
+            requires_attachment INTEGER NOT NULL DEFAULT 0,
+            allows_observation INTEGER NOT NULL DEFAULT 1,
+            condition_text TEXT,
+            help_text TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE(process_type_key, stage_key, title),
+            FOREIGN KEY(process_type_key) REFERENCES tipos_processo(chave)
+        );
+
         CREATE TABLE IF NOT EXISTS projetos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             codigo TEXT NOT NULL,
@@ -505,6 +687,11 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             projeto_id INTEGER NOT NULL,
             etapa_modelo_id INTEGER NOT NULL,
+            process_type_key TEXT,
+            stage_key TEXT,
+            stage_name TEXT,
+            stage_order INTEGER,
+            applicability TEXT,
             status TEXT NOT NULL,
             responsavel_id INTEGER,
             data_inicio TEXT,
@@ -512,6 +699,15 @@ def init_db():
             prazo TEXT,
             progresso INTEGER DEFAULT 0,
             observacoes TEXT,
+            workflow_active INTEGER NOT NULL DEFAULT 1,
+            can_skip INTEGER NOT NULL DEFAULT 0,
+            blocks_completion INTEGER NOT NULL DEFAULT 0,
+            show_in_matrix INTEGER NOT NULL DEFAULT 1,
+            show_in_project INTEGER NOT NULL DEFAULT 1,
+            external_actor_type TEXT,
+            template_stage_id INTEGER,
+            stage_description TEXT,
+            model_notes TEXT,
             FOREIGN KEY(projeto_id) REFERENCES projetos(id),
             FOREIGN KEY(etapa_modelo_id) REFERENCES etapas_modelo(id),
             FOREIGN KEY(responsavel_id) REFERENCES usuarios(id)
@@ -542,6 +738,44 @@ def init_db():
             concluido_em TEXT,
             FOREIGN KEY(projeto_etapa_id) REFERENCES projeto_etapas(id),
             FOREIGN KEY(concluido_por) REFERENCES usuarios(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS project_checklist_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            project_stage_id INTEGER,
+            template_id INTEGER,
+            process_type_key TEXT NOT NULL,
+            stage_key TEXT NOT NULL,
+            stage_name TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'NAO_INICIADO',
+            requirement_level TEXT NOT NULL,
+            criticality TEXT NOT NULL,
+            responsible_id INTEGER,
+            responsible_name TEXT,
+            due_date TEXT,
+            completed_at TEXT,
+            completed_by INTEGER,
+            observation TEXT,
+            attachment_path TEXT,
+            blocks_stage_completion INTEGER NOT NULL DEFAULT 0,
+            blocks_process_completion INTEGER NOT NULL DEFAULT 0,
+            requires_attachment INTEGER NOT NULL DEFAULT 0,
+            allows_observation INTEGER NOT NULL DEFAULT 1,
+            condition_text TEXT,
+            help_text TEXT,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE(project_id, process_type_key, stage_key, title),
+            FOREIGN KEY(project_id) REFERENCES projetos(id),
+            FOREIGN KEY(project_stage_id) REFERENCES projeto_etapas(id),
+            FOREIGN KEY(template_id) REFERENCES process_checklist_templates(id),
+            FOREIGN KEY(responsible_id) REFERENCES usuarios(id),
+            FOREIGN KEY(completed_by) REFERENCES usuarios(id)
         );
 
         CREATE TABLE IF NOT EXISTS eventos_historico (
@@ -639,6 +873,23 @@ def init_db():
             FOREIGN KEY(responsavel_id) REFERENCES usuarios(id),
             FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
         );
+
+        CREATE TABLE IF NOT EXISTS project_stage_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            stage_id INTEGER,
+            stage_key TEXT,
+            stage_name TEXT NOT NULL,
+            entered_at TEXT NOT NULL,
+            exited_at TEXT,
+            responsible_id INTEGER,
+            responsible_name TEXT,
+            reason TEXT,
+            created_at TEXT,
+            FOREIGN KEY(project_id) REFERENCES projetos(id),
+            FOREIGN KEY(stage_id) REFERENCES projeto_etapas(id),
+            FOREIGN KEY(responsible_id) REFERENCES usuarios(id)
+        );
         """
     )
 
@@ -647,6 +898,7 @@ def init_db():
     add_column_if_missing(db, "projetos", "etapa_atual_id", "INTEGER")
     add_column_if_missing(db, "projetos", "observacoes", "TEXT")
     add_column_if_missing(db, "projetos", "atualizado_em", "TEXT")
+    add_column_if_missing(db, "projetos", "tipo_servico_legado", "TEXT")
     add_column_if_missing(db, "clientes", "tipo_pessoa", "TEXT DEFAULT 'fisica'")
     add_column_if_missing(db, "clientes", "tipo_cliente", "TEXT DEFAULT 'PESSOA_FISICA'")
     add_column_if_missing(db, "clientes", "nome_exibicao", "TEXT")
@@ -674,14 +926,37 @@ def init_db():
     add_column_if_missing(db, "projetos", "ordem_prioridade", "INTEGER")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "atraso_origem", "TEXT")
+    add_column_if_missing(db, "projeto_etapas", "process_type_key", "TEXT")
+    add_column_if_missing(db, "projeto_etapas", "stage_key", "TEXT")
+    add_column_if_missing(db, "projeto_etapas", "stage_name", "TEXT")
+    add_column_if_missing(db, "projeto_etapas", "stage_order", "INTEGER")
+    add_column_if_missing(db, "projeto_etapas", "applicability", "TEXT")
+    add_column_if_missing(db, "projeto_etapas", "workflow_active", "INTEGER NOT NULL DEFAULT 1")
+    add_column_if_missing(db, "projeto_etapas", "can_skip", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(db, "projeto_etapas", "blocks_completion", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(db, "projeto_etapas", "show_in_matrix", "INTEGER NOT NULL DEFAULT 1")
+    add_column_if_missing(db, "projeto_etapas", "show_in_project", "INTEGER NOT NULL DEFAULT 1")
+    add_column_if_missing(db, "projeto_etapas", "external_actor_type", "TEXT")
+    add_column_if_missing(db, "projeto_etapas", "template_stage_id", "INTEGER")
+    add_column_if_missing(db, "projeto_etapas", "stage_description", "TEXT")
+    add_column_if_missing(db, "projeto_etapas", "model_notes", "TEXT")
     add_column_if_missing(db, "tarefas", "data_inicio", "TEXT")
     add_column_if_missing(db, "tarefas", "concluido_em", "TEXT")
     add_column_if_missing(db, "tarefas", "comentarios", "TEXT")
+    add_column_if_missing(db, "project_stage_history", "stage_key", "TEXT")
+    add_column_if_missing(db, "project_stage_history", "responsible_name", "TEXT")
+    add_column_if_missing(db, "project_stage_history", "reason", "TEXT")
+    seed_process_types(db)
+    seed_process_stage_templates(db)
+    seed_process_checklist_templates(db)
     seed_initial_data(db)
     seed_document_requirements(db)
+    normalize_legacy_project_process_types(db)
     migrate_legacy_clients(db)
     normalize_stage_models(db)
     ensure_project_structure(db)
+    ensure_project_checklists(db)
+    ensure_project_stage_history(db)
     initialize_project_order(db)
     db.commit()
     db.close()
@@ -701,6 +976,186 @@ def seed_document_requirements(db):
                 """,
                 (tipo_documento, campo, origem, label, mensagem),
             )
+
+
+def seed_process_types(db):
+    now = datetime.now().isoformat(timespec="seconds")
+    for item in PROCESS_TYPES:
+        existing = first_row(db, "SELECT id FROM tipos_processo WHERE chave = ?", (item["key"],))
+        values = (
+            item["key"],
+            item["nome"],
+            item["descricao"],
+            item["categoria"],
+            item["usa_campo"],
+            item["usa_cartorio"],
+            item["usa_orgao_externo"],
+            1 if item["possui_documentos_especificos"] else 0,
+            1 if item["ativo"] else 0,
+            item["ordem"],
+            now,
+        )
+        if existing:
+            db.execute(
+                """
+                UPDATE tipos_processo
+                SET nome = ?, descricao = ?, categoria = ?, usa_campo = ?, usa_cartorio = ?,
+                    usa_orgao_externo = ?, possui_documentos_especificos = ?, ativo = ?, ordem = ?, atualizado_em = ?
+                WHERE chave = ?
+                """,
+                values[1:] + (item["key"],),
+            )
+        else:
+            db.execute(
+                """
+                INSERT INTO tipos_processo
+                    (chave, nome, descricao, categoria, usa_campo, usa_cartorio, usa_orgao_externo,
+                     possui_documentos_especificos, ativo, ordem, criado_em, atualizado_em)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values + (now,),
+            )
+
+
+def seed_process_stage_templates(db):
+    now = datetime.now().isoformat(timespec="seconds")
+    for process_type_key, stage_templates in PROCESS_STAGE_TEMPLATES.items():
+        for template in stage_templates:
+            existing = first_row(
+                db,
+                """
+                SELECT id
+                FROM process_stage_templates
+                WHERE process_type_key = ? AND stage_key = ?
+                """,
+                (process_type_key, template["stage_key"]),
+            )
+            values = (
+                process_type_key,
+                template["stage_key"],
+                template["stage_name"],
+                template["stage_order"],
+                template["applicability"],
+                template["description"],
+                template["default_responsible_role"],
+                template["default_deadline_days"],
+                1 if template["can_skip"] else 0,
+                1 if template["blocks_completion"] else 0,
+                1 if template["show_in_matrix"] else 0,
+                1 if template["show_in_project"] else 0,
+                template["external_actor_type"],
+                template["notes"],
+                1 if template["active"] else 0,
+                now,
+            )
+            if existing:
+                db.execute(
+                    """
+                    UPDATE process_stage_templates
+                    SET stage_name = ?, stage_order = ?, applicability = ?, description = ?,
+                        default_responsible_role = ?, default_deadline_days = ?, can_skip = ?,
+                        blocks_completion = ?, show_in_matrix = ?, show_in_project = ?,
+                        external_actor_type = ?, notes = ?, active = ?, updated_at = ?
+                    WHERE process_type_key = ? AND stage_key = ?
+                    """,
+                    values[2:] + (process_type_key, template["stage_key"]),
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT INTO process_stage_templates
+                        (process_type_key, stage_key, stage_name, stage_order, applicability, description,
+                         default_responsible_role, default_deadline_days, can_skip, blocks_completion,
+                         show_in_matrix, show_in_project, external_actor_type, notes, active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values + (now,),
+                )
+
+
+def seed_process_checklist_templates(db):
+    now = datetime.now().isoformat(timespec="seconds")
+    for process_type_key, checklist_templates in PROCESS_CHECKLIST_TEMPLATES.items():
+        for template in checklist_templates:
+            existing = first_row(
+                db,
+                """
+                SELECT id
+                FROM process_checklist_templates
+                WHERE process_type_key = ? AND stage_key = ? AND title = ?
+                """,
+                (process_type_key, template["stage_key"], template["title"]),
+            )
+            values = (
+                process_type_key,
+                template["stage_key"],
+                template["title"],
+                template["description"],
+                template["order_index"],
+                template["requirement_level"],
+                template["criticality"],
+                template["default_responsible_role"],
+                1 if template["blocks_stage_completion"] else 0,
+                1 if template["blocks_process_completion"] else 0,
+                1 if template["requires_attachment"] else 0,
+                1 if template["allows_observation"] else 0,
+                template["condition_text"],
+                template["help_text"],
+                1 if template["active"] else 0,
+                now,
+            )
+            if existing:
+                db.execute(
+                    """
+                    UPDATE process_checklist_templates
+                    SET description = ?, order_index = ?, requirement_level = ?, criticality = ?,
+                        default_responsible_role = ?, blocks_stage_completion = ?, blocks_process_completion = ?,
+                        requires_attachment = ?, allows_observation = ?, condition_text = ?, help_text = ?,
+                        active = ?, updated_at = ?
+                    WHERE process_type_key = ? AND stage_key = ? AND title = ?
+                    """,
+                    values[3:] + (process_type_key, template["stage_key"], template["title"]),
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT INTO process_checklist_templates
+                        (process_type_key, stage_key, title, description, order_index, requirement_level,
+                         criticality, default_responsible_role, blocks_stage_completion, blocks_process_completion,
+                         requires_attachment, allows_observation, condition_text, help_text, active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values + (now,),
+                )
+
+
+def normalize_legacy_project_process_types(db):
+    rows = db.execute("SELECT id, tipo_servico, tipo_servico_legado FROM projetos").fetchall()
+    for row in rows:
+        current = (row["tipo_servico"] or "").strip()
+        legacy_text = (row["tipo_servico_legado"] or "").strip()
+        if not current:
+            db.execute(
+                "UPDATE projetos SET tipo_servico = ?, tipo_servico_legado = COALESCE(tipo_servico_legado, ?) WHERE id = ?",
+                ("OUTRO", "", row["id"]),
+            )
+            continue
+        if current == "OUTRO" and legacy_text:
+            resolved_legacy = resolve_process_type_key(legacy_text)
+            if resolved_legacy != "OUTRO":
+                db.execute(
+                    "UPDATE projetos SET tipo_servico = ? WHERE id = ?",
+                    (resolved_legacy, row["id"]),
+                )
+            continue
+        resolved = resolve_process_type_key(current)
+        if current == resolved:
+            continue
+        legacy = legacy_text or current
+        db.execute(
+            "UPDATE projetos SET tipo_servico = ?, tipo_servico_legado = ? WHERE id = ?",
+            (resolved, legacy, row["id"]),
+        )
 
 
 def migrate_legacy_clients(db):
@@ -889,7 +1344,7 @@ def seed_initial_data(db):
                     cidade,
                     uf,
                     registries.get(cartorio),
-                    tipo,
+                    normalize_project_process_type(tipo),
                     prioridade,
                     status,
                     (date.today() + timedelta(days=days)).isoformat(),
@@ -989,6 +1444,333 @@ def create_stage_rows(db, project_id, responsavel_id, prazo_critico):
         db.execute("UPDATE projetos SET etapa_atual_id = ?, atualizado_em = ? WHERE id = ?", (current_stage_id, datetime.now().isoformat(timespec="seconds"), project_id))
 
 
+def get_stage_model_id_for_process_stage(db, template_stage_key):
+    legacy_key = PROCESS_STAGE_TO_LEGACY_STAGE.get(template_stage_key, template_stage_key.lower())
+    stages = db.execute("SELECT id, nome FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem").fetchall()
+    for stage in stages:
+        if stage_key(stage["nome"]) == legacy_key:
+            return stage["id"]
+    return stages[0]["id"] if stages else None
+
+
+def project_has_workflow_initialized_db(db, project_id):
+    return scalar(
+        db,
+        """
+        SELECT COUNT(*)
+        FROM projeto_etapas
+        WHERE projeto_id = ?
+          AND stage_key IS NOT NULL
+          AND stage_key != ''
+        """,
+        (project_id,),
+    ) > 0
+
+
+def find_project_stage_id_for_template_stage(db, project_id, template_stage_key):
+    exact_stage = first_row(
+        db,
+        """
+        SELECT id
+        FROM projeto_etapas
+        WHERE projeto_id = ?
+          AND stage_key = ?
+          AND COALESCE(show_in_project, 1) = 1
+        ORDER BY COALESCE(stage_order, 999), id
+        LIMIT 1
+        """,
+        (project_id, template_stage_key),
+    )
+    if exact_stage:
+        return exact_stage["id"]
+
+    legacy_key = PROCESS_STAGE_TO_LEGACY_STAGE.get(template_stage_key, template_stage_key.lower())
+    stages = db.execute(
+        """
+        SELECT pe.id, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = ?
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        """,
+        (project_id,),
+    ).fetchall()
+    for stage in stages:
+        if stage_key(stage["etapa_nome"]) == legacy_key:
+            return stage["id"]
+    return stages[0]["id"] if stages else None
+
+
+def create_project_checklist_from_template(db, project_id, process_type_key):
+    process_key = normalize_project_process_type(process_type_key)
+
+    templates = db.execute(
+        """
+        SELECT *
+        FROM process_checklist_templates
+        WHERE process_type_key = ? AND active = 1
+        """,
+        (process_key,),
+    ).fetchall()
+    templates = sorted(
+        templates,
+        key=lambda row: (PROCESS_CHECKLIST_STAGE_ORDER.get(row["stage_key"], 999), row["order_index"], row["id"]),
+    )
+    now = datetime.now().isoformat(timespec="seconds")
+    created = 0
+    for template in templates:
+        project_stage_id = find_project_stage_id_for_template_stage(db, project_id, template["stage_key"])
+        cursor = db.execute(
+            """
+            INSERT OR IGNORE INTO project_checklist_items
+                (project_id, project_stage_id, template_id, process_type_key, stage_key, stage_name, title,
+                 description, status, requirement_level, criticality, responsible_name, due_date, completed_at,
+                 completed_by, observation, attachment_path, blocks_stage_completion, blocks_process_completion,
+                 requires_attachment, allows_observation, condition_text, help_text, order_index, active,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                project_id,
+                project_stage_id,
+                template["id"],
+                process_key,
+                template["stage_key"],
+                PROCESS_CHECKLIST_STAGE_NAMES.get(template["stage_key"], template["stage_key"].replace("_", " ").title()),
+                template["title"],
+                template["description"],
+                CHECKLIST_STATUS_NOT_STARTED,
+                template["requirement_level"],
+                template["criticality"],
+                template["default_responsible_role"],
+                template["blocks_stage_completion"],
+                template["blocks_process_completion"],
+                template["requires_attachment"],
+                template["allows_observation"],
+                template["condition_text"],
+                template["help_text"],
+                template["order_index"],
+                now,
+                now,
+            ),
+        )
+        if cursor.rowcount:
+            created += 1
+    return created
+
+
+def sync_project_checklist_stage_links(db, project_id):
+    items = db.execute(
+        """
+        SELECT id, stage_key
+        FROM project_checklist_items
+        WHERE project_id = ?
+        """,
+        (project_id,),
+    ).fetchall()
+    updated = 0
+    for item in items:
+        stage_id = find_project_stage_id_for_template_stage(db, project_id, item["stage_key"])
+        if stage_id:
+            cursor = db.execute(
+                "UPDATE project_checklist_items SET project_stage_id = ?, updated_at = ? WHERE id = ? AND COALESCE(project_stage_id, 0) != ?",
+                (stage_id, datetime.now().isoformat(timespec="seconds"), item["id"], stage_id),
+            )
+            updated += cursor.rowcount
+    return updated
+
+
+def initialize_project_workflow(db, project_id, process_type_key, user_id=None, force=False):
+    process_key = normalize_project_process_type(process_type_key)
+    project = first_row(db, "SELECT * FROM projetos WHERE id = ?", (project_id,))
+    if not project:
+        return {"created_stages": 0, "updated_stages": 0, "created_checklist": 0, "warnings": ["Projeto nao encontrado."]}
+
+    if project_has_workflow_initialized_db(db, project_id) and not force:
+        created_checklist = create_project_checklist_from_template(db, project_id, process_key)
+        sync_project_checklist_stage_links(db, project_id)
+        return {
+            "created_stages": 0,
+            "updated_stages": 0,
+            "created_checklist": created_checklist,
+            "warnings": ["Fluxo do projeto ja estava inicializado."],
+        }
+
+    now = datetime.now().isoformat(timespec="seconds")
+    if force:
+        db.execute(
+            """
+            UPDATE projeto_etapas
+            SET workflow_active = 0, show_in_matrix = 0, show_in_project = 0
+            WHERE projeto_id = ?
+              AND (stage_key IS NULL OR stage_key = '')
+            """,
+            (project_id,),
+        )
+
+    stage_templates = db.execute(
+        """
+        SELECT *
+        FROM process_stage_templates
+        WHERE process_type_key = ? AND active = 1
+        ORDER BY stage_order, id
+        """,
+        (process_key,),
+    ).fetchall()
+    if not stage_templates:
+        return {"created_stages": 0, "updated_stages": 0, "created_checklist": 0, "warnings": ["Tipo de processo sem modelo de etapas."]}
+
+    first_active_stage_id = None
+    created_stages = 0
+    updated_stages = 0
+    today = date.today()
+    active_required_index = 0
+
+    for template in stage_templates:
+        applicability = template["applicability"]
+        if applicability == APPLICABILITY_NOT_APPLICABLE:
+            continue
+
+        workflow_active = 1 if applicability == APPLICABILITY_REQUIRED else 0
+        if workflow_active:
+            active_required_index += 1
+        status = "em andamento" if workflow_active and first_active_stage_id is None else "nao iniciado"
+        data_inicio = now if status == "em andamento" else None
+        deadline_days = template["default_deadline_days"]
+        prazo = None
+        if workflow_active and deadline_days:
+            prazo = (today + timedelta(days=deadline_days + max(active_required_index - 1, 0) * 2)).isoformat()
+        etapa_modelo_id = get_stage_model_id_for_process_stage(db, template["stage_key"])
+        if not etapa_modelo_id:
+            continue
+
+        existing = first_row(
+            db,
+            "SELECT * FROM projeto_etapas WHERE projeto_id = ? AND stage_key = ? ORDER BY id LIMIT 1",
+            (project_id, template["stage_key"]),
+        )
+        values = (
+            process_key,
+            template["stage_key"],
+            template["stage_name"],
+            template["stage_order"],
+            applicability,
+            1 if workflow_active else 0,
+            1 if template["can_skip"] else 0,
+            1 if template["blocks_completion"] else 0,
+            1 if template["show_in_matrix"] else 0,
+            1 if template["show_in_project"] else 0,
+            template["external_actor_type"],
+            template["id"],
+            template["description"],
+            template["notes"],
+        )
+        if existing:
+            db.execute(
+                """
+                UPDATE projeto_etapas
+                SET process_type_key = ?, stage_key = ?, stage_name = ?, stage_order = ?, applicability = ?,
+                    workflow_active = ?, can_skip = ?, blocks_completion = ?, show_in_matrix = ?, show_in_project = ?,
+                    external_actor_type = ?, template_stage_id = ?, stage_description = ?, model_notes = ?
+                WHERE id = ?
+                """,
+                values + (existing["id"],),
+            )
+            stage_id = existing["id"]
+            updated_stages += 1
+        else:
+            stage_id = db.execute(
+                """
+                INSERT INTO projeto_etapas
+                    (projeto_id, etapa_modelo_id, process_type_key, stage_key, stage_name, stage_order, applicability,
+                     status, responsavel_id, data_inicio, prazo, progresso, subetapa_ativa, workflow_active,
+                     can_skip, blocks_completion, show_in_matrix, show_in_project, external_actor_type,
+                     template_stage_id, stage_description, model_notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    etapa_modelo_id,
+                    *values[:5],
+                    status,
+                    project["responsavel_geral_id"] if workflow_active else None,
+                    data_inicio,
+                    prazo,
+                    10 if status == "em andamento" else 0,
+                    default_checklist_for_stage(template["stage_name"])[0],
+                    *values[5:],
+                ),
+            ).lastrowid
+            created_stages += 1
+
+        if workflow_active and first_active_stage_id is None:
+            first_active_stage_id = stage_id
+
+    if first_active_stage_id:
+        db.execute(
+            "UPDATE projetos SET etapa_atual_id = ?, tipo_servico = ?, atualizado_em = ? WHERE id = ?",
+            (first_active_stage_id, process_key, now, project_id),
+        )
+        current_stage = first_row(
+            db,
+            "SELECT * FROM projeto_etapas WHERE id = ?",
+            (first_active_stage_id,),
+        )
+        if current_stage and not first_row(
+            db,
+            "SELECT id FROM project_stage_history WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL LIMIT 1",
+            (project_id, first_active_stage_id),
+        ):
+            db.execute(
+                """
+                INSERT INTO project_stage_history
+                    (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
+                VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    first_active_stage_id,
+                    current_stage["stage_key"] or stage_key(current_stage["stage_name"]),
+                    current_stage["stage_name"],
+                    now,
+                    current_stage["responsavel_id"],
+                    None,
+                    "criacao_modelo_processo",
+                    now,
+                ),
+            )
+
+    created_checklist = create_project_checklist_from_template(db, project_id, process_key)
+    sync_project_checklist_stage_links(db, project_id)
+    db.execute(
+        """
+        INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            project_id,
+            user_id,
+            "modelo_processo_aplicado",
+            f"Modelo do processo {process_type_name(process_key)} aplicado ao projeto.",
+            now,
+        ),
+    )
+    return {
+        "created_stages": created_stages,
+        "updated_stages": updated_stages,
+        "created_checklist": created_checklist,
+        "warnings": [],
+    }
+
+
+def ensure_project_checklists(db):
+    projects = db.execute("SELECT id, tipo_servico FROM projetos ORDER BY id").fetchall()
+    for project in projects:
+        create_project_checklist_from_template(db, project["id"], project["tipo_servico"])
+        sync_project_checklist_stage_links(db, project["id"])
+
+
 def infer_current_stage_id_db(db, project_id):
     row = first_row(
         db,
@@ -998,6 +1780,9 @@ def infer_current_stage_id_db(db, project_id):
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE pe.projeto_id = ?
           AND em.ativa = 1
+          AND COALESCE(pe.show_in_project, 1) = 1
+          AND COALESCE(pe.workflow_active, 1) = 1
+          AND lower(pe.status) != 'nao aplicavel'
           AND lower(pe.status) IN ('em andamento', 'atencao', 'atrasado', 'aguardando externo', 'retrabalho')
         ORDER BY
           CASE lower(pe.status)
@@ -1008,7 +1793,7 @@ def infer_current_stage_id_db(db, project_id):
             WHEN 'aguardando externo' THEN 4
             ELSE 5
           END,
-          em.ordem
+          COALESCE(pe.stage_order, em.ordem)
         LIMIT 1
         """,
         (project_id,),
@@ -1023,8 +1808,10 @@ def infer_current_stage_id_db(db, project_id):
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE pe.projeto_id = ?
           AND em.ativa = 1
-          AND lower(pe.status) NOT IN ('concluido', 'cancelado')
-        ORDER BY em.ordem
+          AND COALESCE(pe.show_in_project, 1) = 1
+          AND COALESCE(pe.workflow_active, 1) = 1
+          AND lower(pe.status) NOT IN ('concluido', 'cancelado', 'nao aplicavel')
+        ORDER BY COALESCE(pe.stage_order, em.ordem)
         LIMIT 1
         """,
         (project_id,),
@@ -1037,8 +1824,12 @@ def infer_current_stage_id_db(db, project_id):
         SELECT pe.id
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.projeto_id = ? AND em.ativa = 1
-        ORDER BY em.ordem DESC
+        WHERE pe.projeto_id = ?
+          AND em.ativa = 1
+          AND COALESCE(pe.show_in_project, 1) = 1
+          AND COALESCE(pe.workflow_active, 1) = 1
+          AND lower(pe.status) != 'nao aplicavel'
+        ORDER BY COALESCE(pe.stage_order, em.ordem) DESC
         LIMIT 1
         """,
         (project_id,),
@@ -1050,30 +1841,32 @@ def ensure_project_structure(db):
     projects = db.execute("SELECT * FROM projetos").fetchall()
     stages = db.execute("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem").fetchall()
     for project in projects:
-        for stage in stages:
-            existing_stage = first_row(
-                db,
-                "SELECT * FROM projeto_etapas WHERE projeto_id = ? AND etapa_modelo_id = ?",
-                (project["id"], stage["id"]),
-            )
-            if existing_stage is None:
-                due = project["prazo_critico"] or (date.today() + timedelta(days=stage["ordem"] * 2)).isoformat()
-                stage_id = db.execute(
-                    """
-                    INSERT INTO projeto_etapas
-                        (projeto_id, etapa_modelo_id, status, responsavel_id, prazo, progresso, subetapa_ativa)
-                    VALUES (?, ?, ?, ?, ?, 0, ?)
-                    """,
-                    (project["id"], stage["id"], "nao iniciado", project["responsavel_geral_id"], due, default_checklist_for_stage(stage["nome"])[0]),
-                ).lastrowid
-            else:
-                stage_id = existing_stage["id"]
-                if "subetapa_ativa" in existing_stage.keys() and not existing_stage["subetapa_ativa"]:
-                    db.execute("UPDATE projeto_etapas SET subetapa_ativa = ? WHERE id = ?", (default_checklist_for_stage(stage["nome"])[0], stage_id))
+        workflow_initialized = project_has_workflow_initialized_db(db, project["id"])
+        if not workflow_initialized:
+            for stage in stages:
+                existing_stage = first_row(
+                    db,
+                    "SELECT * FROM projeto_etapas WHERE projeto_id = ? AND etapa_modelo_id = ?",
+                    (project["id"], stage["id"]),
+                )
+                if existing_stage is None:
+                    due = project["prazo_critico"] or (date.today() + timedelta(days=stage["ordem"] * 2)).isoformat()
+                    stage_id = db.execute(
+                        """
+                        INSERT INTO projeto_etapas
+                            (projeto_id, etapa_modelo_id, status, responsavel_id, prazo, progresso, subetapa_ativa)
+                        VALUES (?, ?, ?, ?, ?, 0, ?)
+                        """,
+                        (project["id"], stage["id"], "nao iniciado", project["responsavel_geral_id"], due, default_checklist_for_stage(stage["nome"])[0]),
+                    ).lastrowid
+                else:
+                    stage_id = existing_stage["id"]
+                    if "subetapa_ativa" in existing_stage.keys() and not existing_stage["subetapa_ativa"]:
+                        db.execute("UPDATE projeto_etapas SET subetapa_ativa = ? WHERE id = ?", (default_checklist_for_stage(stage["nome"])[0], stage_id))
 
-            if scalar(db, "SELECT COUNT(*) FROM checklist_itens WHERE projeto_etapa_id = ?", (stage_id,)) == 0:
-                for item in default_checklist_for_stage(stage["nome"]):
-                    db.execute("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (?, ?)", (stage_id, item))
+                if scalar(db, "SELECT COUNT(*) FROM checklist_itens WHERE projeto_etapa_id = ?", (stage_id,)) == 0:
+                    for item in default_checklist_for_stage(stage["nome"]):
+                        db.execute("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (?, ?)", (stage_id, item))
 
         current_valid = None
         if project["etapa_atual_id"]:
@@ -1084,6 +1877,8 @@ def ensure_project_structure(db):
                 FROM projeto_etapas pe
                 JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
                 WHERE pe.id = ? AND pe.projeto_id = ? AND em.ativa = 1
+                  AND COALESCE(pe.show_in_project, 1) = 1
+                  AND lower(pe.status) != 'nao aplicavel'
                 """,
                 (project["etapa_atual_id"], project["id"]),
             )
@@ -1106,8 +1901,13 @@ def ensure_project_structure(db):
                 SELECT pe.*, em.nome AS etapa_nome
                 FROM projeto_etapas pe
                 JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE pe.projeto_id = ? AND lower(pe.status) != 'concluido' AND em.ativa = 1
-                ORDER BY em.ordem
+                WHERE pe.projeto_id = ?
+                  AND lower(pe.status) != 'concluido'
+                  AND lower(pe.status) != 'nao aplicavel'
+                  AND COALESCE(pe.show_in_project, 1) = 1
+                  AND COALESCE(pe.workflow_active, 1) = 1
+                  AND em.ativa = 1
+                ORDER BY COALESCE(pe.stage_order, em.ordem)
                 """,
                 (project["id"],),
             )
@@ -1170,6 +1970,591 @@ def ensure_project_structure(db):
                 """,
                 (stage["projeto_id"], stage["id"], stage["responsavel_id"], 95, "execucao", "Apontamento de exemplo.", datetime.now().isoformat(timespec="seconds")),
             )
+
+
+def parse_report_datetime(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    try:
+        if len(text) == 10:
+            return datetime.fromisoformat(f"{text}T00:00:00")
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def calculate_days_between(start_date, end_date=None):
+    start = parse_report_datetime(start_date) if not isinstance(start_date, datetime) else start_date
+    end = parse_report_datetime(end_date) if end_date and not isinstance(end_date, datetime) else end_date
+    if not start:
+        return 0
+    end = end or datetime.now()
+    seconds = max((end - start).total_seconds(), 0)
+    return seconds / 86400
+
+
+def format_days(value):
+    if value is None:
+        return "Sem dados"
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        return "Sem dados"
+    if days <= 0 or days < 0.1:
+        return "menos de 1 dia"
+    if days < 1:
+        return f"{days:.1f}".replace(".", ",") + " dia"
+    rounded = round(days, 1)
+    if rounded == 1:
+        return "1 dia"
+    if rounded.is_integer():
+        return f"{int(rounded)} dias"
+    return f"{rounded:.1f}".replace(".", ",") + " dias"
+
+
+def ensure_project_stage_history(db):
+    projects = db.execute("SELECT * FROM projetos ORDER BY id").fetchall()
+    now = datetime.now().replace(microsecond=0)
+    for project in projects:
+        stages = db.execute(
+            """
+            SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem, u.nome AS responsavel_nome
+            FROM projeto_etapas pe
+            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            LEFT JOIN usuarios u ON u.id = pe.responsavel_id
+            WHERE pe.projeto_id = ?
+              AND em.ativa = 1
+              AND COALESCE(pe.show_in_project, 1) = 1
+              AND COALESCE(pe.workflow_active, 1) = 1
+              AND lower(pe.status) != 'nao aplicavel'
+            ORDER BY COALESCE(pe.stage_order, em.ordem)
+            """,
+            (project["id"],),
+        ).fetchall()
+        if not stages:
+            continue
+        current_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project["id"])
+        current_stage = next((stage for stage in stages if stage["id"] == current_stage_id), stages[0])
+        current_order = current_stage["etapa_ordem"]
+        history_count = scalar(db, "SELECT COUNT(*) FROM project_stage_history WHERE project_id = ?", (project["id"],))
+
+        if history_count == 0:
+            past_stages = [stage for stage in stages if stage["etapa_ordem"] <= current_order]
+            total_days = sum(REPORT_STAGE_DEFAULT_DAYS.get(stage_key(stage["etapa_nome"]), 3) for stage in past_stages)
+            base = parse_report_datetime(project["criado_em"]) or (now - timedelta(days=max(total_days, 1)))
+            if (now - base).total_seconds() < max(total_days, 1) * 86400:
+                base = now - timedelta(days=max(total_days, 1))
+            cursor = base
+            for stage in past_stages:
+                key = stage["stage_key"] or stage_key(stage["etapa_nome"])
+                default_days = REPORT_STAGE_DEFAULT_DAYS.get(key, 3)
+                is_current = stage["id"] == current_stage["id"]
+                entered = parse_report_datetime(stage["data_inicio"]) or cursor
+                if is_current:
+                    entered = parse_report_datetime(stage["data_inicio"]) or (now - timedelta(days=default_days))
+                    exited = None
+                else:
+                    exited = parse_report_datetime(stage["data_fim"]) or (entered + timedelta(days=default_days))
+                    if exited >= now:
+                        exited = now - timedelta(hours=1)
+                db.execute(
+                    """
+                    INSERT INTO project_stage_history
+                        (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project["id"],
+                        stage["id"],
+                        key,
+                        stage["etapa_nome"],
+                        entered.isoformat(timespec="seconds"),
+                        exited.isoformat(timespec="seconds") if exited else None,
+                        stage["responsavel_id"] or project["responsavel_geral_id"],
+                        stage["responsavel_nome"],
+                        "historico_inicial",
+                        now.isoformat(timespec="seconds"),
+                    ),
+                )
+                if exited:
+                    cursor = exited
+        else:
+            db.execute(
+                """
+                UPDATE project_stage_history
+                SET exited_at = COALESCE(exited_at, ?)
+                WHERE project_id = ? AND exited_at IS NULL AND stage_id != ?
+                """,
+                (now.isoformat(timespec="seconds"), project["id"], current_stage["id"]),
+            )
+            open_current = first_row(
+                db,
+                "SELECT id FROM project_stage_history WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL LIMIT 1",
+                (project["id"], current_stage["id"]),
+            )
+            if not open_current:
+                key = current_stage["stage_key"] or stage_key(current_stage["etapa_nome"])
+                default_days = REPORT_STAGE_DEFAULT_DAYS.get(key, 3)
+                entered = parse_report_datetime(current_stage["data_inicio"]) or parse_report_datetime(project["atualizado_em"]) or (now - timedelta(days=default_days))
+                db.execute(
+                    """
+                    INSERT INTO project_stage_history
+                        (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
+                    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    """,
+                    (
+                        project["id"],
+                        current_stage["id"],
+                        key,
+                        current_stage["etapa_nome"],
+                        entered.isoformat(timespec="seconds"),
+                        current_stage["responsavel_id"] or project["responsavel_geral_id"],
+                        current_stage["responsavel_nome"],
+                        "etapa_atual",
+                        now.isoformat(timespec="seconds"),
+                    ),
+                )
+
+
+def record_stage_history_transition(project_id, old_stage, new_stage, moved_at, responsible_id=None, reason=None):
+    responsible_name = None
+    if responsible_id:
+        user = query_db("SELECT nome FROM usuarios WHERE id = ?", (responsible_id,), one=True)
+        responsible_name = user["nome"] if user else None
+    if old_stage:
+        execute_db(
+            """
+            UPDATE project_stage_history
+            SET exited_at = COALESCE(exited_at, ?)
+            WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL
+            """,
+            (moved_at, project_id, old_stage["id"]),
+        )
+    execute_db(
+        """
+        UPDATE project_stage_history
+        SET exited_at = COALESCE(exited_at, ?)
+        WHERE project_id = ? AND stage_id != ? AND exited_at IS NULL
+        """,
+        (moved_at, project_id, new_stage["id"]),
+    )
+    open_current = query_db(
+        "SELECT id FROM project_stage_history WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL LIMIT 1",
+        (project_id, new_stage["id"]),
+        one=True,
+    )
+    if not open_current:
+        execute_db(
+            """
+            INSERT INTO project_stage_history
+                (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                new_stage["id"],
+                new_stage["stage_key"] if "stage_key" in new_stage.keys() and new_stage["stage_key"] else stage_key(new_stage["etapa_nome"]),
+                new_stage["stage_name"] if "stage_name" in new_stage.keys() and new_stage["stage_name"] else new_stage["etapa_nome"],
+                moved_at,
+                responsible_id,
+                responsible_name,
+                reason,
+                moved_at,
+            ),
+        )
+
+
+def get_report_status(avg_days, active_count, max_open_days, completed_count):
+    if not completed_count and not active_count:
+        return "Sem dados", "muted", 0
+    score = 1
+    label = "Normal"
+    tone = "green"
+    if (
+        (avg_days or 0) >= REPORT_THRESHOLDS["bottleneck_days"]
+        or (max_open_days or 0) >= REPORT_THRESHOLDS["bottleneck_days"]
+        or active_count >= REPORT_THRESHOLDS["bottleneck_active_count"]
+    ):
+        return "Gargalo", "red", 3
+    if (
+        (avg_days or 0) >= REPORT_THRESHOLDS["attention_days"]
+        or (max_open_days or 0) >= REPORT_THRESHOLDS["attention_days"]
+        or active_count >= REPORT_THRESHOLDS["attention_active_count"]
+    ):
+        return "Atencao", "amber", 2
+    return label, tone, score
+
+
+def get_responsible_status(active_count, avg_days, max_open_days):
+    if active_count >= REPORT_THRESHOLDS["responsible_overload_active"] or (avg_days or 0) >= REPORT_THRESHOLDS["bottleneck_days"]:
+        return "Sobrecarga", "red", 3
+    if active_count >= REPORT_THRESHOLDS["responsible_attention_active"] or (max_open_days or 0) >= REPORT_THRESHOLDS["attention_days"]:
+        return "Atencao", "amber", 2
+    return "Normal", "green", 1
+
+
+def build_bottleneck_suggestion(metric):
+    high_time = (metric.get("avg_days") or 0) >= REPORT_THRESHOLDS["attention_days"] or (metric.get("max_open_days") or 0) >= REPORT_THRESHOLDS["attention_days"]
+    high_volume = metric.get("active_count", 0) >= REPORT_THRESHOLDS["attention_active_count"]
+    if high_time and high_volume:
+        return "Gargalo forte: tempo elevado e acumulo de projetos."
+    if high_time:
+        return "Etapa com tempo medio elevado ou projeto parado ha muitos dias."
+    if high_volume:
+        return "Etapa com acumulo de projetos ativos."
+    return "Monitorar a etapa nos proximos ciclos."
+
+
+def get_current_project_open_days(project):
+    entered_at = project.get("current_entered_at") or project.get("stage_data_inicio") or project.get("atualizado_em") or project.get("criado_em")
+    return calculate_days_between(entered_at)
+
+
+def calculate_stage_metrics(stages, projects, histories):
+    total_projects = len(projects)
+    projects_by_id = {project["id"]: project for project in projects}
+    histories_by_key = {}
+    open_history_by_project_key = {}
+    for history in histories:
+        raw_key = history["stage_key"]
+        key = PROCESS_STAGE_TO_LEGACY_STAGE.get(raw_key, stage_key(history["stage_name"])) if raw_key else stage_key(history["stage_name"])
+        histories_by_key.setdefault(key, []).append(history)
+        if not history["exited_at"]:
+            open_history_by_project_key[(history["project_id"], key)] = history
+
+    metrics = []
+    for stage in stages:
+        key = stage_key(stage["nome"])
+        stage_histories = histories_by_key.get(key, [])
+        completed_histories = [history for history in stage_histories if history["exited_at"]]
+        active_projects = [
+            project for project in projects
+            if project["current_stage_key"] == key and str(project["status"] or "").lower() not in ("concluido", "cancelado")
+        ]
+        completed_project_ids = {history["project_id"] for history in completed_histories}
+        concluded_count = len(completed_project_ids)
+        not_started = len([
+            project for project in projects
+            if (project["current_stage_order"] or 0) < stage["ordem"]
+            and project["id"] not in {history["project_id"] for history in stage_histories}
+        ])
+        completed_days = [calculate_days_between(history["entered_at"], history["exited_at"]) for history in completed_histories]
+        avg_days = sum(completed_days) / len(completed_days) if completed_days else None
+        open_days = []
+        for project in active_projects:
+            open_history = open_history_by_project_key.get((project["id"], key))
+            if open_history:
+                open_days.append(calculate_days_between(open_history["entered_at"]))
+            else:
+                open_days.append(get_current_project_open_days(project))
+        max_open_days = max(open_days) if open_days else None
+        status, tone, score = get_report_status(avg_days, len(active_projects), max_open_days, concluded_count)
+        metric = {
+            "stage_id": stage["id"],
+            "stage_key": key,
+            "stage_name": stage["nome"],
+            "order": stage["ordem"],
+            "not_started": max(not_started, 0),
+            "active_count": len(active_projects),
+            "completed_count": concluded_count,
+            "avg_days": avg_days,
+            "max_open_days": max_open_days,
+            "status": status,
+            "tone": tone,
+            "score": score,
+        }
+        metrics.append(metric)
+    return sorted(metrics, key=lambda item: item["order"])
+
+
+def calculate_responsible_metrics(projects, histories):
+    metrics = {}
+    for project in projects:
+        if str(project["status"] or "").lower() in ("concluido", "cancelado"):
+            continue
+        responsible_id = project["current_responsible_id"] or project["responsavel_geral_id"] or "none"
+        name = project["current_responsible_name"] or project["responsavel_geral_nome"] or "Sem responsavel"
+        item = metrics.setdefault(responsible_id, {"responsible": name, "active_count": 0, "completed_project_ids": set(), "completed_days": [], "open_days": []})
+        item["active_count"] += 1
+        item["open_days"].append(get_current_project_open_days(project))
+
+    for history in histories:
+        if not history["exited_at"]:
+            continue
+        responsible_id = history["responsible_id"] or "none"
+        name = history["responsible_name"] or "Sem responsavel"
+        item = metrics.setdefault(responsible_id, {"responsible": name, "active_count": 0, "completed_project_ids": set(), "completed_days": [], "open_days": []})
+        item["completed_project_ids"].add(history["project_id"])
+        item["completed_days"].append(calculate_days_between(history["entered_at"], history["exited_at"]))
+
+    rows = []
+    for item in metrics.values():
+        avg_days = None
+        if item["completed_days"]:
+            avg_days = sum(item["completed_days"]) / len(item["completed_days"])
+        elif item["open_days"]:
+            avg_days = sum(item["open_days"]) / len(item["open_days"])
+        max_open_days = max(item["open_days"]) if item["open_days"] else None
+        status, tone, score = get_responsible_status(item["active_count"], avg_days, max_open_days)
+        rows.append({
+            "responsible": item["responsible"],
+            "active_count": item["active_count"],
+            "completed_count": len(item["completed_project_ids"]),
+            "avg_days": avg_days,
+            "max_open_days": max_open_days,
+            "status": status,
+            "tone": tone,
+            "score": score,
+        })
+    return sorted(rows, key=lambda item: (-item["score"], -item["active_count"], item["responsible"]))
+
+
+def calculate_city_metrics(projects):
+    total = max(len(projects), 1)
+    grouped = {}
+    for project in projects:
+        city = project["cidade"] or "Sem cidade"
+        item = grouped.setdefault(city, {"city": city, "total": 0, "active": 0, "finished": 0})
+        item["total"] += 1
+        status = str(project["status"] or "").lower()
+        if status in ("concluido", "cancelado"):
+            item["finished"] += 1
+        else:
+            item["active"] += 1
+    rows = []
+    for item in grouped.values():
+        item["percent"] = item["total"] / total * 100
+        rows.append(item)
+    return sorted(rows, key=lambda item: (-item["total"], item["city"]))
+
+
+def calculate_registry_metrics(projects, histories, open_pending_by_project):
+    grouped = {}
+    cartorio_days = {}
+    for history in histories:
+        raw_key = history["stage_key"]
+        key = PROCESS_STAGE_TO_LEGACY_STAGE.get(raw_key, stage_key(history["stage_name"])) if raw_key else stage_key(history["stage_name"])
+        if key == "cartorio" and history["exited_at"]:
+            project = next((item for item in projects if item["id"] == history["project_id"]), None)
+            registry = project["cartorio_nome"] if project else None
+            registry = registry or "Sem cartorio"
+            cartorio_days.setdefault(registry, []).append(calculate_days_between(history["entered_at"], history["exited_at"]))
+
+    for project in projects:
+        registry = project["cartorio_nome"] or "Sem cartorio"
+        item = grouped.setdefault(registry, {"registry": registry, "total": 0, "active": 0, "pending": 0, "avg_cartorio_days": None})
+        item["total"] += 1
+        if str(project["status"] or "").lower() not in ("concluido", "cancelado"):
+            item["active"] += 1
+        if open_pending_by_project.get(project["id"], 0):
+            item["pending"] += 1
+
+    for registry, item in grouped.items():
+        days = cartorio_days.get(registry, [])
+        item["avg_cartorio_days"] = sum(days) / len(days) if days else None
+    return sorted(grouped.values(), key=lambda item: (-item["total"], item["registry"]))
+
+
+def calculate_stopped_projects(projects, open_pending_by_project):
+    rows = []
+    for project in projects:
+        if str(project["status"] or "").lower() in ("concluido", "cancelado"):
+            continue
+        days = get_current_project_open_days(project)
+        if days < REPORT_THRESHOLDS["stopped_days"]:
+            continue
+        stage_name = project["current_stage_name"] or "Sem etapa"
+        if open_pending_by_project.get(project["id"], 0):
+            next_action = "Resolver pendencias abertas"
+        elif stage_key(stage_name) == "cartorio":
+            next_action = "Cobrar retorno do cartorio"
+        elif not (project["current_responsible_name"] or project["responsavel_geral_nome"]):
+            next_action = "Definir responsavel"
+        else:
+            next_action = "Revisar etapa com responsavel"
+        rows.append({
+            "project_id": project["id"],
+            "project_name": project["nome"],
+            "cliente_nome": project["cliente_nome"] or project["proprietario"] or "-",
+            "stage_name": stage_name,
+            "responsible": project["current_responsible_name"] or project["responsavel_geral_nome"] or "Sem responsavel",
+            "open_days": days,
+            "next_action": next_action,
+        })
+    return sorted(rows, key=lambda item: -item["open_days"])
+
+
+def build_reports_context():
+    # ---------- Projetos enriquecidos ----------
+    projects = query_db(
+        """
+        SELECT
+            p.*,
+            COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(pf.nome_completo, ''), NULLIF(pj.razao_social, ''), NULLIF(c.nome, ''), NULLIF(p.proprietario, '')) AS cliente_nome,
+            ct.nome AS cartorio_nome,
+            cpe.data_inicio AS stage_data_inicio,
+            cpe.status AS current_stage_status,
+            COALESCE(cpe.stage_name, cem.nome) AS current_stage_name,
+            COALESCE(cpe.stage_order, cem.ordem) AS current_stage_order,
+            cpe.stage_key AS current_stage_template_key,
+            u_stage.id AS current_responsible_id,
+            u_stage.nome AS current_responsible_name,
+            u_project.nome AS responsavel_geral_nome,
+            COALESCE(h.entered_at, cpe.data_inicio, p.atualizado_em, p.criado_em) AS current_entered_at
+        FROM projetos p
+        LEFT JOIN clientes c ON c.id = p.cliente_id
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+        LEFT JOIN projeto_etapas cpe ON cpe.id = p.etapa_atual_id
+        LEFT JOIN etapas_modelo cem ON cem.id = cpe.etapa_modelo_id
+        LEFT JOIN usuarios u_stage ON u_stage.id = cpe.responsavel_id
+        LEFT JOIN usuarios u_project ON u_project.id = p.responsavel_geral_id
+        LEFT JOIN project_stage_history h ON h.project_id = p.id AND h.stage_id = p.etapa_atual_id AND h.exited_at IS NULL
+        ORDER BY p.nome
+        """
+    )
+    project_dicts = []
+    for p in projects:
+        item = dict(p)
+        raw_current_key = item.get("current_stage_template_key")
+        item["current_stage_key"] = (
+            PROCESS_STAGE_TO_LEGACY_STAGE.get(raw_current_key, stage_key(item.get("current_stage_name") or ""))
+            if raw_current_key
+            else stage_key(item.get("current_stage_name") or "")
+        )
+        project_dicts.append(item)
+
+    # ---------- Etapas dos projetos (com applicability) ----------
+    project_stages = query_db(
+        """
+        SELECT
+            pe.id,
+            pe.projeto_id,
+            pe.stage_key,
+            pe.stage_name,
+            pe.applicability,
+            pe.status,
+            pe.data_inicio,
+            pe.data_fim,
+            pe.external_actor_type,
+            pe.workflow_active,
+            pe.responsavel_id
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE em.ativa = 1
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY pe.projeto_id, COALESCE(pe.stage_order, em.ordem), pe.id
+        """
+    )
+    project_stage_dicts = [dict(s) for s in project_stages]
+
+    # ---------- Checklist dos projetos ----------
+    checklist_items = query_db(
+        """
+        SELECT
+            pci.id,
+            pci.project_id,
+            pci.project_stage_id,
+            pci.stage_key,
+            pci.stage_name,
+            pci.title,
+            pci.status,
+            pci.requirement_level,
+            pci.criticality,
+            pci.blocks_stage_completion,
+            pci.blocks_process_completion,
+            pci.responsible_name,
+            pci.created_at,
+            pci.updated_at
+        FROM project_checklist_items pci
+        WHERE pci.active = 1
+        ORDER BY pci.project_id, pci.order_index, pci.id
+        """
+    )
+    checklist_dicts = [dict(it) for it in checklist_items]
+
+    # ---------- Historico de etapas ----------
+    histories = query_db("SELECT * FROM project_stage_history ORDER BY entered_at")
+    history_dicts = [dict(h) for h in histories]
+
+    # ---------- Pendencias abertas ----------
+    pending_rows = query_db(
+        """
+        SELECT projeto_id, COUNT(*) AS total
+        FROM pendencias
+        WHERE lower(status) NOT IN ('resolvida', 'cancelada')
+        GROUP BY projeto_id
+        """
+    )
+    open_pending_by_project = {row["projeto_id"]: row["total"] for row in pending_rows}
+
+    # ---------- Metricas novas (Fase 5) ----------
+    stage_metrics_v2 = calculate_stage_metrics_v2(
+        project_dicts, project_stage_dicts, history_dicts, checklist_dicts
+    )
+    process_type_metrics = calculate_process_type_metrics(
+        project_dicts, project_stage_dicts, history_dicts, checklist_dicts,
+        process_name_fn=process_type_name,
+    )
+    responsible_metrics_v2 = calculate_responsible_metrics_v2(
+        project_dicts, project_stage_dicts, history_dicts, checklist_dicts
+    )
+    city_metrics_v2 = calculate_city_metrics_v2(project_dicts, process_name_fn=process_type_name)
+    external_actor_metrics = calculate_external_actor_metrics(
+        project_dicts, project_stage_dicts, history_dicts
+    )
+    stopped_projects_v2 = calculate_stopped_projects_v2(
+        project_dicts, project_stage_dicts, open_pending_by_project, checklist_dicts
+    )
+    checklist_pending_report = calculate_checklist_pending_report(project_dicts, checklist_dicts)
+    bottlenecks_v2 = build_bottleneck_suggestions_v2(stage_metrics_v2)[:6]
+
+    summary = build_operational_summary_v2(
+        project_dicts,
+        stage_metrics_v2,
+        process_type_metrics,
+        responsible_metrics_v2,
+        checklist_dicts,
+        open_pending_by_project,
+    )
+
+    # ---------- Metricas legadas (compatibilidade) ----------
+    stages_legacy = query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")
+    stage_metrics_legacy = calculate_stage_metrics(list(stages_legacy), project_dicts, history_dicts)
+    responsible_metrics_legacy = calculate_responsible_metrics(project_dicts, history_dicts)
+    city_metrics_legacy = calculate_city_metrics(project_dicts)
+    registry_metrics_legacy = calculate_registry_metrics(project_dicts, history_dicts, open_pending_by_project)
+    stopped_legacy = calculate_stopped_projects(project_dicts, open_pending_by_project)
+
+    return {
+        # Visao geral
+        "summary": summary,
+        # Etapas (v2 — considera applicability)
+        "stage_metrics": stage_metrics_v2,
+        # Gargalos (v2)
+        "bottlenecks": bottlenecks_v2,
+        # Processos
+        "process_type_metrics": process_type_metrics,
+        # Responsaveis (v2)
+        "responsible_metrics": responsible_metrics_v2,
+        # Cidades (v2)
+        "city_metrics": city_metrics_v2,
+        # Cartorios/orgaos externos (v2)
+        "external_actor_metrics": external_actor_metrics,
+        # Projetos parados (v2)
+        "stopped_projects": stopped_projects_v2,
+        # Pendencias de checklist obrigatorio
+        "checklist_pending_report": checklist_pending_report,
+        # Limiares
+        "thresholds": REPORT_THRESHOLDS_V2,
+        # Legados para nao quebrar outros possiveis usos
+        "stage_metrics_legacy": stage_metrics_legacy,
+        "responsible_metrics_legacy": responsible_metrics_legacy,
+        "city_metrics_legacy": city_metrics_legacy,
+        "registry_metrics": registry_metrics_legacy,
+    }
 
 
 def refresh_due_statuses():
@@ -1240,16 +2625,38 @@ def update_stage_progress(stage_id):
 
 
 def load_stage_rows(project_id):
-    return query_db(
+    return [dict(row) for row in query_db(
         """
         SELECT
             pe.*,
-            em.nome AS etapa_nome,
-            em.ordem AS etapa_ordem,
+            COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+            COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
+            em.nome AS legacy_etapa_nome,
+            em.ordem AS legacy_etapa_ordem,
             u.nome AS responsavel_nome,
-            (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id) AS checklist_total,
-            (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 1) AS checklist_done,
-            (SELECT ci.titulo FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 0 ORDER BY ci.id LIMIT 1) AS proximo_checklist,
+            CASE
+                WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
+                THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status != ?)
+                ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id)
+            END AS checklist_total,
+            CASE
+                WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
+                THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status = ?)
+                ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 1)
+            END AS checklist_done,
+            COALESCE(
+                (SELECT pci.title FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status NOT IN (?, ?) ORDER BY pci.order_index, pci.id LIMIT 1),
+                (SELECT ci.titulo FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 0 ORDER BY ci.id LIMIT 1)
+            ) AS proximo_checklist,
+            (
+                SELECT COUNT(*)
+                FROM project_checklist_items pci
+                WHERE pci.project_stage_id = pe.id
+                  AND pci.active = 1
+                  AND pci.requirement_level = ?
+                  AND pci.blocks_stage_completion = 1
+                  AND pci.status NOT IN (?, ?)
+            ) AS required_pending,
             (
                 SELECT t.titulo
                 FROM tarefas t
@@ -1264,10 +2671,202 @@ def load_stage_rows(project_id):
         LEFT JOIN usuarios u ON u.id = pe.responsavel_id
         WHERE pe.projeto_id = ?
           AND em.ativa = 1
-        ORDER BY em.ordem
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
         """,
-        (project_id,),
+        (
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            REQUIREMENT_REQUIRED,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            project_id,
+        ),
+    )]
+
+
+def load_matrix_stage_rows(project_id):
+    project = query_db("SELECT etapa_atual_id FROM projetos WHERE id = ?", (project_id,), one=True)
+    current_stage_id = project["etapa_atual_id"] if project else None
+    global_stages = query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")
+    project_stages = load_stage_rows(project_id)
+    stages_by_model = {}
+    for stage in project_stages:
+        stages_by_model.setdefault(stage["etapa_modelo_id"], []).append(stage)
+
+    matrix_rows = []
+    for global_stage in global_stages:
+        candidates = stages_by_model.get(global_stage["id"], [])
+        selected = None
+        if candidates:
+            selected = next((stage for stage in candidates if stage["id"] == current_stage_id), None)
+            if not selected:
+                selected = next(
+                    (
+                        stage for stage in candidates
+                        if stage.get("workflow_active", 1)
+                        and str(stage.get("status") or "").lower() not in ("nao aplicavel", "cancelado")
+                    ),
+                    None,
+                )
+            selected = selected or candidates[0]
+
+        if selected:
+            row = dict(selected)
+            row["etapa_ordem"] = global_stage["ordem"]
+            row["etapa_nome"] = global_stage["nome"]
+            matrix_rows.append(row)
+        else:
+            matrix_rows.append({
+                "id": None,
+                "projeto_id": project_id,
+                "etapa_modelo_id": global_stage["id"],
+                "etapa_nome": global_stage["nome"],
+                "legacy_etapa_nome": global_stage["nome"],
+                "etapa_ordem": global_stage["ordem"],
+                "status": "nao aplicavel",
+                "responsavel_nome": None,
+                "prazo": None,
+                "progresso": 0,
+                "checklist_total": 0,
+                "checklist_done": 0,
+                "required_pending": 0,
+                "proximo_checklist": None,
+                "tarefa_ativa": None,
+                "workflow_active": 0,
+                "show_in_project": 0,
+            })
+    return matrix_rows
+
+
+def load_project_stage_for_action(stage_id, project_id=None):
+    params = [stage_id]
+    project_filter = ""
+    if project_id is not None:
+        project_filter = "AND pe.projeto_id = ?"
+        params.append(project_id)
+    return query_db(
+        f"""
+        SELECT
+            pe.*,
+            COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+            COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
+            em.nome AS legacy_etapa_nome,
+            em.ordem AS legacy_etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.id = ?
+          {project_filter}
+          AND em.ativa = 1
+          AND COALESCE(pe.show_in_project, 1) = 1
+        """,
+        tuple(params),
+        one=True,
     )
+
+
+def get_stage_blocking_checklist_items(stage_id):
+    return query_db(
+        """
+        SELECT *
+        FROM project_checklist_items
+        WHERE project_stage_id = ?
+          AND active = 1
+          AND requirement_level = ?
+          AND blocks_stage_completion = 1
+          AND status NOT IN (?, ?)
+        ORDER BY order_index, id
+        """,
+        (stage_id, REQUIREMENT_REQUIRED, CHECKLIST_STATUS_DONE, CHECKLIST_STATUS_NOT_APPLICABLE),
+    )
+
+
+def flash_stage_blockers(blockers):
+    titles = ", ".join(item["title"] for item in blockers[:4])
+    suffix = "..." if len(blockers) > 4 else ""
+    flash(f"Conclua ou marque como nao aplicavel os itens obrigatorios antes de concluir a etapa: {titles}{suffix}", "warning")
+
+
+def get_next_applicable_stage(project_id, current_stage):
+    return query_db(
+        """
+        SELECT
+            pe.*,
+            COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+            COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = ?
+          AND COALESCE(pe.show_in_project, 1) = 1
+          AND COALESCE(pe.workflow_active, 1) = 1
+          AND lower(pe.status) NOT IN ('concluido', 'cancelado', 'nao aplicavel')
+          AND COALESCE(pe.stage_order, em.ordem) > ?
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        LIMIT 1
+        """,
+        (project_id, current_stage["etapa_ordem"]),
+        one=True,
+    )
+
+
+def advance_project_after_stage_completion(project_id, completed_stage, responsible_id=None, reason="conclusao_etapa"):
+    project = query_db("SELECT * FROM projetos WHERE id = ?", (project_id,), one=True)
+    if not project or not completed_stage or project["etapa_atual_id"] != completed_stage["id"]:
+        return None
+
+    now = datetime.now().isoformat(timespec="seconds")
+    next_stage = get_next_applicable_stage(project_id, completed_stage)
+    if next_stage:
+        execute_db(
+            """
+            UPDATE projeto_etapas
+            SET status = 'em andamento', data_inicio = COALESCE(data_inicio, ?), data_fim = NULL,
+                responsavel_id = COALESCE(responsavel_id, ?), progresso = CASE WHEN COALESCE(progresso, 0) < 10 THEN 10 ELSE progresso END
+            WHERE id = ?
+            """,
+            (now, responsible_id, next_stage["id"]),
+        )
+        execute_db(
+            "UPDATE projetos SET etapa_atual_id = ?, status = 'Em andamento', atualizado_em = ? WHERE id = ?",
+            (next_stage["id"], now, project_id),
+        )
+        execute_db(
+            """
+            INSERT INTO movimentacoes_etapa
+                (projeto_id, etapa_anterior_id, etapa_nova_id, etapa_anterior, etapa_nova, motivo, observacao, responsavel_id, usuario_id, criado_em)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                completed_stage["id"],
+                next_stage["id"],
+                completed_stage["etapa_nome"],
+                next_stage["etapa_nome"],
+                reason,
+                "Avanco automatico apos conclusao de etapa.",
+                responsible_id or next_stage["responsavel_id"],
+                g.user["id"] if getattr(g, "user", None) else None,
+                now,
+            ),
+        )
+        record_stage_history_transition(project_id, completed_stage, next_stage, now, responsible_id or next_stage["responsavel_id"], reason)
+        return next_stage
+
+    execute_db(
+        "UPDATE projetos SET status = 'Concluido', atualizado_em = ? WHERE id = ?",
+        (now, project_id),
+    )
+    execute_db(
+        """
+        UPDATE project_stage_history
+        SET exited_at = COALESCE(exited_at, ?)
+        WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL
+        """,
+        (now, project_id, completed_stage["id"]),
+    )
+    return None
 
 
 def can_manage():
@@ -1354,22 +2953,364 @@ def format_currency(value):
         return "-"
 
 
+def normalize_lookup(value):
+    text = unicodedata.normalize("NFD", str(value or ""))
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def parse_currency_value(value):
+    parsed = parse_decimal_br(value)
+    if parsed is None:
+        return None
+    try:
+        return float(parsed)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_cliente_display_name(cliente_id):
+    if not cliente_id:
+        return ""
+    row = query_db(
+        """
+        SELECT
+            COALESCE(
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, '')
+            ) AS nome_display
+        FROM clientes c
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        WHERE c.id = ?
+        """,
+        (cliente_id,),
+        one=True,
+    )
+    return row["nome_display"] if row and row["nome_display"] else ""
+
+
+def fetch_cliente_autocomplete_options():
+    rows = query_db(
+        """
+        SELECT
+            c.id,
+            c.tipo_cliente,
+            c.status_cadastro,
+            c.nome,
+            c.nome_exibicao,
+            c.cpf_cnpj,
+            c.telefone,
+            c.email,
+            pf.nome_completo AS pf_nome,
+            pf.cpf AS pf_cpf,
+            pf.email AS pf_email,
+            pf.telefone AS pf_telefone,
+            ep.cidade AS pf_cidade,
+            ep.uf AS pf_uf,
+            pj.razao_social AS pj_razao_social,
+            pj.nome_fantasia AS pj_nome_fantasia,
+            pj.cnpj AS pj_cnpj,
+            pj.email AS pj_email,
+            pj.telefone AS pj_telefone,
+            pj.cidade AS pj_cidade,
+            pj.uf AS pj_uf,
+            pr.nome_completo AS procurador_nome,
+            pr.cpf AS procurador_cpf,
+            pr.email AS procurador_email,
+            pr.telefone AS procurador_telefone,
+            COALESCE(
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, '')
+            ) AS nome_display,
+            COALESCE(ep.cidade, pj.cidade) AS cidade_display,
+            COALESCE(ep.uf, pj.uf) AS uf_display
+        FROM clientes c
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN enderecos_proprietario ep ON ep.pessoa_fisica_id = pf.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        LEFT JOIN procuradores pr ON pr.cliente_id = c.id
+        ORDER BY nome_display COLLATE NOCASE, c.nome COLLATE NOCASE
+        """
+    )
+    options = []
+    for row in rows:
+        nome = row["nome_display"] or row["nome"] or f"Cliente #{row['id']}"
+        search = " ".join(
+            str(value or "")
+            for value in (
+                nome,
+                row["nome"],
+                row["nome_exibicao"],
+                row["cpf_cnpj"],
+                row["telefone"],
+                row["email"],
+                row["pf_nome"],
+                row["pf_cpf"],
+                row["pf_email"],
+                row["pf_telefone"],
+                row["pj_razao_social"],
+                row["pj_nome_fantasia"],
+                row["pj_cnpj"],
+                row["pj_email"],
+                row["pj_telefone"],
+                row["cidade_display"],
+                row["uf_display"],
+                row["procurador_nome"],
+                row["procurador_cpf"],
+                row["procurador_email"],
+                row["procurador_telefone"],
+            )
+        )
+        options.append(
+            {
+                "id": row["id"],
+                "nome": nome,
+                "tipo_cliente": row["tipo_cliente"],
+                "status_cadastro": row["status_cadastro"],
+                "cidade": row["cidade_display"] or "",
+                "uf": row["uf_display"] or "",
+                "search": search,
+            }
+        )
+    return options
+
+
+def find_cliente_option_by_name(nome):
+    wanted = normalize_lookup(nome)
+    if not wanted:
+        return None
+    for option in fetch_cliente_autocomplete_options():
+        if normalize_lookup(option["nome"]) == wanted:
+            return option
+    return None
+
+
+def create_draft_cliente(nome, origem="criado_no_projeto"):
+    clean_name = (nome or "").strip()
+    if not clean_name:
+        return None
+    now = datetime.now().isoformat(timespec="seconds")
+    db = get_db()
+    cursor = db.execute(
+        """
+        INSERT INTO clientes
+            (nome, tipo_cliente, nome_exibicao, quem_assina, status_cadastro, tipo_pessoa, observacoes, criado_em, atualizado_em)
+        VALUES (?, 'PESSOA_FISICA', ?, 'PROPRIETARIO', 'RASCUNHO', 'fisica', ?, ?, ?)
+        """,
+        (
+            clean_name,
+            clean_name,
+            f"Cliente rascunho. Origem: {origem}.",
+            now,
+            now,
+        ),
+    )
+    cliente_id = cursor.lastrowid
+    db.execute(
+        """
+        INSERT OR IGNORE INTO pessoas_fisicas
+            (cliente_id, nome_completo, criado_em, atualizado_em)
+        VALUES (?, ?, ?, ?)
+        """,
+        (cliente_id, clean_name, now, now),
+    )
+    db.commit()
+    return cliente_id
+
+
+def resolve_project_cliente(form, fallback_name=""):
+    raw_cliente_id = (form.get("cliente_id") or "").strip()
+    cliente_nome = (form.get("cliente_nome") or form.get("proprietario") or "").strip()
+
+    if raw_cliente_id:
+        display_name = get_cliente_display_name(raw_cliente_id)
+        if display_name:
+            return raw_cliente_id, display_name
+
+    if cliente_nome:
+        existing = find_cliente_option_by_name(cliente_nome)
+        if existing:
+            return existing["id"], existing["nome"]
+        cliente_id = create_draft_cliente(cliente_nome)
+        return cliente_id, cliente_nome
+
+    return None, (fallback_name or "").strip()
+
+
+def get_process_type_options():
+    return query_db(
+        """
+        SELECT *
+        FROM tipos_processo
+        WHERE ativo = 1
+        ORDER BY ordem, nome
+        """
+    )
+
+
+def normalize_project_process_type(value):
+    return resolve_process_type_key((value or "").strip())
+
+
+def get_stage_template_for_process(process_type_key):
+    return get_config_stage_template_for_process(normalize_project_process_type(process_type_key))
+
+
+def get_applicable_stages_for_process(process_type_key, include_optional=False, include_conditional=True):
+    return get_config_applicable_stages_for_process(
+        normalize_project_process_type(process_type_key),
+        include_optional=include_optional,
+        include_conditional=include_conditional,
+    )
+
+
+def get_non_applicable_stages_for_process(process_type_key):
+    return [
+        stage_template
+        for stage_template in get_stage_template_for_process(process_type_key)
+        if stage_template["applicability"] == APPLICABILITY_NOT_APPLICABLE
+    ]
+
+
+def get_checklist_template_for_process(process_type_key):
+    return get_config_checklist_template_for_process(normalize_project_process_type(process_type_key))
+
+
+def get_checklist_template_for_process_stage(process_type_key, stage_key):
+    return get_config_checklist_template_for_process_stage(
+        normalize_project_process_type(process_type_key),
+        stage_key,
+    )
+
+
+def get_checklist_progress(items):
+    active_items = [item for item in items if item["status"] != CHECKLIST_STATUS_NOT_APPLICABLE]
+    total = len(active_items)
+    done = len([item for item in active_items if item["status"] == CHECKLIST_STATUS_DONE])
+    required_pending = [
+        item for item in active_items
+        if item["requirement_level"] == REQUIREMENT_REQUIRED and item["status"] != CHECKLIST_STATUS_DONE
+    ]
+    critical_pending = [
+        item for item in active_items
+        if item["criticality"] == CRITICALITY_CRITICAL and item["status"] != CHECKLIST_STATUS_DONE
+    ]
+    stage_blockers = [
+        item for item in active_items
+        if item["blocks_stage_completion"] and item["status"] != CHECKLIST_STATUS_DONE
+    ]
+    process_blockers = [
+        item for item in active_items
+        if item["blocks_process_completion"] and item["status"] != CHECKLIST_STATUS_DONE
+    ]
+    return {
+        "total": total,
+        "done": done,
+        "required_pending": len(required_pending),
+        "critical_pending": len(critical_pending),
+        "percent": int((done / total) * 100) if total else 0,
+        "can_advance_stage": True,
+        "has_stage_blockers": len(stage_blockers) > 0,
+        "can_finish_project": True,
+    }
+
+
+def get_stage_checklist_progress(project_id, stage_key):
+    items = query_db(
+        """
+        SELECT *
+        FROM project_checklist_items
+        WHERE project_id = ? AND stage_key = ? AND active = 1
+        ORDER BY order_index, id
+        """,
+        (project_id, stage_key),
+    )
+    return get_checklist_progress(items)
+
+
+def load_project_checklist_items(project_id):
+    return query_db(
+        """
+        SELECT pci.*, u.nome AS completed_by_name
+        FROM project_checklist_items pci
+        LEFT JOIN usuarios u ON u.id = pci.completed_by
+        WHERE pci.project_id = ? AND pci.active = 1
+        ORDER BY
+            CASE pci.stage_key
+                WHEN 'ORCAMENTO' THEN 1
+                WHEN 'DOCUMENTOS' THEN 2
+                WHEN 'ANALISE' THEN 3
+                WHEN 'PREPARACAO' THEN 4
+                WHEN 'MEDICAO' THEN 5
+                WHEN 'PROCESSAMENTO' THEN 6
+                WHEN 'ESCRITORIO' THEN 7
+                WHEN 'CONFERENCIA' THEN 8
+                WHEN 'ASSINATURAS' THEN 9
+                WHEN 'ORGAO_EXTERNO' THEN 10
+                WHEN 'PENDENCIAS' THEN 11
+                WHEN 'ENTREGA' THEN 12
+                WHEN 'FINALIZADO' THEN 13
+                ELSE 999
+            END,
+            pci.order_index,
+            pci.id
+        """,
+        (project_id,),
+    )
+
+
+def group_project_checklist_by_stage(items):
+    grouped = []
+    by_stage = {}
+    for item in items:
+        by_stage.setdefault(item["stage_key"], []).append(item)
+    for stage_key_value, stage_items in sorted(
+        by_stage.items(),
+        key=lambda pair: PROCESS_CHECKLIST_STAGE_ORDER.get(pair[0], 999),
+    ):
+        grouped.append(
+            {
+                "stage_key": stage_key_value,
+                "stage_name": stage_items[0]["stage_name"] or PROCESS_CHECKLIST_STAGE_NAMES.get(stage_key_value, stage_key_value),
+                "stage_items": stage_items,
+                "progress": get_checklist_progress(stage_items),
+            }
+        )
+    return grouped
+
+
 @app.context_processor
 def utility_processor():
     return {
         "status_meta": STATUS_META,
         "status_options": list(STATUS_META.keys()),
+        "applicability_meta": APPLICABILITY_META,
         "role_labels": ROLE_LABELS,
         "format_date": format_date,
         "format_datetime": format_datetime,
         "is_overdue": is_overdue,
         "file_url": file_url,
         "minutes_to_hours": minutes_to_hours,
+        "format_days": format_days,
         "format_currency": format_currency,
         "format_cpf": format_cpf,
         "format_cnpj": format_cnpj,
         "format_cep": format_cep,
         "format_phone": format_phone,
+        "process_type_name": process_type_name,
+        "checklist_status_done": CHECKLIST_STATUS_DONE,
+        "checklist_status_not_started": CHECKLIST_STATUS_NOT_STARTED,
+        "checklist_status_in_progress": CHECKLIST_STATUS_IN_PROGRESS,
+        "checklist_status_not_applicable": CHECKLIST_STATUS_NOT_APPLICABLE,
+        "checklist_requirement_required": REQUIREMENT_REQUIRED,
+        "checklist_requirement_recommended": REQUIREMENT_RECOMMENDED,
+        "checklist_requirement_optional": REQUIREMENT_OPTIONAL,
+        "checklist_requirement_conditional": REQUIREMENT_CONDITIONAL,
         "can_manage": can_manage,
         "can_admin": can_admin,
         "today_iso": date.today().isoformat(),
@@ -1509,8 +3450,22 @@ def projects():
     params = []
     q = filters.get("q", "").strip()
     if q:
-        sql_filters.append("(p.nome LIKE ? OR p.codigo LIKE ? OR p.proprietario LIKE ? OR c.nome LIKE ? OR ct.nome LIKE ?)")
-        params.extend([f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"])
+        sql_filters.append(
+            """
+            (
+                p.nome LIKE ? OR p.codigo LIKE ? OR p.proprietario LIKE ? OR p.cidade LIKE ?
+                OR c.nome LIKE ? OR c.nome_exibicao LIKE ?
+                OR pf.nome_completo LIKE ? OR pf.cpf LIKE ?
+                OR pj.razao_social LIKE ? OR pj.nome_fantasia LIKE ? OR pj.cnpj LIKE ?
+                OR pr.nome_completo LIKE ? OR pr.cpf LIKE ?
+                OR ct.nome LIKE ? OR ct.cidade LIKE ? OR ct.uf LIKE ?
+                OR p.tipo_servico LIKE ? OR p.tipo_servico_legado LIKE ? OR tp.nome LIKE ? OR tp.categoria LIKE ?
+                OR u.nome LIKE ? OR ur.nome LIKE ?
+            )
+            """
+        )
+        like_q = f"%{q}%"
+        params.extend([like_q] * 22)
     if filters.get("cidade"):
         sql_filters.append("p.cidade LIKE ?")
         params.append(f"%{filters['cidade']}%")
@@ -1542,8 +3497,8 @@ def projects():
         sql_filters.append("p.prioridade = ?")
         params.append(filters["prioridade"])
     if filters.get("tipo_servico"):
-        sql_filters.append("p.tipo_servico LIKE ?")
-        params.append(f"%{filters['tipo_servico']}%")
+        sql_filters.append("p.tipo_servico = ?")
+        params.append(normalize_project_process_type(filters["tipo_servico"]))
     if filters.get("etapa_id"):
         sql_filters.append(
             """
@@ -1598,13 +3553,30 @@ def projects():
         f"""
         SELECT DISTINCT
             p.*,
-            c.nome AS cliente_nome,
+            COALESCE(
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, ''),
+                NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
+            ) AS cliente_nome,
             ct.nome AS cartorio_nome,
-            u.nome AS responsavel_nome
+            ct.cidade AS cartorio_cidade,
+            ct.uf AS cartorio_uf,
+            tp.nome AS tipo_processo_nome,
+            tp.usa_orgao_externo AS tipo_processo_orgao_externo,
+            u.nome AS responsavel_nome,
+            ur.nome AS responsavel_etapa_nome
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        LEFT JOIN procuradores pr ON pr.cliente_id = c.id
         LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+        LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
+        LEFT JOIN projeto_etapas pea ON pea.id = p.etapa_atual_id
+        LEFT JOIN usuarios ur ON ur.id = pea.responsavel_id
         {where_clause}
         ORDER BY
             COALESCE(p.ordem_prioridade, 99999),
@@ -1613,8 +3585,8 @@ def projects():
         """,
         params,
     )
-    matrix = [(project, load_stage_rows(project["id"])) for project in projetos]
-    stage_ids = [stage["id"] for _, project_stages in matrix for stage in project_stages]
+    matrix = [(project, load_matrix_stage_rows(project["id"])) for project in projetos]
+    stage_ids = [stage["id"] for _, project_stages in matrix for stage in project_stages if stage.get("id")]
     matrix_checklists = {}
     pending_by_stage = {}
     pending_by_project = {}
@@ -1699,6 +3671,7 @@ def projects():
         usuarios=query_db("SELECT * FROM usuarios WHERE ativo = 1 ORDER BY nome"),
         clientes=query_db("SELECT * FROM clientes ORDER BY nome"),
         cartorios=query_db("SELECT * FROM cartorios ORDER BY nome"),
+        process_types=get_process_type_options(),
         filters=filters,
     )
 
@@ -1715,6 +3688,7 @@ def projects_export():
             c.nome AS cliente,
             p.cidade,
             ct.nome AS cartorio,
+            COALESCE(tp.nome, p.tipo_servico_legado, p.tipo_servico) AS tipo_processo,
             em.nome AS etapa_atual,
             u.nome AS responsavel_etapa,
             pe.status AS status_etapa,
@@ -1725,6 +3699,7 @@ def projects_export():
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+        LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         LEFT JOIN usuarios u ON u.id = pe.responsavel_id
@@ -1733,7 +3708,7 @@ def projects_export():
     )
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
-    writer.writerow(["Codigo", "Proprietario", "Projeto", "Cliente", "Cidade", "Cartorio", "Etapa atual", "Responsavel", "Status etapa", "Prazo etapa", "Prioridade", "Status projeto", "Pasta"])
+    writer.writerow(["Codigo", "Proprietario", "Projeto", "Cliente", "Cidade", "Cartorio", "Tipo processo", "Etapa atual", "Responsavel", "Status etapa", "Prazo etapa", "Prioridade", "Status projeto", "Pasta"])
     for row in rows:
         writer.writerow([row[key] for key in row.keys()])
     return Response(
@@ -1750,7 +3725,7 @@ def project_create():
         flash("Permissao negada.", "danger")
         return redirect(url_for("projects"))
 
-    clientes = query_db("SELECT * FROM clientes ORDER BY nome")
+    clientes_json = fetch_cliente_autocomplete_options()
     cartorios = query_db("SELECT * FROM cartorios ORDER BY nome")
 
     if request.method == "POST":
@@ -1761,20 +3736,13 @@ def project_create():
             flash("Informe o nome do projeto.", "danger")
             return redirect(url_for("project_create"))
 
-        proprietario = request.form.get("proprietario", "").strip() or nome
-        cliente_id = request.form.get("cliente_id") or None
+        cliente_id, cliente_nome = resolve_project_cliente(request.form, nome)
+        if not cliente_nome:
+            flash("Informe o Cliente / Proprietario do projeto.", "danger")
+            return redirect(url_for("project_create"))
 
-        valor_str = request.form.get("valor", "").strip()
-        valor = None
-        if valor_str:
-            # Remove R$ and spaces
-            valor_str = valor_str.replace("R$", "").strip()
-            # Brazilian format: 1.000,00 -> convert to 1000.00
-            valor_str = valor_str.replace(".", "").replace(",", ".")
-            try:
-                valor = float(valor_str)
-            except ValueError:
-                valor = None
+        process_key = normalize_project_process_type(request.form.get("tipo_servico"))
+        valor = parse_currency_value(request.form.get("valor", "").strip())
 
         created = datetime.now().isoformat(timespec="seconds")
         project_id = execute_db(
@@ -1786,12 +3754,12 @@ def project_create():
             (
                 codigo,
                 nome,
-                proprietario,
+                cliente_nome,
                 cliente_id,
                 request.form.get("cidade", "").strip(),
                 request.form.get("uf", "").strip().upper(),
                 request.form.get("cartorio_id") or None,
-                request.form.get("tipo_servico", "").strip(),
+                process_key,
                 valor,
                 request.form.get("caminho_pasta", "").strip(),
                 request.form.get("observacoes", "").strip(),
@@ -1800,7 +3768,7 @@ def project_create():
             ),
         )
         db = get_db()
-        create_stage_rows(db, project_id, None, None)
+        initialize_project_workflow(db, project_id, process_key, user_id=g.user["id"])
         next_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) + 1 FROM projetos WHERE id != ?", (project_id,)).fetchone()[0]
         db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (next_order, project_id))
         db.commit()
@@ -1810,8 +3778,9 @@ def project_create():
 
     return render_template(
         "project_form.html",
-        clientes=clientes,
+        clientes_json=clientes_json,
         cartorios=cartorios,
+        process_types=get_process_type_options(),
     )
 
 
@@ -1901,24 +3870,8 @@ def api_add_cliente():
         return {"error": "Nome obrigatorio"}, 400
 
     try:
-        cliente_id = execute_db(
-            """
-            INSERT INTO clientes
-                (nome, tipo_cliente, nome_exibicao, quem_assina, status_cadastro, tipo_pessoa, cpf_cnpj, telefone, email, observacoes, criado_em, atualizado_em)
-            VALUES (?, 'PESSOA_FISICA', ?, 'PROPRIETARIO', 'RASCUNHO', 'fisica', ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                nome,
-                nome,
-                (data.get("cpf_cnpj") or "").strip(),
-                (data.get("telefone") or "").strip(),
-                (data.get("email") or "").strip(),
-                (data.get("observacoes") or "").strip(),
-                datetime.now().isoformat(timespec="seconds"),
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        return {"id": cliente_id, "nome": nome}, 201
+        cliente_id = create_draft_cliente(nome)
+        return {"id": cliente_id, "nome": nome, "search": nome}, 201
     except Exception as e:
         return {"error": str(e)}, 500
 
@@ -1929,10 +3882,24 @@ def project_detail(project_id):
     refresh_due_statuses()
     project = query_db(
         """
-        SELECT p.*, c.nome AS cliente_nome, ct.nome AS cartorio_nome, u.nome AS responsavel_geral_nome
+        SELECT
+            p.*,
+            COALESCE(
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, ''),
+                NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
+            ) AS cliente_nome,
+            ct.nome AS cartorio_nome,
+            tp.nome AS tipo_processo_nome,
+            u.nome AS responsavel_geral_nome
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
         LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+        LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
         WHERE p.id = ?
         """,
@@ -1943,7 +3910,20 @@ def project_detail(project_id):
         flash("Projeto nao encontrado.", "danger")
         return redirect(url_for("projects"))
 
+    db = get_db()
+    workflow_initialized = project_has_workflow_initialized_db(db, project_id)
+    if not scalar(db, "SELECT COUNT(*) FROM project_checklist_items WHERE project_id = ?", (project_id,)):
+        create_project_checklist_from_template(db, project_id, project["tipo_servico"])
+        db.commit()
+    else:
+        sync_project_checklist_stage_links(db, project_id)
+        db.commit()
+
     etapas = load_stage_rows(project_id)
+    project_checklist_items = load_project_checklist_items(project_id)
+    project_checklist_by_stage = group_project_checklist_by_stage(project_checklist_items)
+    project_checklist_by_stage_key = {group["stage_key"]: group for group in project_checklist_by_stage}
+    project_checklist_progress = get_checklist_progress(project_checklist_items)
     tarefas = query_db(
         """
         SELECT t.*, u.nome AS responsavel_nome, em.nome AS etapa_nome
@@ -2042,6 +4022,10 @@ def project_detail(project_id):
         etapas=etapas,
         tarefas=tarefas,
         checklist_by_stage=checklist_by_stage,
+        project_checklist_by_stage=project_checklist_by_stage,
+        project_checklist_by_stage_key=project_checklist_by_stage_key,
+        project_checklist_progress=project_checklist_progress,
+        workflow_initialized=workflow_initialized,
         exigencias=exigencias,
         pendencias=pendencias,
         movimentacoes=movimentacoes,
@@ -2049,8 +4033,9 @@ def project_detail(project_id):
         total_minutes=total_minutes,
         historico=historico,
         usuarios=query_db("SELECT * FROM usuarios WHERE ativo = 1 ORDER BY nome"),
-        clientes=query_db("SELECT * FROM clientes ORDER BY nome"),
+        clientes_json=fetch_cliente_autocomplete_options(),
         cartorios=query_db("SELECT * FROM cartorios ORDER BY nome"),
+        process_types=get_process_type_options(),
     )
 
 
@@ -2067,17 +4052,12 @@ def project_action(project_id):
         if not can_manage():
             flash("Permissao negada.", "danger")
             return redirect(url_for("project_detail", project_id=project_id))
-        valor_str = request.form.get("valor", "").strip()
-        valor = None
-        if valor_str:
-            # Remove R$ and spaces
-            valor_str = valor_str.replace("R$", "").strip()
-            # Brazilian format: 1.000,00 -> convert to 1000.00
-            valor_str = valor_str.replace(".", "").replace(",", ".")
-            try:
-                valor = float(valor_str)
-            except ValueError:
-                valor = None
+        valor = parse_currency_value(request.form.get("valor", "").strip())
+        project_name = request.form.get("nome", "").strip() or project["nome"]
+        cliente_id, cliente_nome = resolve_project_cliente(request.form, project_name)
+        new_process_key = normalize_project_process_type(request.form.get("tipo_servico"))
+        old_process_key = normalize_project_process_type(project["tipo_servico"])
+        workflow_initialized = project_has_workflow_initialized_db(get_db(), project_id)
 
         execute_db(
             """
@@ -2088,13 +4068,13 @@ def project_action(project_id):
             WHERE id = ?
             """,
             (
-                request.form.get("nome", "").strip(),
-                request.form.get("proprietario", "").strip(),
-                request.form.get("cliente_id") or None,
+                project_name,
+                cliente_nome,
+                cliente_id,
                 request.form.get("cidade", "").strip(),
                 request.form.get("uf", "").strip().upper(),
                 request.form.get("cartorio_id") or None,
-                request.form.get("tipo_servico", "").strip(),
+                new_process_key,
                 request.form.get("prioridade", "Media"),
                 request.form.get("status", "Em andamento"),
                 request.form.get("prazo_critico") or None,
@@ -2106,16 +4086,37 @@ def project_action(project_id):
                 project_id,
             ),
         )
+        if new_process_key != old_process_key:
+            if workflow_initialized:
+                flash("Tipo de processo alterado. Este projeto ja possui etapas/checklist; revise o fluxo antes de recriar modelos.", "warning")
+            else:
+                db = get_db()
+                initialize_project_workflow(db, project_id, new_process_key, user_id=g.user["id"], force=True)
+                db.commit()
         record_event(project_id, "projeto_atualizado", "Dados principais do projeto atualizados.")
         flash("Projeto atualizado.", "success")
 
+    elif action == "apply_process_model":
+        if not can_manage():
+            flash("Permissao negada.", "danger")
+            return redirect(url_for("project_detail", project_id=project_id))
+        db = get_db()
+        if project_has_workflow_initialized_db(db, project_id):
+            create_project_checklist_from_template(db, project_id, project["tipo_servico"])
+            sync_project_checklist_stage_links(db, project_id)
+            db.commit()
+            flash("Este projeto ja possui fluxo por modelo. Itens faltantes foram conferidos sem duplicar.", "info")
+        else:
+            result = initialize_project_workflow(db, project_id, project["tipo_servico"], user_id=g.user["id"], force=True)
+            db.commit()
+            flash(f"Modelo aplicado: {result['created_stages']} etapas e {result['created_checklist']} itens de checklist criados.", "success")
+
     elif action == "update_stage":
         stage_id = request.form.get("etapa_id")
-        old_stage = query_db(
-            "SELECT pe.*, em.nome AS etapa_nome FROM projeto_etapas pe JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id WHERE pe.id = ?",
-            (stage_id,),
-            one=True,
-        )
+        old_stage = load_project_stage_for_action(stage_id, project_id)
+        if not old_stage:
+            flash("Etapa nao encontrada.", "danger")
+            return redirect(url_for("project_detail", project_id=project_id))
         status = request.form.get("status", "nao iniciado")
         progress = int(request.form.get("progresso") or 0)
         data_inicio = old_stage["data_inicio"]
@@ -2145,40 +4146,33 @@ def project_action(project_id):
                 stage_id,
             ),
         )
+        next_stage = None
+        if status == "concluido":
+            completed_stage = load_project_stage_for_action(stage_id, project_id)
+            next_stage = advance_project_after_stage_completion(
+                project_id,
+                completed_stage,
+                request.form.get("responsavel_id") or old_stage["responsavel_id"],
+            )
         record_event(project_id, "etapa_atualizada", f"Etapa {old_stage['etapa_nome']} atualizada para {STATUS_META.get(status, {}).get('label', status)}.")
-        flash("Etapa atualizada.", "success")
+        if next_stage:
+            flash(f"Etapa concluida. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+        else:
+            flash("Etapa atualizada.", "success")
 
     elif action == "move_stage":
         if not can_manage():
             flash("Permissao negada.", "danger")
             return redirect(url_for("project_detail", project_id=project_id))
         new_stage_id = request.form.get("nova_etapa_id")
-        new_stage = query_db(
-            """
-            SELECT pe.*, em.nome AS etapa_nome, em.ordem AS etapa_ordem
-            FROM projeto_etapas pe
-            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-            WHERE pe.id = ? AND pe.projeto_id = ? AND em.ativa = 1
-            """,
-            (new_stage_id, project_id),
-            one=True,
-        )
+        new_stage = load_project_stage_for_action(new_stage_id, project_id)
         if not new_stage:
             flash("Etapa de destino invalida.", "danger")
             return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
 
         db = get_db()
         old_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project_id)
-        old_stage = query_db(
-            """
-            SELECT pe.*, em.nome AS etapa_nome, em.ordem AS etapa_ordem
-            FROM projeto_etapas pe
-            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-            WHERE pe.id = ?
-            """,
-            (old_stage_id,),
-            one=True,
-        )
+        old_stage = load_project_stage_for_action(old_stage_id, project_id)
 
         redirect_url = request.form.get("next") or url_for("project_detail", project_id=project_id)
 
@@ -2259,6 +4253,14 @@ def project_action(project_id):
                 now,
             ),
         )
+        record_stage_history_transition(
+            project_id,
+            old_stage,
+            new_stage,
+            now,
+            request.form.get("responsavel_id") or new_stage["responsavel_id"],
+            motivo,
+        )
         pending_description = request.form.get("pendencia_descricao", "").strip()
         if pending_description:
             execute_db(
@@ -2332,6 +4334,59 @@ def project_action(project_id):
             progress = update_stage_progress(item["projeto_etapa_id"])
             record_event(project_id, "checklist_atualizado", f"Checklist atualizado: {item['titulo']} ({progress}%).")
             flash("Checklist atualizado.", "success")
+
+    elif action == "toggle_project_checklist":
+        item_id = request.form.get("item_id")
+        item = query_db(
+            "SELECT * FROM project_checklist_items WHERE id = ? AND project_id = ?",
+            (item_id, project_id),
+            one=True,
+        )
+        if item:
+            new_status = CHECKLIST_STATUS_NOT_STARTED if item["status"] == CHECKLIST_STATUS_DONE else CHECKLIST_STATUS_DONE
+            execute_db(
+                """
+                UPDATE project_checklist_items
+                SET status = ?, completed_at = ?, completed_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    new_status,
+                    datetime.now().isoformat(timespec="seconds") if new_status == CHECKLIST_STATUS_DONE else None,
+                    g.user["id"] if new_status == CHECKLIST_STATUS_DONE else None,
+                    datetime.now().isoformat(timespec="seconds"),
+                    item_id,
+                ),
+            )
+            record_event(project_id, "checklist_processo_atualizado", f"Checklist do processo atualizado: {item['title']}.")
+            flash("Checklist atualizado.", "success")
+
+    elif action == "mark_project_checklist_not_applicable":
+        item_id = request.form.get("item_id")
+        item = query_db(
+            "SELECT * FROM project_checklist_items WHERE id = ? AND project_id = ?",
+            (item_id, project_id),
+            one=True,
+        )
+        if item:
+            now = datetime.now().isoformat(timespec="seconds")
+            execute_db(
+                """
+                UPDATE project_checklist_items
+                SET status = ?, completed_at = NULL, completed_by = NULL,
+                    observation = COALESCE(NULLIF(?, ''), observation, 'Marcado como nao aplicavel.'),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    CHECKLIST_STATUS_NOT_APPLICABLE,
+                    request.form.get("observation", "").strip(),
+                    now,
+                    item_id,
+                ),
+            )
+            record_event(project_id, "checklist_processo_nao_aplicavel", f"Checklist marcado como nao aplicavel: {item['title']}.")
+            flash("Item marcado como nao aplicavel.", "info")
 
     elif action == "add_pending":
         description = request.form.get("descricao", "").strip()
@@ -2539,11 +4594,7 @@ def api_toggle_checklist(item_id):
 @app.route("/stage/<int:stage_id>/quick", methods=["POST"])
 @login_required
 def stage_quick(stage_id):
-    stage = query_db(
-        "SELECT pe.*, em.nome AS etapa_nome FROM projeto_etapas pe JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id WHERE pe.id = ?",
-        (stage_id,),
-        one=True,
-    )
+    stage = load_project_stage_for_action(stage_id)
     if not stage:
         flash("Etapa nao encontrada.", "danger")
         return redirect(url_for("projects"))
@@ -2566,8 +4617,15 @@ def stage_quick(stage_id):
         "UPDATE projeto_etapas SET status = ?, progresso = ?, data_inicio = ?, data_fim = ? WHERE id = ?",
         (status, progress, data_inicio, data_fim, stage_id),
     )
+    next_stage = None
+    if action == "finish":
+        completed_stage = load_project_stage_for_action(stage_id)
+        next_stage = advance_project_after_stage_completion(stage["projeto_id"], completed_stage, stage["responsavel_id"])
     record_event(stage["projeto_id"], "acao_rapida_etapa", f"Acao rapida em {stage['etapa_nome']}: {STATUS_META.get(status, {}).get('label', status)}.")
-    flash("Etapa atualizada.", "success")
+    if next_stage:
+        flash(f"Etapa concluida. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+    else:
+        flash("Etapa atualizada.", "success")
     return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
 
 
@@ -3557,56 +5615,10 @@ def cartorio_board():
 @login_required
 def reports():
     refresh_due_statuses()
-    stage_status = query_db(
-        """
-        SELECT em.nome AS etapa_nome, pe.status, COUNT(*) AS total
-        FROM projeto_etapas pe
-        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE em.ativa = 1
-        GROUP BY em.nome, pe.status
-        ORDER BY em.nome, total DESC
-        """
-    )
-    stage_bottlenecks = query_db(
-        """
-        SELECT em.nome AS etapa_nome, COUNT(*) AS total
-        FROM projeto_etapas pe
-        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE lower(pe.status) NOT IN ('concluido', 'cancelado')
-          AND em.ativa = 1
-          AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-        GROUP BY em.nome
-        ORDER BY total DESC
-        """
-    )
-    time_by_user = query_db(
-        """
-        SELECT u.nome AS usuario_nome, COALESCE(SUM(a.duracao_minutos), 0) AS minutos
-        FROM apontamentos_tempo a
-        LEFT JOIN usuarios u ON u.id = a.usuario_id
-        GROUP BY u.id, u.nome
-        ORDER BY minutos DESC
-        """
-    )
-    time_by_stage = query_db(
-        """
-        SELECT em.nome AS etapa_nome, COALESCE(SUM(a.duracao_minutos), 0) AS minutos
-        FROM apontamentos_tempo a
-        LEFT JOIN projeto_etapas pe ON pe.id = a.etapa_id
-        LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        GROUP BY em.nome
-        ORDER BY minutos DESC
-        """
-    )
-    by_city = query_db("SELECT cidade, COUNT(*) AS total FROM projetos GROUP BY cidade ORDER BY total DESC")
-    return render_template(
-        "reports.html",
-        stage_status=stage_status,
-        stage_bottlenecks=stage_bottlenecks,
-        time_by_user=time_by_user,
-        time_by_stage=time_by_stage,
-        by_city=by_city,
-    )
+    db = get_db()
+    ensure_project_stage_history(db)
+    db.commit()
+    return render_template("reports.html", **build_reports_context())
 
 
 init_db()

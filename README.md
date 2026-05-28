@@ -23,7 +23,7 @@ Prototipo funcional em Flask para validar a ideia do sistema de gestao de projet
    ```bash
    python -m pip install -r requirements.txt
    ```
-
+python app.py
 2. Execute:
    ```bash
    python app.py

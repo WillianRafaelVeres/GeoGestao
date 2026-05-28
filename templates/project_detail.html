@@ -16,21 +16,30 @@
 <section class="project-strip">
     <div>
         <span>Tipo</span>
-        <strong>{{ project.tipo_servico or '-' }}</strong>
+        <strong>{{ project.tipo_processo_nome or process_type_name(project.tipo_servico) or '-' }}</strong>
     </div>
     <div>
         <span>Valor</span>
-        <strong>{{ format_currency(project.valor) }}</strong>
+        <strong>{{ format_currency(project.valor) if project.valor is not none else 'Nao informado' }}</strong>
     </div>
     <div>
         <span>Tempo apontado</span>
         <strong>{{ minutes_to_hours(total_minutes) }}</strong>
+    </div>
+    <div>
+        <span>Checklist</span>
+        <strong>{{ project_checklist_progress.done }}/{{ project_checklist_progress.total }} itens</strong>
+    </div>
+    <div>
+        <span>Pendencias</span>
+        <strong>{{ pendencias|length }} registradas</strong>
     </div>
 </section>
 
 <ul class="nav nav-pills detail-tabs" id="projectTabs" role="tablist">
     <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#resumo" type="button">Resumo</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#etapas" type="button">Etapas</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#checklist" type="button">Checklist</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tarefas" type="button">Tarefas</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#documentos" type="button">Documentos</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pendencias" type="button">Pendencias</button></li>
@@ -46,6 +55,18 @@
                 <h2>Dados do projeto</h2>
                 <span class="badge bg-{{ status_meta[project.status|lower].color if project.status|lower in status_meta else 'secondary' }}">{{ project.status }}</span>
             </div>
+            {% if not workflow_initialized and can_manage() %}
+                <div class="workflow-notice">
+                    <div>
+                        <strong>Projeto criado antes dos modelos de processo.</strong>
+                        <span>Aplicar o modelo organiza etapas e checklist sem apagar dados antigos.</span>
+                    </div>
+                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                        <input type="hidden" name="action" value="apply_process_model" />
+                        <button class="btn btn-outline-primary btn-sm" type="submit">Aplicar modelo de processo</button>
+                    </form>
+                </div>
+            {% endif %}
             <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-3">
                 <input type="hidden" name="action" value="update_project" />
                 <div class="col-md-8">
@@ -61,17 +82,15 @@
                     </select>
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">Dono / proprietario</label>
-                    <input class="form-control" name="proprietario" value="{{ project.proprietario or '' }}" {% if not can_manage() %}readonly{% endif %} />
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Cliente</label>
-                    <select class="form-select" name="cliente_id" {% if not can_manage() %}disabled{% endif %}>
-                        <option value="">Sem cliente</option>
-                        {% for cliente in clientes %}
-                            <option value="{{ cliente.id }}" {% if project.cliente_id == cliente.id %}selected{% endif %}>{{ cliente.nome }}</option>
-                        {% endfor %}
-                    </select>
+                    <label class="form-label">Cliente / Proprietario</label>
+                    <div class="ac-wrapper" data-client-autocomplete data-client-source="projectClientes">
+                        <input class="form-control" type="text" name="cliente_nome"
+                               value="{{ project.cliente_nome or (project.proprietario if project.proprietario != project.codigo else '') or '' }}"
+                               placeholder="Digite para buscar ou adicionar..." autocomplete="off" required
+                               data-client-autocomplete-input {% if not can_manage() %}readonly{% endif %} />
+                        <input type="hidden" name="cliente_id" value="{{ project.cliente_id or '' }}" data-client-autocomplete-id />
+                        <div class="ac-list" data-client-autocomplete-list></div>
+                    </div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Cartorio/orgao</label>
@@ -91,12 +110,16 @@
                     <input class="form-control" name="uf" value="{{ project.uf or '' }}" {% if not can_manage() %}readonly{% endif %} />
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">Tipo de servico</label>
-                    <input class="form-control" name="tipo_servico" value="{{ project.tipo_servico or '' }}" {% if not can_manage() %}readonly{% endif %} />
+                    <label class="form-label">Tipo de processo</label>
+                    <select class="form-select" name="tipo_servico" {% if not can_manage() %}disabled{% endif %}>
+                        {% for process_type in process_types %}
+                            <option value="{{ process_type.chave }}" {% if project.tipo_servico == process_type.chave %}selected{% endif %}>{{ process_type.nome }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Valor do projeto</label>
-                    <input class="form-control" name="valor" type="text" value="{{ format_currency(project.valor) or '' }}" placeholder="R$ 0,00" {% if not can_manage() %}readonly{% endif %} />
+                    <input class="form-control" name="valor" type="text" value="{{ format_currency(project.valor) if project.valor is not none else '' }}" placeholder="R$ 0,00" {% if not can_manage() %}readonly{% endif %} />
                 </div>
                 <div class="col-12">
                     <label class="form-label">Caminho da pasta</label>
@@ -114,75 +137,203 @@
     </div>
 
     <div class="tab-pane fade" id="etapas">
-        <section class="stage-grid">
+        <section class="panel stage-summary-panel">
+            <div class="panel-header">
+                <h2>Etapas macro</h2>
+                <small>Clique em uma etapa para ver ou editar os detalhes.</small>
+            </div>
+            <div class="stage-summary-list">
             {% for etapa in etapas %}
                 {% set status_key = etapa.status|lower %}
-                <article class="panel stage-card">
-                    <div class="panel-header">
-                        <div>
-                            <h2>{{ etapa.etapa_nome }}</h2>
-                            <small>{{ etapa.subetapa_ativa or etapa.proximo_checklist or 'Sem subetapa ativa' }}</small>
+                {% set app_key = etapa.applicability or 'OBRIGATORIA' %}
+                {% set app_info = applicability_meta.get(app_key, {'label': app_key|lower, 'color': 'secondary'}) %}
+                {% set stage_group = project_checklist_by_stage_key.get(etapa.stage_key) if etapa.stage_key else none %}
+                <article class="stage-summary-card {{ 'is-done' if status_key == 'concluido' else '' }} {{ 'is-inactive' if not etapa.workflow_active else '' }}">
+                    <button class="stage-summary-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#stage-detail-{{ etapa.id }}" aria-expanded="false">
+                        <div class="stage-summary-main">
+                            <strong>{{ etapa.etapa_nome }}</strong>
+                            <span>{{ etapa.stage_description or etapa.subetapa_ativa or etapa.proximo_checklist or 'Sem subetapa ativa' }}</span>
                         </div>
-                        <span class="badge bg-{{ status_meta[status_key].color if status_key in status_meta else 'secondary' }}">{{ status_meta[status_key].label if status_key in status_meta else etapa.status }}</span>
-                    </div>
+                        <div class="stage-summary-meta">
+                            <span class="badge bg-{{ app_info.color }}">{{ app_info.label }}</span>
+                            <span class="badge bg-{{ status_meta[status_key].color if status_key in status_meta else 'secondary' }}">{{ status_meta[status_key].label if status_key in status_meta else etapa.status }}</span>
+                            <small>Responsavel: {{ etapa.responsavel_nome or 'Sem responsavel' }}</small>
+                            <small class="{{ 'text-danger fw-semibold' if is_overdue(etapa.prazo, etapa.status) else '' }}">Prazo: {{ format_date(etapa.prazo) or 'Sem prazo' }}</small>
+                            <span class="stage-done-indicator">
+                                Checklist: {{ etapa.checklist_done or 0 }}/{{ etapa.checklist_total or 0 }}
+                                {% if etapa.required_pending %} · {{ etapa.required_pending }} obrig. pend.{% endif %}
+                            </span>
+                        </div>
+                    </button>
                     <div class="progress slim-progress" role="progressbar" aria-valuenow="{{ etapa.progresso or 0 }}" aria-valuemin="0" aria-valuemax="100">
                         <div class="progress-bar" style="width: {{ etapa.progresso or 0 }}%"></div>
                     </div>
-                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
-                        <input type="hidden" name="action" value="update_stage" />
-                        <input type="hidden" name="etapa_id" value="{{ etapa.id }}" />
-                        <div class="col-md-4">
-                            <label class="form-label">Status</label>
-                            <select class="form-select" name="status">
-                                {% for key, info in status_meta.items() %}
-                                    <option value="{{ key }}" {% if status_key == key %}selected{% endif %}>{{ info.label }}</option>
-                                {% endfor %}
-                            </select>
+                    <div class="collapse stage-detail-collapse" id="stage-detail-{{ etapa.id }}">
+                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
+                            <input type="hidden" name="action" value="update_stage" />
+                            <input type="hidden" name="etapa_id" value="{{ etapa.id }}" />
+                            <div class="col-md-4">
+                                <label class="form-label">Status</label>
+                                <select class="form-select" name="status">
+                                    {% for key, info in status_meta.items() %}
+                                        <option value="{{ key }}" {% if status_key == key %}selected{% endif %}>{{ info.label }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Responsavel</label>
+                                <select class="form-select" name="responsavel_id">
+                                    <option value="">Sem responsavel</option>
+                                    {% for usuario in usuarios %}
+                                        <option value="{{ usuario.id }}" {% if etapa.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">Prazo</label>
+                                <input class="form-control" type="date" name="prazo" value="{{ etapa.prazo or '' }}" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">%</label>
+                                <input class="form-control" type="number" min="0" max="100" name="progresso" value="{{ etapa.progresso or 0 }}" />
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Subetapa ativa</label>
+                                <input class="form-control" name="subetapa_ativa" value="{{ etapa.subetapa_ativa or '' }}" />
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Origem atraso</label>
+                                <select class="form-select" name="atraso_origem">
+                                    <option value="">Nao se aplica</option>
+                                    <option value="interno" {% if etapa.atraso_origem == 'interno' %}selected{% endif %}>Interno</option>
+                                    <option value="externo" {% if etapa.atraso_origem == 'externo' %}selected{% endif %}>Externo</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">&nbsp;</label>
+                                <button class="btn btn-primary w-100" type="submit">Salvar</button>
+                            </div>
+                            <div class="col-12">
+                                <textarea class="form-control" name="observacoes" rows="2" placeholder="Observacoes">{{ etapa.observacoes or '' }}</textarea>
+                            </div>
+                        </form>
+                        <div class="stage-checklist-preview">
+                            <div class="stage-checklist-preview-head">
+                                <strong>Checklist da etapa</strong>
+                                {% if stage_group %}
+                                    <span>{{ stage_group.progress.done }}/{{ stage_group.progress.total }} concluido</span>
+                                {% else %}
+                                    <span>Sem checklist especifico</span>
+                                {% endif %}
+                            </div>
+                            {% if stage_group %}
+                                <div class="checklist-list">
+                                    {% for item in stage_group.stage_items %}
+                                        <div class="check-item process-check-item">
+                                            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                                                <input type="hidden" name="action" value="toggle_project_checklist" />
+                                                <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                                <button type="submit" class="check-toggle {{ 'checked' if item.status == checklist_status_done else '' }}">{{ 'OK' if item.status == checklist_status_done else '' }}</button>
+                                            </form>
+                                            <span>
+                                                <strong>{{ item.title }}</strong>
+                                                {% if item.help_text %}<small>{{ item.help_text }}</small>{% endif %}
+                                            </span>
+                                            <small class="process-check-meta">
+                                                <span class="badge {{ 'bg-danger' if item.requirement_level == checklist_requirement_required else 'bg-secondary' }}">{{ item.requirement_level|lower|replace('_', ' ') }}</span>
+                                                {% if item.blocks_stage_completion %}<span class="badge bg-light text-secondary">controle interno</span>{% endif %}
+                                            </small>
+                                            {% if item.status != checklist_status_not_applicable %}
+                                                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                                                    <input type="hidden" name="action" value="mark_project_checklist_not_applicable" />
+                                                    <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                                    <button class="btn btn-outline-secondary btn-sm" type="submit">N/A</button>
+                                                </form>
+                                            {% endif %}
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            {% else %}
+                                <div class="empty-state">Nenhum item especifico para esta etapa.</div>
+                            {% endif %}
                         </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Responsavel</label>
-                            <select class="form-select" name="responsavel_id">
-                                <option value="">Sem responsavel</option>
-                                {% for usuario in usuarios %}
-                                    <option value="{{ usuario.id }}" {% if etapa.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
-                                {% endfor %}
-                            </select>
+                        <div class="quick-actions mt-3">
+                            <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="start" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
+                            <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="pause" /><button class="btn btn-outline-warning btn-sm" type="submit">Pausar</button></form>
+                            <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="finish" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
                         </div>
-                        <div class="col-md-2">
-                            <label class="form-label">Prazo</label>
-                            <input class="form-control" type="date" name="prazo" value="{{ etapa.prazo or '' }}" />
-                        </div>
-                        <div class="col-md-2">
-                            <label class="form-label">%</label>
-                            <input class="form-control" type="number" min="0" max="100" name="progresso" value="{{ etapa.progresso or 0 }}" />
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Subetapa ativa</label>
-                            <input class="form-control" name="subetapa_ativa" value="{{ etapa.subetapa_ativa or '' }}" />
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label">Origem atraso</label>
-                            <select class="form-select" name="atraso_origem">
-                                <option value="">Nao se aplica</option>
-                                <option value="interno" {% if etapa.atraso_origem == 'interno' %}selected{% endif %}>Interno</option>
-                                <option value="externo" {% if etapa.atraso_origem == 'externo' %}selected{% endif %}>Externo</option>
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label">&nbsp;</label>
-                            <button class="btn btn-primary w-100" type="submit">Salvar</button>
-                        </div>
-                        <div class="col-12">
-                            <textarea class="form-control" name="observacoes" rows="2" placeholder="Observacoes">{{ etapa.observacoes or '' }}</textarea>
-                        </div>
-                    </form>
-                    <div class="quick-actions mt-3">
-                        <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="start" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
-                        <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="pause" /><button class="btn btn-outline-warning btn-sm" type="submit">Pausar</button></form>
-                        <form method="post" action="{{ url_for('stage_quick', stage_id=etapa.id) }}"><input type="hidden" name="quick_action" value="finish" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
                     </div>
                 </article>
             {% endfor %}
+            </div>
+        </section>
+    </div>
+
+    <div class="tab-pane fade" id="checklist">
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Checklist do processo</h2>
+                    <small>{{ project.tipo_processo_nome or process_type_name(project.tipo_servico) }}</small>
+                </div>
+                <div class="stage-summary-meta">
+                    <span class="badge bg-primary">{{ project_checklist_progress.done }}/{{ project_checklist_progress.total }}</span>
+                    <small>{{ project_checklist_progress.percent }}% concluido</small>
+                    {% if project_checklist_progress.required_pending %}
+                        <span class="badge bg-warning text-dark">{{ project_checklist_progress.required_pending }} obrig. pend.</span>
+                    {% endif %}
+                    {% if project_checklist_progress.critical_pending %}
+                        <span class="badge bg-danger">{{ project_checklist_progress.critical_pending }} critico pend.</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="process-checklist-groups">
+                {% for group in project_checklist_by_stage %}
+                    <article class="process-checklist-stage">
+                        <div class="process-checklist-stage-head">
+                            <div>
+                                <h3>{{ group.stage_name }}</h3>
+                                <small>{{ group.progress.done }}/{{ group.progress.total }} itens - {{ group.progress.percent }}%</small>
+                            </div>
+                            {% if group.progress.required_pending %}
+                                <span class="badge bg-secondary">{{ group.progress.required_pending }} obrig. pend.</span>
+                            {% elif group.progress.percent == 100 %}
+                                <span class="badge bg-success">Checklist completo</span>
+                            {% endif %}
+                        </div>
+                        <div class="checklist-list">
+                            {% for item in group.stage_items %}
+                                <div class="check-item process-check-item">
+                                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                                        <input type="hidden" name="action" value="toggle_project_checklist" />
+                                        <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                        <button type="submit" class="check-toggle {{ 'checked' if item.status == checklist_status_done else '' }}">{{ 'OK' if item.status == checklist_status_done else '' }}</button>
+                                    </form>
+                                    <span>
+                                        <strong>{{ item.title }}</strong>
+                                        {% if item.help_text %}<small>{{ item.help_text }}</small>{% endif %}
+                                        {% if item.condition_text %}<small>Condicao: {{ item.condition_text }}</small>{% endif %}
+                                    </span>
+                                    <small class="process-check-meta">
+                                        <span class="badge {{ 'bg-danger' if item.requirement_level == checklist_requirement_required else 'bg-secondary' }}">{{ item.requirement_level|lower|replace('_', ' ') }}</span>
+                                        <span class="badge {{ 'bg-danger' if item.criticality == 'CRITICA' else ('bg-warning text-dark' if item.criticality == 'ALTA' else 'bg-light text-dark') }}">{{ item.criticality|lower }}</span>
+                                        {% if item.responsible_name %}<span>{{ item.responsible_name }}</span>{% endif %}
+                                    </small>
+                                    {% if item.status != checklist_status_not_applicable %}
+                                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                                            <input type="hidden" name="action" value="mark_project_checklist_not_applicable" />
+                                            <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                            <button class="btn btn-outline-secondary btn-sm" type="submit">N/A</button>
+                                        </form>
+                                    {% endif %}
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </article>
+                {% else %}
+                    <div class="empty-state">Nenhum checklist de processo gerado para este projeto.</div>
+                {% endfor %}
+            </div>
         </section>
     </div>
 
@@ -228,6 +379,12 @@
     </div>
 
     <div class="tab-pane fade" id="documentos">
+        <div class="workflow-notice">
+            <div>
+                <strong>Documentos exigidos por processo ficam para a proxima fase.</strong>
+                <span>Por enquanto, acompanhe os itens documentais dentro do checklist operacional.</span>
+            </div>
+        </div>
         <section class="document-grid">
             {% for etapa in etapas %}
                 <article class="panel">
@@ -409,7 +566,9 @@
 </div>
 
 <script>
-document.querySelector('input[name="valor"]').addEventListener('blur', function() {
+window.projectClientes = {{ clientes_json|tojson }};
+const projectValueInput = document.querySelector('input[name="valor"]');
+if (projectValueInput) projectValueInput.addEventListener('blur', function() {
     let value = this.value.replace(/\D/g, '');
     if (value) {
         value = (parseInt(value) / 100).toLocaleString('pt-BR', {

@@ -97,6 +97,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     initDocumentalClientForm();
     initClientLiveSearch();
+    initProjectClientAutocompletes();
 });
 
 function initClientLiveSearch() {
@@ -157,6 +158,165 @@ function initClientLiveSearch() {
             link.href = `${url.pathname}${url.search}`;
         });
     }
+}
+
+function initProjectClientAutocompletes() {
+    const widgets = Array.from(document.querySelectorAll("[data-client-autocomplete]"));
+    if (!widgets.length) return;
+
+    widgets.forEach((widget) => {
+        const input = widget.querySelector("[data-client-autocomplete-input]");
+        const hidden = widget.querySelector("[data-client-autocomplete-id]");
+        const list = widget.querySelector("[data-client-autocomplete-list]");
+        const sourceName = widget.dataset.clientSource || "projectClientes";
+        if (!input || !hidden || !list || input.disabled || input.readOnly) return;
+
+        const getSource = () => Array.isArray(window[sourceName]) ? window[sourceName] : [];
+        let selectedLabel = input.value.trim();
+        let activeIndex = -1;
+
+        function normalize(value) {
+            if (window.SearchUtils) return window.SearchUtils.normalizeSearchText(value);
+            return String(value || "").toLowerCase().trim();
+        }
+
+        function matchClient(client, query) {
+            const fields = [client.nome, client.search, client.cidade, client.uf];
+            if (window.SearchUtils) return window.SearchUtils.matchesSearch(fields, query);
+            return normalize(fields.join(" ")).includes(normalize(query));
+        }
+
+        function setListOpen(open) {
+            list.classList.toggle("open", open && list.children.length > 0);
+        }
+
+        function pick(client) {
+            input.value = client.nome || "";
+            hidden.value = client.id || "";
+            selectedLabel = input.value.trim();
+            list.innerHTML = "";
+            setListOpen(false);
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
+        function findExact(query) {
+            const normalizedQuery = normalize(query);
+            return getSource().find((client) => normalize(client.nome) === normalizedQuery);
+        }
+
+        async function createDraftClient(name, item) {
+            const cleanName = String(name || "").trim();
+            if (!cleanName) return;
+            if (item) item.textContent = `Adicionando "${cleanName}"...`;
+            try {
+                const response = await fetch("/api/add-cliente", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ nome: cleanName }),
+                });
+                const data = await response.json();
+                if (!response.ok || !data.id) throw new Error(data.error || "Falha ao criar cliente");
+                const client = { id: data.id, nome: data.nome || cleanName, search: data.search || cleanName };
+                window[sourceName] = [...getSource(), client];
+                pick(client);
+            } catch {
+                if (item) item.textContent = "Nao foi possivel adicionar. Tente novamente.";
+            }
+        }
+
+        function render() {
+            const query = input.value.trim();
+            list.innerHTML = "";
+            activeIndex = -1;
+
+            if (!query) {
+                hidden.value = "";
+                selectedLabel = "";
+                setListOpen(false);
+                return;
+            }
+
+            if (query !== selectedLabel) hidden.value = "";
+            const clients = getSource();
+            const hits = clients.filter((client) => matchClient(client, query)).slice(0, 8);
+
+            hits.forEach((client) => {
+                const item = document.createElement("div");
+                item.className = "ac-item";
+                item.setAttribute("role", "option");
+                item.innerHTML = `<span><strong>${escapeHtml(client.nome || "")}</strong>${client.cidade ? `<span class="ac-item-meta">${escapeHtml([client.cidade, client.uf].filter(Boolean).join(" - "))}</span>` : ""}</span>`;
+                item.addEventListener("mousedown", (event) => {
+                    event.preventDefault();
+                    pick(client);
+                });
+                list.appendChild(item);
+            });
+
+            if (!hits.length) {
+                const empty = document.createElement("div");
+                empty.className = "ac-empty";
+                empty.textContent = "Nenhum cliente encontrado";
+                list.appendChild(empty);
+            }
+
+            if (query.length >= 2 && !findExact(query)) {
+                const create = document.createElement("div");
+                create.className = "ac-item ac-new";
+                create.setAttribute("role", "option");
+                create.textContent = ` Adicionar cliente: ${query}`;
+                create.addEventListener("mousedown", (event) => {
+                    event.preventDefault();
+                    createDraftClient(query, create);
+                });
+                list.appendChild(create);
+            }
+
+            setListOpen(true);
+        }
+
+        input.addEventListener("input", render);
+        input.addEventListener("focus", render);
+        input.addEventListener("keydown", (event) => {
+            const options = Array.from(list.querySelectorAll(".ac-item"));
+            if (!options.length || !list.classList.contains("open")) return;
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                activeIndex = (activeIndex + 1) % options.length;
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                activeIndex = (activeIndex - 1 + options.length) % options.length;
+            } else if (event.key === "Enter" && activeIndex >= 0) {
+                event.preventDefault();
+                options[activeIndex].dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+            } else if (event.key === "Escape") {
+                setListOpen(false);
+                return;
+            } else {
+                return;
+            }
+            options.forEach((option, index) => option.classList.toggle("is-active", index === activeIndex));
+        });
+        input.addEventListener("blur", () => {
+            const exact = !hidden.value && findExact(input.value.trim());
+            if (exact) pick(exact);
+            setTimeout(() => setListOpen(false), 120);
+        });
+        if (input.form) {
+            input.form.addEventListener("submit", () => {
+                const exact = !hidden.value && findExact(input.value.trim());
+                if (exact) {
+                    input.value = exact.nome;
+                    hidden.value = exact.id;
+                }
+            });
+        }
+    });
+}
+
+function escapeHtml(value) {
+    const element = document.createElement("span");
+    element.textContent = String(value || "");
+    return element.innerHTML;
 }
 
 function initDocumentalClientForm() {
@@ -268,6 +428,8 @@ function initDocumentalClientForm() {
         });
 
         setupCepLookup(form, updateCityWarnings);
+        setupCpfInlineValidation(form);
+        setupCnpjLookup(form, updateCityWarnings);
 
         form.addEventListener("submit", (event) => {
             if (quemAssina && quemAssina.disabled) {
@@ -552,4 +714,147 @@ function validateCnpj(value) {
         if (digit !== Number(cnpj[12 + round])) return false;
     }
     return true;
+}
+
+// --- CPF inline validation ---
+
+function setupCpfInlineValidation(form) {
+    form.querySelectorAll('[data-mask="cpf"]').forEach((input) => {
+        input.addEventListener("input", () => checkCpfStatus(input));
+    });
+}
+
+function checkCpfStatus(input) {
+    const digits = onlyDigits(input.value);
+    const status = ensureDocStatus(input, "doc-status");
+    if (digits.length < 11) {
+        setDocStatus(status, "", "");
+        return;
+    }
+    if (validateCpf(input.value)) {
+        setDocStatus(status, "CPF valido.", "success");
+    } else {
+        setDocStatus(status, "Informe um CPF valido.", "error");
+    }
+}
+
+// --- CNPJ lookup e autopreenchimento de Pessoa Juridica ---
+
+function setupCnpjLookup(form, updateCityWarnings) {
+    if (!window.CnpjService) return;
+    const pjSection = form.querySelector('[data-section="pj"]');
+    if (!pjSection) return;
+    const cnpjInput = pjSection.querySelector('[data-mask="cnpj"]');
+    if (!cnpjInput) return;
+
+    let timer = null;
+
+    cnpjInput.addEventListener("input", () => {
+        const status = ensureDocStatus(cnpjInput, "doc-status");
+        const digits = onlyDigits(cnpjInput.value);
+        clearTimeout(timer);
+
+        if (digits.length < 14) {
+            setDocStatus(status, "", "");
+            return;
+        }
+        if (!window.CnpjService.validarCnpj(cnpjInput.value)) {
+            setDocStatus(status, "Informe um CNPJ valido.", "error");
+            return;
+        }
+        timer = setTimeout(() => doLookupCnpj(cnpjInput, form, updateCityWarnings), 400);
+    });
+}
+
+async function doLookupCnpj(cnpjInput, form, updateCityWarnings) {
+    const clean = window.CnpjService.cleanCnpj(cnpjInput.value);
+    if (!window.CnpjService.validarCnpj(clean)) return;
+    const status = ensureDocStatus(cnpjInput, "doc-status");
+
+    setDocStatus(status, "Consultando CNPJ...", "loading");
+    try {
+        const data = await window.CnpjService.consultarCnpj(clean);
+        if (window.CnpjService.cleanCnpj(cnpjInput.value) !== clean) return;
+        if (!data) {
+            setDocStatus(status, "CNPJ valido, mas nao encontrado na consulta. Preencha manualmente.", "warning");
+            return;
+        }
+        const empresa = window.CnpjService.mapBrasilApiCnpjToEmpresa(data);
+        aplicarDadosEmpresa(form, empresa, updateCityWarnings);
+        setDocStatus(status, "Empresa encontrada. Dados preenchidos automaticamente.", "success");
+    } catch {
+        setDocStatus(status, "Nao foi possivel consultar o CNPJ agora. Voce pode preencher manualmente.", "warning");
+    }
+}
+
+function aplicarDadosEmpresa(form, empresa, updateCityWarnings) {
+    function setField(name, value) {
+        if (!String(value || "").trim()) return;
+        const field = form.querySelector(`[name="${name}"]`);
+        if (!field) return;
+        field.value = value;
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    setField("pj_razao_social", empresa.razao_social);
+    setField("pj_nome_fantasia", empresa.nome_fantasia);
+    setField("pj_logradouro", empresa.logradouro);
+    setField("pj_numero", empresa.numero);
+    setField("pj_bairro", empresa.bairro);
+    setField("pj_cidade", empresa.cidade);
+    setField("pj_uf", empresa.uf);
+
+    // CEP: aplicar e marcar como ja resolvido se o endereco veio completo da API (evita re-consulta ViaCEP)
+    if (empresa.cep) {
+        const cepInput = form.querySelector('[name="pj_cep"]');
+        if (cepInput) {
+            cepInput.value = empresa.cep.replace(/^(\d{5})(\d{3})$/, "$1-$2");
+            cepInput.dispatchEvent(new Event("change", { bubbles: true }));
+            if (empresa.logradouro && empresa.cidade && empresa.uf) {
+                cepInput.dataset.lastCep = empresa.cep;
+            }
+        }
+    }
+
+    // Complemento nao e preenchido automaticamente — fica sempre manual.
+
+    // Telefone e email: preencher apenas se o campo estiver vazio
+    if (empresa.telefone) {
+        const phoneField = form.querySelector('[name="pj_telefone"]');
+        if (phoneField && !phoneField.value.trim()) {
+            const d = empresa.telefone;
+            let formatted = d;
+            if (d.length === 11) formatted = `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+            else if (d.length === 10) formatted = `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+            phoneField.value = formatted;
+        }
+    }
+    if (empresa.email) {
+        const emailField = form.querySelector('[name="pj_email"]');
+        if (emailField && !emailField.value.trim()) {
+            emailField.value = empresa.email;
+        }
+    }
+
+    updateCityWarnings(form);
+}
+
+// --- Helpers de status para CPF/CNPJ ---
+
+function ensureDocStatus(input, className) {
+    const label = input.closest("label");
+    if (!label) return null;
+    let status = label.querySelector(`.${className}`);
+    if (!status) {
+        status = document.createElement("small");
+        status.className = className;
+        label.appendChild(status);
+    }
+    return status;
+}
+
+function setDocStatus(status, message, state) {
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.state = state || "";
 }

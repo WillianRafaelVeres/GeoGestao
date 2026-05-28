@@ -6,7 +6,7 @@
         <h1>Matriz de projetos</h1>
     </div>
     <form class="global-search" method="get">
-        <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar projeto, dono ou cartorio" />
+        <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar projeto, cliente, processo, cartorio, cidade..." />
         <button type="submit">Buscar</button>
     </form>
     <div class="matrix-actions">
@@ -30,6 +30,7 @@
 {% if filters.responsavel_id %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.cidade %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.cartorio_id %}{% set active_filters = active_filters + [1] %}{% endif %}
+{% if filters.tipo_servico %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.etapa_id %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.prioridade %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.prazo %}{% set active_filters = active_filters + [1] %}{% endif %}
@@ -65,6 +66,15 @@
                     <option value="">Todas</option>
                     {% for etapa in etapas %}
                         <option value="{{ etapa.id }}" {% if filters.etapa_id == etapa.id|string %}selected{% endif %}>{{ etapa.nome }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-field">
+                <label class="filter-label">Tipo de processo</label>
+                <select name="tipo_servico" class="filter-select {{ 'is-active' if filters.tipo_servico }}">
+                    <option value="">Todos</option>
+                    {% for process_type in process_types %}
+                        <option value="{{ process_type.chave }}" {% if filters.tipo_servico == process_type.chave %}selected{% endif %}>{{ process_type.nome }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -125,9 +135,8 @@
     <table class="ops-matrix">
         <thead>
             <tr>
-                <th class="sticky-col owner-col">Proprietario / Dono</th>
-                <th class="sticky-col project-name-col">Projeto</th>
-                <th class="sticky-col cartorio-col">Cartorio</th>
+                <th class="sticky-col project-identity-col">Projeto</th>
+                <th class="sticky-col project-process-col">Processo</th>
                 {% for etapa in etapas %}
                     <th class="stage-head">{{ etapa.nome }}</th>
                 {% endfor %}
@@ -143,16 +152,27 @@
                 {% endfor %}
                 {% set project_pendings = pending_by_project.get(project.id, []) %}
                 <tr class="matrix-project-row" data-project-id="{{ project.id }}">
-                    <td class="sticky-col owner-col">
-                        <span class="owner-name">{{ project.proprietario or project.cliente_nome or '-' }}</span>
+                    <td class="sticky-col project-identity-col drag-handle" title="Arraste para reordenar">
+                        <div class="proj-identity-cell">
+                            <span class="drag-grip" aria-hidden="true">⠿</span>
+                            <span class="proj-identity-text">
+                                <span class="proj-identity-name" title="{{ project.nome }}">{{ project.nome }}</span>
+                                {% set owner = project.cliente_nome or (project.proprietario if project.proprietario != project.codigo else '') %}
+                                <small class="proj-identity-owner" title="{{ owner or '' }}">{{ owner or '—' }}</small>
+                            </span>
+                        </div>
                     </td>
-                    <td class="sticky-col project-name-col drag-handle" title="Arraste para reordenar">
-                        <span class="drag-grip">⠿</span>
-                        <span class="project-name-text">{{ project.nome }}</span>
-                        <small class="project-code">{{ project.codigo }}</small>
-                    </td>
-                    <td class="sticky-col cartorio-col">
-                        <span class="cartorio-text">{{ project.cartorio_nome or '—' }}</span>
+                    <td class="sticky-col project-process-col">
+                        <div class="proj-process-cell">
+                            {% set process_name = project.tipo_processo_nome or process_type_name(project.tipo_servico) %}
+                            {% if process_name %}<span class="proc-type" title="{{ process_name }}">{{ process_name }}</span>{% else %}<span class="proc-type proc-type--empty">-</span>{% endif %}
+                            {% if false %}
+                            {% if project.tipo_servico %}<span class="proc-type" title="{{ project.tipo_servico }}">{{ project.tipo_servico }}</span>{% else %}<span class="proc-type proc-type--empty">—</span>{% endif %}
+                            {% endif %}
+                            {% set external_hint = project.tipo_processo_orgao_externo if project.tipo_processo_orgao_externo not in ['nao', 'nao por padrao', 'conforme caso'] else '' %}
+                            {% set cart_loc = (project.cartorio_cidade ~ ' - ' ~ project.cartorio_uf) if (project.cartorio_cidade and project.cartorio_uf) else (project.cartorio_nome or external_hint) %}
+                            <small class="proc-cartorio" title="{{ cart_loc or '' }}">{{ cart_loc or '—' }}</small>
+                        </div>
                     </td>
                     {% for etapa in etapas_projeto %}
                         {% set status_key = etapa.status|lower %}
@@ -181,7 +201,7 @@
                     {% endfor %}
                 </tr>
             {% else %}
-                <tr><td colspan="{{ 3 + etapas|length }}" class="empty-state">Nenhum projeto encontrado.</td></tr>
+                <tr><td colspan="{{ 2 + etapas|length }}" class="empty-state">Nenhum projeto encontrado.</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -218,7 +238,7 @@
                         <span class="pmodal-code">{{ project.codigo }}</span>
                         <h2 class="pmodal-title">{{ project.nome }}</h2>
                         <p class="pmodal-sub">
-                            {{- project.proprietario or project.cliente_nome or '—' -}}
+                            {{- project.cliente_nome or (project.proprietario if project.proprietario != project.codigo else '') or '-' -}}
                             {%- if project.cartorio_nome %} · {{ project.cartorio_nome }}{% endif -%}
                             {%- if project.cidade %} · {{ project.cidade }}{% endif -%}
                         </p>
@@ -546,13 +566,12 @@
 <style>
 /* ── DRAG HANDLE ─────────────────────────────────────── */
 .drag-grip {
-    display: inline-block;
+    flex-shrink: 0;
     color: #d1d5db;
     font-size: 13px;
-    margin-right: 5px;
     cursor: grab;
-    vertical-align: middle;
     line-height: 1;
+    user-select: none;
     transition: color .15s;
 }
 .matrix-project-row:hover .drag-grip { color: #9ca3af; }

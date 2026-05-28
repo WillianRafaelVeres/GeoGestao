@@ -1,87 +1,525 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="page-heading">
+<div class="page-heading reports-heading">
     <div>
+        <span class="module-label">BI operacional</span>
         <h1>Relatorios</h1>
-        <p>Leituras iniciais de gargalo, status, tempo, cidade e produtividade.</p>
+        <p>Visao gerencial de projetos, etapas, responsaveis e orgaos externos.</p>
     </div>
 </div>
 
-<div class="content-grid two-columns">
-    <section class="panel">
-        <div class="panel-header"><h2>Gargalo por etapa</h2></div>
-        <div class="bar-list">
-            {% set max_stage = stage_bottlenecks|map(attribute='total')|max if stage_bottlenecks else 1 %}
-            {% for item in stage_bottlenecks %}
-                <div class="bar-row">
-                    <div class="bar-label"><span>{{ item.etapa_nome }}</span><strong>{{ item.total }}</strong></div>
-                    <div class="bar-track"><span style="width: {{ (item.total / max_stage * 100)|round(0, 'floor') }}%"></span></div>
-                </div>
+{# ============================================================
+   ABAS
+   ============================================================ #}
+<nav class="report-tab-nav" id="reportTabNav">
+    <button class="report-tab-btn active" data-tab="visao-geral">Visao geral</button>
+    <button class="report-tab-btn" data-tab="etapas">Etapas</button>
+    <button class="report-tab-btn" data-tab="processos">Processos</button>
+    <button class="report-tab-btn" data-tab="responsaveis">Responsaveis</button>
+    <button class="report-tab-btn" data-tab="cidades-orgaos">Cidades e orgaos</button>
+    <button class="report-tab-btn {{ 'tab-alert' if stopped_projects else '' }}" data-tab="parados">
+        Parados{% if stopped_projects %}<span class="tab-badge">{{ stopped_projects|length }}</span>{% endif %}
+    </button>
+</nav>
+
+{# ============================================================
+   ABA 1 — VISAO GERAL
+   ============================================================ #}
+<section class="report-tab-content active" id="tab-visao-geral">
+
+    <div class="report-summary-grid">
+        <article class="report-kpi">
+            <span>Projetos ativos</span>
+            <strong>{{ summary.active_projects }}</strong>
+            <small>Projetos em andamento no momento.</small>
+        </article>
+
+        <article class="report-kpi {{ 'is-danger' if summary.stopped_projects else '' }}">
+            <span>Projetos parados</span>
+            <strong>{{ summary.stopped_projects }}</strong>
+            <small>Ha mais de {{ thresholds.stopped_days }} dias na mesma etapa.</small>
+        </article>
+
+        <article class="report-kpi {{ 'is-danger' if summary.main_bottleneck and summary.main_bottleneck.status == 'Gargalo' else 'is-warning' if summary.main_bottleneck else '' }}">
+            <span>Maior gargalo</span>
+            <strong>{{ summary.main_bottleneck.stage_name if summary.main_bottleneck else 'Sem gargalo' }}</strong>
+            <small>
+                {% if summary.main_bottleneck %}
+                    {{ summary.main_bottleneck.active_count }} ativos
+                    {% if summary.main_bottleneck.avg_days %} · media {{ format_days(summary.main_bottleneck.avg_days) }}{% endif %}
+                {% else %}
+                    Nenhuma etapa em atencao.
+                {% endif %}
+            </small>
+        </article>
+
+        <article class="report-kpi {{ 'is-warning' if summary.cartorio_active else '' }}">
+            <span>Em cartorio / orgao externo</span>
+            <strong>{{ summary.cartorio_active }}</strong>
+            <small>Projetos protocolados ou aguardando retorno externo.</small>
+        </article>
+
+        <article class="report-kpi {{ 'is-danger' if summary.overdue_projects else '' }}">
+            <span>Prazos criticos</span>
+            <strong>{{ summary.overdue_projects }}</strong>
+            <small>Prazo vencido ou etapa marcada como atrasada.</small>
+        </article>
+
+        <article class="report-kpi {{ 'is-danger' if summary.most_loaded_responsible and summary.most_loaded_responsible.active_count >= thresholds.responsible_overload else 'is-warning' if summary.most_loaded_responsible and summary.most_loaded_responsible.active_count >= thresholds.responsible_attention else '' }}">
+            <span>Responsavel com maior carga</span>
+            <strong>{{ summary.most_loaded_responsible.responsible if summary.most_loaded_responsible else 'Sem dados' }}</strong>
+            <small>{% if summary.most_loaded_responsible %}{{ summary.most_loaded_responsible.active_count }} projetos ativos{% else %}Sem responsaveis definidos.{% endif %}</small>
+        </article>
+    </div>
+
+    {# Gargalos #}
+    <div class="panel report-section">
+        <div class="panel-header">
+            <div>
+                <h2>Gargalos identificados</h2>
+                <small>Etapas com acumulo de projetos ou tempo elevado.</small>
+            </div>
+        </div>
+        <div class="bottleneck-list">
+            {% for item in bottlenecks %}
+                <article class="bottleneck-item tone-{{ item.tone }}">
+                    <div>
+                        <strong>{{ loop.index }}. {{ item.stage_name }}</strong>
+                        <span>{{ item.suggestion }}</span>
+                    </div>
+                    <dl>
+                        <div><dt>Ativos</dt><dd>{{ item.active_count }}</dd></div>
+                        <div><dt>Tempo medio</dt><dd>{{ format_days(item.avg_days) if item.avg_days else 'sem hist.' }}</dd></div>
+                        <div><dt>Maior parado</dt><dd>{{ format_days(item.max_open_days) if item.max_open_days else '—' }}</dd></div>
+                    </dl>
+                </article>
             {% else %}
-                <div class="empty-state">Sem dados.</div>
+                <div class="empty-state">Nenhum gargalo identificado. Bom sinal!</div>
             {% endfor %}
         </div>
-    </section>
+    </div>
 
-    <section class="panel">
-        <div class="panel-header"><h2>Tempo por usuario</h2></div>
+    {# Projetos parados — resumo #}
+    {% if stopped_projects %}
+    <div class="panel report-section">
+        <div class="panel-header">
+            <div>
+                <h2>Projetos parados — resumo</h2>
+                <small>Ha mais de {{ thresholds.stopped_days }} dias sem avanco.</small>
+            </div>
+            <a href="#" class="btn btn-sm btn-secondary" onclick="switchTab('parados'); return false;">Ver todos</a>
+        </div>
         <div class="table-responsive">
-            <table class="table compact-table">
-                <thead><tr><th>Usuario</th><th>Tempo</th></tr></thead>
+            <table class="table report-table">
+                <thead>
+                    <tr>
+                        <th>Projeto</th>
+                        <th>Processo</th>
+                        <th>Etapa</th>
+                        <th>Responsavel</th>
+                        <th>Dias parado</th>
+                        <th>Proxima acao</th>
+                    </tr>
+                </thead>
                 <tbody>
-                    {% for item in time_by_user %}
-                        <tr><td>{{ item.usuario_nome or 'Sem usuario' }}</td><td>{{ minutes_to_hours(item.minutos) }}</td></tr>
+                    {% for item in stopped_projects[:5] %}
+                    <tr>
+                        <td><a class="table-link" href="{{ url_for('project_detail', project_id=item.project_id) }}">{{ item.project_name }}</a></td>
+                        <td><small class="text-muted">{{ process_type_name(item.process_type) if item.process_type else '-' }}</small></td>
+                        <td>{{ item.stage_name }}</td>
+                        <td>{{ item.responsible }}</td>
+                        <td><strong class="{{ 'text-danger' if item.open_days >= thresholds.critical_stopped_days else 'text-warning' }}">{{ format_days(item.open_days) }}</strong></td>
+                        <td><small>{{ item.next_action }}</small></td>
+                    </tr>
+                    {% endfor %}
+                    {% if stopped_projects|length > 5 %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted">
+                            <small>... e mais {{ stopped_projects|length - 5 }}. <a href="#" onclick="switchTab('parados'); return false;">Ver todos</a></small>
+                        </td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+</section>
+
+{# ============================================================
+   ABA 2 — ETAPAS
+   ============================================================ #}
+<section class="report-tab-content" id="tab-etapas">
+    <div class="panel report-section">
+        <div class="panel-header">
+            <div>
+                <h2>Status por etapa</h2>
+                <small>Projetos ativos e tempo em cada etapa do fluxo operacional.</small>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table report-table report-table-stages">
+                <thead>
+                    <tr>
+                        <th>Etapa</th>
+                        <th>Projetos ativos</th>
+                        <th>Concluidos</th>
+                        <th>Tempo medio</th>
+                        <th>Maior parado</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in stage_metrics %}
+                    {% if item.active_count > 0 or item.completed_count > 0 %}
+                    <tr class="{{ 'stage-row-bottleneck' if item.status == 'Gargalo' else 'stage-row-attention' if item.status == 'Atencao' else '' }}">
+                        <td><strong>{{ item.stage_name }}</strong></td>
+                        <td>
+                            {% if item.active_count %}
+                                <strong>{{ item.active_count }}</strong>
+                            {% else %}
+                                <span class="text-muted">0</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ item.completed_count }}</td>
+                        <td>
+                            {% if item.avg_days %}
+                                {{ format_days(item.avg_days) }}
+                            {% else %}
+                                <span class="text-muted">sem historico</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if item.max_open_days %}
+                                <span class="{{ 'text-danger font-bold' if item.max_open_days >= thresholds.bottleneck_days else '' }}">
+                                    {{ format_days(item.max_open_days) }}
+                                </span>
+                            {% else %}
+                                <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td><span class="report-status tone-{{ item.tone }}">{{ item.status }}</span></td>
+                    </tr>
+                    {% endif %}
                     {% else %}
-                        <tr><td colspan="2">Sem apontamentos.</td></tr>
+                    <tr><td colspan="6" class="text-center text-muted">Nenhuma etapa com dados disponiveis.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-    </section>
-</div>
+        <div class="report-legend">
+            <span class="legend-dot tone-green"></span> Normal &nbsp;
+            <span class="legend-dot tone-amber"></span> Atencao (media &ge;{{ thresholds.attention_days }}d ou parado &ge;{{ thresholds.attention_days }}d) &nbsp;
+            <span class="legend-dot tone-red"></span> Gargalo (media &ge;{{ thresholds.bottleneck_days }}d ou parado &ge;{{ thresholds.bottleneck_days }}d) &nbsp;
+            <span class="legend-dot tone-muted"></span> Sem historico suficiente (projetos ativos, historico em formacao)
+        </div>
+        <div class="report-note">
+            Etapas sem projetos ativos ou concluidos estao ocultas para nao poluir a visao.
+        </div>
+    </div>
+</section>
 
-<div class="content-grid two-columns">
-    <section class="panel">
-        <div class="panel-header"><h2>Status por etapa</h2></div>
+{# ============================================================
+   ABA 3 — PROCESSOS
+   ============================================================ #}
+<section class="report-tab-content" id="tab-processos">
+    <div class="panel report-section">
+        <div class="panel-header">
+            <div>
+                <h2>Por tipo de processo</h2>
+                <small>Cada processo tem fluxo proprio. Os tempos e gargalos sao comparados dentro de cada tipo.</small>
+            </div>
+        </div>
         <div class="table-responsive">
-            <table class="table compact-table">
-                <thead><tr><th>Etapa</th><th>Status</th><th>Total</th></tr></thead>
+            <table class="table report-table">
+                <thead>
+                    <tr>
+                        <th>Tipo de processo</th>
+                        <th>Ativos</th>
+                        <th>Finalizados</th>
+                        <th>Tempo medio total</th>
+                        <th>Etapa mais lenta</th>
+                        <th>Parados</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
                 <tbody>
-                    {% for item in stage_status %}
-                        {% set status_key = item.status|lower %}
-                        <tr>
-                            <td>{{ item.etapa_nome }}</td>
-                            <td><span class="badge bg-{{ status_meta[status_key].color if status_key in status_meta else 'secondary' }}">{{ status_meta[status_key].label if status_key in status_meta else item.status }}</span></td>
-                            <td>{{ item.total }}</td>
-                        </tr>
+                    {% for item in process_type_metrics %}
+                    <tr>
+                        <td><strong>{{ item.process_name }}</strong></td>
+                        <td>{{ item.active_count }}</td>
+                        <td>{{ item.finished_count }}</td>
+                        <td>
+                            {% if item.avg_total_days %}
+                                {{ format_days(item.avg_total_days) }}
+                            {% else %}
+                                <span class="text-muted">sem historico suficiente</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if item.slowest_stage %}
+                                {{ item.slowest_stage }}
+                                {% if item.slowest_stage_days %}<small class="text-muted">({{ format_days(item.slowest_stage_days) }})</small>{% endif %}
+                            {% else %}
+                                <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if item.stopped_count %}
+                                <span class="text-warning font-bold">{{ item.stopped_count }}</span>
+                            {% else %}0{% endif %}
+                        </td>
+                        <td><span class="report-status tone-{{ item.tone }}">{{ item.status }}</span></td>
+                    </tr>
                     {% else %}
-                        <tr><td colspan="3">Sem status.</td></tr>
+                    <tr><td colspan="7" class="text-center text-muted">Sem projetos cadastrados.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-    </section>
+    </div>
+</section>
 
-    <section class="panel">
-        <div class="panel-header"><h2>Tempo por etapa e projetos por cidade</h2></div>
-        <div class="split-list">
+{# ============================================================
+   ABA 4 — RESPONSAVEIS
+   ============================================================ #}
+<section class="report-tab-content" id="tab-responsaveis">
+    <div class="panel report-section">
+        <div class="panel-header">
             <div>
-                <h3>Tempo por etapa</h3>
-                {% for item in time_by_stage %}
-                    <div class="simple-row"><span>{{ item.etapa_nome or 'Sem etapa' }}</span><strong>{{ minutes_to_hours(item.minutos) }}</strong></div>
-                {% else %}
-                    <div class="empty-state">Sem tempo por etapa.</div>
-                {% endfor %}
-            </div>
-            <div>
-                <h3>Projetos por cidade</h3>
-                {% for item in by_city %}
-                    <div class="simple-row"><span>{{ item.cidade or 'Sem cidade' }}</span><strong>{{ item.total }}</strong></div>
-                {% else %}
-                    <div class="empty-state">Sem projetos.</div>
-                {% endfor %}
+                <h2>Por responsavel</h2>
+                <small>Carga de trabalho e tempo medio. Sobrecarga indica volume alto, nao qualidade individual.</small>
             </div>
         </div>
-    </section>
-</div>
+        <div class="table-responsive">
+            <table class="table report-table">
+                <thead>
+                    <tr>
+                        <th>Responsavel</th>
+                        <th>Projetos ativos</th>
+                        <th>Concluidos</th>
+                        <th>Tempo medio</th>
+                        <th>Maior parado</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in responsible_metrics %}
+                    <tr>
+                        <td><strong>{{ item.responsible }}</strong></td>
+                        <td>{{ item.active_count }}</td>
+                        <td>{{ item.completed_count }}</td>
+                        <td>{{ format_days(item.avg_days) if item.avg_days else '—' }}</td>
+                        <td>{{ format_days(item.max_open_days) if item.max_open_days else '—' }}</td>
+                        <td><span class="report-status tone-{{ item.tone }}">{{ item.status }}</span></td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="text-center text-muted">Sem responsaveis vinculados a projetos ativos.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="report-legend">
+            <span class="legend-dot tone-green"></span> Normal &nbsp;
+            <span class="legend-dot tone-amber"></span> Atencao (&ge;{{ thresholds.responsible_attention }} projetos ativos) &nbsp;
+            <span class="legend-dot tone-red"></span> Sobrecarga (&ge;{{ thresholds.responsible_overload }} projetos ativos ou tempo medio alto)
+        </div>
+    </div>
+</section>
+
+{# ============================================================
+   ABA 5 — CIDADES E ORGAOS EXTERNOS
+   ============================================================ #}
+<section class="report-tab-content" id="tab-cidades-orgaos">
+
+    {# Cidades — distribuicao geografica #}
+    <div class="panel report-section">
+        <div class="panel-header">
+            <div>
+                <h2>Projetos por cidade</h2>
+                <small>Distribuicao geografica. Mostra onde a empresa tem demanda ativa.</small>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table report-table">
+                <thead>
+                    <tr>
+                        <th>Cidade/UF</th>
+                        <th>Total</th>
+                        <th>Ativos</th>
+                        <th>Parados</th>
+                        <th>Finalizados</th>
+                        <th>Processo mais comum</th>
+                        <th>%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in city_metrics %}
+                    <tr>
+                        <td><strong>{{ item.city }}</strong></td>
+                        <td>{{ item.total }}</td>
+                        <td>{{ item.active }}</td>
+                        <td>{% if item.stopped %}<span class="text-warning font-bold">{{ item.stopped }}</span>{% else %}0{% endif %}</td>
+                        <td>{{ item.finished }}</td>
+                        <td>{% if item.most_common_process %}<small class="text-muted">{{ item.most_common_process }}</small>{% else %}—{% endif %}</td>
+                        <td>
+                            <div class="mini-bar-wrap">
+                                <div class="mini-bar" style="width: {{ [item.percent|round(0)|int, 100]|min }}%"></div>
+                                <small>{{ item.percent|round(1) }}%</small>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="7" class="text-center text-muted">Sem cidades cadastradas.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {# Cartorios / Orgaos externos — tempo em orgao externo #}
+    <div class="panel report-section">
+        <div class="panel-header">
+            <div>
+                <h2>Tempo em cartorio / orgao externo</h2>
+                <small>
+                    Mede apenas o periodo em que o projeto esteve na etapa Cartorio ou Orgao externo —
+                    nao o tempo total do projeto.
+                    Diferencia SIGEF/INCRA, Prefeitura, Cartorio, etc.
+                </small>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table report-table">
+                <thead>
+                    <tr>
+                        <th>Cartorio/Orgao</th>
+                        <th>Tipo</th>
+                        <th>Projetos totais</th>
+                        <th>Ativos</th>
+                        <th>Finalizados</th>
+                        <th>Tempo medio em orgao</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in external_actor_metrics %}
+                    <tr>
+                        <td><strong>{{ item.registry }}</strong></td>
+                        <td><span class="badge-actor-type actor-{{ item.actor_key|lower }}">{{ item.actor_label }}</span></td>
+                        <td>{{ item.total }}</td>
+                        <td>{{ item.active }}</td>
+                        <td>{{ item.finished }}</td>
+                        <td>
+                            {% if item.avg_ext_days %}
+                                {{ format_days(item.avg_ext_days) }}
+                                <small class="text-muted">(somente tempo em orgao)</small>
+                            {% else %}
+                                <span class="text-muted">sem historico suficiente</span>
+                            {% endif %}
+                        </td>
+                        <td><span class="report-status tone-{{ item.tone }}">{{ item.status }}</span></td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="7" class="text-center text-muted">Sem cartorios ou orgaos externos cadastrados.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="report-note">
+            O tempo exibido e o periodo que o projeto ficou especificamente na etapa de orgao externo.
+            Nao confundir com o tempo total do projeto.
+        </div>
+    </div>
+
+</section>
+
+{# ============================================================
+   ABA 6 — PROJETOS PARADOS
+   ============================================================ #}
+<section class="report-tab-content" id="tab-parados">
+    <div class="panel report-section">
+        <div class="panel-header">
+            <div>
+                <h2>Projetos parados</h2>
+                <small>Sem avanco ha mais de {{ thresholds.stopped_days }} dias. Ordenado pelo maior tempo.</small>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table report-table">
+                <thead>
+                    <tr>
+                        <th>Projeto</th>
+                        <th>Cliente</th>
+                        <th>Processo</th>
+                        <th>Etapa atual</th>
+                        <th>Responsavel</th>
+                        <th>Dias parado</th>
+                        <th>Motivo provavel</th>
+                        <th>Proxima acao</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in stopped_projects %}
+                    <tr class="{{ 'stopped-critical' if item.open_days >= thresholds.critical_stopped_days else '' }}">
+                        <td><a class="table-link" href="{{ url_for('project_detail', project_id=item.project_id) }}">{{ item.project_name }}</a></td>
+                        <td>{{ item.cliente_nome }}</td>
+                        <td><small class="text-muted">{{ process_type_name(item.process_type) if item.process_type else '-' }}</small></td>
+                        <td>{{ item.stage_name }}</td>
+                        <td>{{ item.responsible }}</td>
+                        <td>
+                            <strong class="{{ 'text-danger' if item.open_days >= thresholds.critical_stopped_days else 'text-warning' }}">
+                                {{ format_days(item.open_days) }}
+                            </strong>
+                        </td>
+                        <td>
+                            <small class="text-muted">
+                                {% if not item.responsible or item.responsible == 'Sem responsavel' %}
+                                    Sem responsavel definido
+                                {% elif item.has_open_pendency %}
+                                    Pendencia aberta
+                                {% elif 'externo' in item.stage_name|lower or 'cartorio' in item.stage_name|lower %}
+                                    Aguardando orgao externo
+                                {% else %}
+                                    Etapa interna parada
+                                {% endif %}
+                            </small>
+                        </td>
+                        <td><small>{{ item.next_action }}</small></td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="8" class="text-center text-muted">Nenhum projeto parado acima do limite atual ({{ thresholds.stopped_days }} dias).</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if stopped_projects %}
+        <div class="report-legend">
+            <span class="legend-dot tone-amber"></span> Parado ha {{ thresholds.stopped_days }}–{{ thresholds.critical_stopped_days - 1 }} dias &nbsp;
+            <span class="legend-dot tone-red"></span> Critico: {{ thresholds.critical_stopped_days }}+ dias
+        </div>
+        {% endif %}
+    </div>
+</section>
+
+{# ============================================================
+   JAVASCRIPT — Abas
+   ============================================================ #}
+<script>
+(function () {
+    function switchTab(tabId) {
+        document.querySelectorAll('.report-tab-btn').forEach(function (btn) {
+            btn.classList.toggle('active', btn.dataset.tab === tabId);
+        });
+        document.querySelectorAll('.report-tab-content').forEach(function (section) {
+            section.classList.toggle('active', section.id === 'tab-' + tabId);
+        });
+    }
+    window.switchTab = switchTab;
+    document.querySelectorAll('.report-tab-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () { switchTab(btn.dataset.tab); });
+    });
+})();
+</script>
 {% endblock %}

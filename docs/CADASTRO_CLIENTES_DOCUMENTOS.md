@@ -263,6 +263,39 @@ Todos os campos principais da antiga aba `BD_Dados` estao contemplados no modelo
 - dados de imovel ficam em `imoveis`;
 - dados de memorial ficam em `vertices_imovel`.
 
-## 9. Proxima etapa
+## 9. Validacao e consulta de CPF e CNPJ
+
+### CPF — validacao local
+
+O sistema valida CPF apenas localmente, por dígitos verificadores.
+
+Por segurança e privacidade, nenhuma consulta externa de dados pessoais por CPF e realizada. O sistema nao busca nome, data de nascimento, endereco ou filiacao a partir do CPF.
+
+Comportamento:
+- Aplica mascara 000.000.000-00 durante a digitacao.
+- Quando atingir 11 digitos, valida imediatamente.
+- Se invalido, exibe "Informe um CPF valido." no campo.
+- Se valido, exibe "CPF valido." discretamente.
+- Nenhuma API externa e chamada.
+
+### CNPJ — validacao local + consulta de dados publicos empresariais
+
+O sistema valida CNPJ localmente por dígitos verificadores. Se valido, consulta dados cadastrais publicos da empresa via BrasilAPI.
+
+Dados cadastrais de empresas sao informacoes publicas. Isso economiza tempo, reduz erros de digitacao e agiliza o cadastro de Pessoa Juridica.
+
+Comportamento:
+- Aplica mascara 00.000.000/0000-00 durante a digitacao.
+- Quando atingir 14 digitos e for valido, consulta a BrasilAPI com debounce de 400ms.
+- Exibe "Consultando CNPJ..." durante a busca.
+- Se encontrado: preenche automaticamente razao social, nome fantasia, logradouro, numero, bairro, cidade, UF e CEP. Complemento nao e preenchido automaticamente (fica manual). Telefone e email sao preenchidos apenas se o campo estiver vazio.
+- Se nao encontrado: exibe "CNPJ valido, mas nao encontrado na consulta. Preencha manualmente."
+- Se a API falhar: exibe "Nao foi possivel consultar o CNPJ agora. Voce pode preencher manualmente." O cadastro nao e bloqueado.
+- Consultas ao mesmo CNPJ sao cacheadas em memoria por sessao para evitar chamadas repetidas.
+
+Endpoint utilizado:
+  GET https://brasilapi.com.br/api/cnpj/v1/{cnpj}
+
+## 10. Proxima etapa
 
 Quando a geracao de documentos for implementada, ela deve consumir `DocumentoContext`, validar os requisitos do documento escolhido e entao preencher o DOCX. A tela de cadastro nao deve armazenar textos prontos de documentos; ela deve armazenar os fatos que permitem gerar esses textos.
