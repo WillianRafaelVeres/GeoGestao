@@ -66,6 +66,7 @@ from process_checklist_templates import (
     CHECKLIST_STATUS_NOT_APPLICABLE,
     CHECKLIST_STATUS_NOT_STARTED,
     CRITICALITY_CRITICAL,
+    CRITICALITY_LOW,
     PROCESS_CHECKLIST_TEMPLATES,
     REQUIREMENT_CONDITIONAL,
     REQUIREMENT_OPTIONAL,
@@ -1273,13 +1274,12 @@ def legacy_regime_casamento(value):
 def seed_initial_data(db):
     now = datetime.now().isoformat(timespec="seconds")
     if scalar(db, "SELECT COUNT(*) FROM usuarios") == 0:
+        # Conta Administrador para login + 3 colaboradores da equipe.
         users = [
             ("Administrador", "admin@geogestao.local", "admin123", "admin", "Gestor"),
-            ("Marcos", "marcos@geogestao.local", "coord123", "coordenador", "Coordenador"),
-            ("Rafael", "rafael@geogestao.local", "tecnico123", "tecnico", "Campo"),
-            ("Ana", "ana@geogestao.local", "tecnico123", "tecnico", "Documentacao"),
-            ("Joao", "joao@geogestao.local", "tecnico123", "tecnico", "Topografia"),
-            ("Pedro", "pedro@geogestao.local", "tecnico123", "tecnico", "Desenho"),
+            ("Carlos Mendes", "carlos@geogestao.local", "coord123", "coordenador", "Coordenador"),
+            ("Rafael Souza", "rafael@geogestao.local", "tecnico123", "tecnico", "Topografia"),
+            ("Ana Paula", "ana@geogestao.local", "tecnico123", "tecnico", "Documentacao"),
         ]
         db.executemany(
             "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo) VALUES (?, ?, ?, ?, ?)",
@@ -1290,9 +1290,11 @@ def seed_initial_data(db):
         db.executemany(
             "INSERT INTO clientes (nome, cpf_cnpj, telefone, email, endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?)",
             [
-                ("Fazenda Boa Vista", "12.345.678/0001-90", "(11) 99999-0001", "contato@boavista.com", "Estrada Rural, km 12", ""),
-                ("Sitio Sao Jose", "23.456.789/0001-80", "(11) 99999-0002", "contato@sitiosaojose.com", "Rua do Campo, 305", ""),
-                ("Lote Urbano Centro", "34.567.890/0001-70", "(11) 99999-0003", "contato@loteurbano.com", "Avenida Central, 45", ""),
+                ("Joao da Silva", "123.456.789-00", "(11) 99999-0001", "joao.silva@email.com", "Rua das Flores, 100 - Campinas/SP", ""),
+                ("Maria Oliveira", "234.567.890-11", "(11) 99999-0002", "maria.oliveira@email.com", "Av. Brasil, 250 - Jundiai/SP", ""),
+                ("Fazenda Santa Rita", "12.345.678/0001-90", "(19) 3333-0003", "contato@santarita.com.br", "Estrada Rural, km 8 - Sao Pedro/SP", ""),
+                ("Construtora Horizonte Ltda", "23.456.789/0001-80", "(11) 4444-0004", "obras@horizonte.com.br", "Rua Industrial, 500 - Sao Paulo/SP", ""),
+                ("Pedro Almeida", "345.678.901-22", "(19) 99999-0005", "pedro.almeida@email.com", "Rua do Lago, 32 - Valinhos/SP", ""),
             ],
         )
 
@@ -1321,44 +1323,46 @@ def seed_initial_data(db):
                 )
 
     if scalar(db, "SELECT COUNT(*) FROM projetos") == 0:
-        users = {row["nome"]: row["id"] for row in db.execute("SELECT id, nome FROM usuarios").fetchall()}
-        clients = {row["nome"]: row["id"] for row in db.execute("SELECT id, nome FROM clientes").fetchall()}
-        registries = {row["nome"]: row["id"] for row in db.execute("SELECT id, nome FROM cartorios").fetchall()}
-        projects = [
-            ("GG-001", "Fazenda Boa Vista", "Fazenda Boa Vista", "Campinas", "SP", "Cartorio Norte", "Regularizacao Rural", "Alta", "Em andamento", 9, "Rafael", r"C:\Projetos\BoaVista"),
-            ("GG-002", "Sitio Sao Jose", "Sitio Sao Jose", "Jundiai", "SP", "Prefeitura Municipal", "Parcelamento", "Media", "Atencao", -2, "Ana", r"C:\Projetos\SaoJose"),
-            ("GG-003", "Lote Urbano Centro", "Lote Urbano Centro", "Sao Paulo", "SP", "Cartorio Central", "Desmembramento", "Alta", "Aguardando externo", 6, "Marcos", r"C:\Projetos\LoteCentro"),
-        ]
-        for codigo, nome, cliente, cidade, uf, cartorio, tipo, prioridade, status, days, responsavel, pasta in projects:
+        # Um projeto para cada tipo de servico, todos comecando na primeira etapa (sequencial).
+        user_rows = db.execute("SELECT id, nome, perfil_acesso FROM usuarios ORDER BY id").fetchall()
+        colaboradores = [u for u in user_rows if u["perfil_acesso"] != "admin"] or list(user_rows)
+        admin_id = next((u["id"] for u in user_rows if u["perfil_acesso"] == "admin"), user_rows[0]["id"])
+        client_rows = db.execute("SELECT id, nome FROM clientes ORDER BY id").fetchall()
+        registry_rows = db.execute("SELECT id, nome FROM cartorios ORDER BY id").fetchall()
+        cidades = [("Campinas", "SP"), ("Jundiai", "SP"), ("Sao Paulo", "SP"), ("Valinhos", "SP"), ("Sao Pedro", "SP")]
+        active_types = [pt for pt in PROCESS_TYPES if pt.get("ativo")]
+        for index, ptype in enumerate(active_types, start=1):
+            codigo = f"GG-{index:03d}"
+            cliente = client_rows[(index - 1) % len(client_rows)]
+            responsavel = colaboradores[(index - 1) % len(colaboradores)]
+            cartorio = registry_rows[(index - 1) % len(registry_rows)]
+            cidade, uf = cidades[(index - 1) % len(cidades)]
+            nome = f"{ptype['nome']} - {cliente['nome']}"
             project_id = db.execute(
                 """
                 INSERT INTO projetos
-                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, prioridade, status, prazo_critico, responsavel_geral_id, caminho_pasta, criado_em, atualizado_em)
+                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, prioridade, status, responsavel_geral_id, caminho_pasta, criado_em, atualizado_em, ordem_prioridade)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     codigo,
                     nome,
-                    cliente,
-                    clients.get(cliente),
+                    cliente["nome"],
+                    cliente["id"],
                     cidade,
                     uf,
-                    registries.get(cartorio),
-                    normalize_project_process_type(tipo),
-                    prioridade,
-                    status,
-                    (date.today() + timedelta(days=days)).isoformat(),
-                    users.get(responsavel),
-                    pasta,
+                    cartorio["id"],
+                    normalize_project_process_type(ptype["key"]),
+                    "Media",
+                    "Em andamento",
+                    responsavel["id"],
+                    rf"C:\Projetos\{codigo}",
                     now,
                     now,
+                    index,
                 ),
             ).lastrowid
-            create_stage_rows(db, project_id, users.get(responsavel), (date.today() + timedelta(days=days)).isoformat())
-            db.execute(
-                "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (?, ?, ?, ?, ?)",
-                (project_id, users.get("Administrador"), "projeto_criado", "Projeto de demonstracao criado.", now),
-            )
+            initialize_project_workflow(db, project_id, ptype["key"], user_id=admin_id)
 
 
 def initialize_project_order(db):
@@ -2624,6 +2628,25 @@ def update_stage_progress(stage_id):
     return progress
 
 
+def project_checklist_stage_counts(stage_id):
+    """Done/total/progress da etapa com base no checklist do processo (project_checklist_items)."""
+    row = query_db(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS done
+        FROM project_checklist_items
+        WHERE project_stage_id = ? AND active = 1 AND status != ?
+        """,
+        (CHECKLIST_STATUS_DONE, stage_id, CHECKLIST_STATUS_NOT_APPLICABLE),
+        one=True,
+    )
+    total = row["total"] or 0
+    done = row["done"] or 0
+    progress = int((done / total) * 100) if total else 0
+    return done, total, progress
+
+
 def load_stage_rows(project_id):
     return [dict(row) for row in query_db(
         """
@@ -3350,8 +3373,14 @@ def dashboard():
         "SELECT COUNT(*) AS count FROM projetos WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')",
         one=True,
     )["count"]
+    # Prazos sao externos: contam as exigencias de cartorio/orgao em aberto.
     overdue = query_db(
-        "SELECT COUNT(*) AS count FROM projeto_etapas WHERE lower(status) = 'atrasado' AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)",
+        """
+        SELECT COUNT(*) AS count FROM exigencias_cartorio
+        WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+          AND COALESCE(prazo_resposta, '') != '' AND prazo_resposta < ?
+        """,
+        (today_iso,),
         one=True,
     )["count"]
     waiting_external = query_db(
@@ -3360,46 +3389,47 @@ def dashboard():
     )["count"]
     due_soon_count = query_db(
         """
-        SELECT COUNT(*) AS count
-        FROM projeto_etapas
-        WHERE prazo BETWEEN ? AND ?
-          AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-          AND lower(status) NOT IN ('concluido', 'cancelado')
+        SELECT COUNT(*) AS count FROM exigencias_cartorio
+        WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+          AND prazo_resposta BETWEEN ? AND ?
         """,
         (today_iso, in_7),
         one=True,
     )["count"]
-    projects_recent = query_db(
+    # As 5 prioridades — topo da ordem da matriz, somente projetos ativos.
+    priority_projects = query_db(
         """
-        SELECT p.*, c.nome AS cliente_nome, u.nome AS responsavel_nome
+        SELECT p.id, p.codigo, p.nome,
+               COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(c.nome, ''), p.proprietario) AS cliente_nome,
+               em.nome AS etapa_nome, pe.status AS etapa_status,
+               (
+                   SELECT MIN(e.prazo_resposta)
+                   FROM exigencias_cartorio e
+                   WHERE e.projeto_id = p.id
+                     AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
+                     AND COALESCE(e.prazo_resposta, '') != ''
+               ) AS external_deadline,
+               COALESCE(u.nome, ug.nome) AS responsavel_nome
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
-        LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
-        ORDER BY p.criado_em DESC, p.id DESC
-        LIMIT 6
-        """
-    )
-    critical_alerts = query_db(
-        """
-        SELECT p.id AS projeto_id, p.nome AS projeto_nome, em.nome AS etapa_nome, pe.status, pe.prazo, u.nome AS responsavel_nome
-        FROM projeto_etapas pe
-        JOIN projetos p ON p.id = pe.projeto_id
-        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+        LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         LEFT JOIN usuarios u ON u.id = pe.responsavel_id
-        WHERE em.ativa = 1
-          AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-          AND (
-              lower(pe.status) = 'atrasado'
-              OR (pe.prazo BETWEEN ? AND ? AND lower(pe.status) NOT IN ('concluido', 'cancelado'))
-          )
-        ORDER BY pe.prazo
-        LIMIT 10
-        """,
-        (today_iso, in_7),
+        LEFT JOIN usuarios ug ON ug.id = p.responsavel_geral_id
+        WHERE lower(COALESCE(p.status, '')) NOT IN ('concluido', 'cancelado')
+        ORDER BY
+            CASE WHEN external_deadline IS NOT NULL THEN 0 ELSE 1 END,
+            external_deadline ASC,
+            COALESCE(p.ordem_prioridade, 99999),
+            COALESCE(p.criado_em, ''),
+            p.id
+        LIMIT 5
+        """
     )
+    # Quantos projetos em cada etapa (gargalo).
     bottlenecks = query_db(
         """
-        SELECT em.nome AS etapa_nome, COUNT(pe.id) AS total
+        SELECT em.id AS etapa_id, em.nome AS etapa_nome, COUNT(pe.id) AS total
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE lower(pe.status) NOT IN ('concluido', 'cancelado')
@@ -3419,10 +3449,31 @@ def dashboard():
         LEFT JOIN cartorios c ON c.id = e.cartorio_id
         LEFT JOIN usuarios u ON u.id = e.responsavel_id
         WHERE lower(e.status) NOT IN ('concluido', 'cancelado')
-        ORDER BY e.prazo_resposta
+        ORDER BY COALESCE(e.prazo_resposta, '9999-12-31'), e.id
         LIMIT 6
         """
     )
+    exigencias_count = query_db(
+        "SELECT COUNT(*) AS c FROM exigencias_cartorio WHERE lower(status) NOT IN ('concluido', 'cancelado')",
+        one=True,
+    )["c"]
+    pendencias = query_db(
+        """
+        SELECT pd.descricao, pd.prazo, pd.status, pd.origem,
+               p.id AS projeto_id, p.nome AS projeto_nome,
+               u.nome AS responsavel_nome
+        FROM pendencias pd
+        JOIN projetos p ON p.id = pd.projeto_id
+        LEFT JOIN usuarios u ON u.id = pd.responsavel_id
+        WHERE lower(pd.status) NOT IN ('resolvida', 'cancelada')
+        ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
+        LIMIT 6
+        """
+    )
+    pendencias_count = query_db(
+        "SELECT COUNT(*) AS c FROM pendencias WHERE lower(status) NOT IN ('resolvida', 'cancelada')",
+        one=True,
+    )["c"]
     return render_template(
         "dashboard.html",
         total_projects=total_projects,
@@ -3430,11 +3481,14 @@ def dashboard():
         overdue=overdue,
         waiting_external=waiting_external,
         due_soon_count=due_soon_count,
-        projects_recent=projects_recent,
-        critical_alerts=critical_alerts,
+        priority_projects=priority_projects,
         bottlenecks=bottlenecks,
         total_bottlenecks=total_bottlenecks,
         exigencias=exigencias,
+        exigencias_count=exigencias_count,
+        pendencias=pendencias,
+        pendencias_count=pendencias_count,
+        today_iso=today_iso,
     )
 
 
@@ -3566,7 +3620,14 @@ def projects():
             tp.nome AS tipo_processo_nome,
             tp.usa_orgao_externo AS tipo_processo_orgao_externo,
             u.nome AS responsavel_nome,
-            ur.nome AS responsavel_etapa_nome
+            ur.nome AS responsavel_etapa_nome,
+            (
+                SELECT MIN(e.prazo_resposta)
+                FROM exigencias_cartorio e
+                WHERE e.projeto_id = p.id
+                  AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
+                  AND COALESCE(e.prazo_resposta, '') != ''
+            ) AS external_deadline
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
@@ -3579,9 +3640,11 @@ def projects():
         LEFT JOIN usuarios ur ON ur.id = pea.responsavel_id
         {where_clause}
         ORDER BY
+            CASE WHEN external_deadline IS NOT NULL THEN 0 ELSE 1 END,
+            external_deadline ASC,
             COALESCE(p.ordem_prioridade, 99999),
             COALESCE(p.criado_em, ''),
-            p.nome
+            p.id
         """,
         params,
     )
@@ -3592,9 +3655,16 @@ def projects():
     pending_by_project = {}
     if stage_ids:
         placeholders = ",".join("?" for _ in stage_ids)
+        # Checklist do processo (por tipo) — somente a tarefa, sem selos, agrupado por etapa do projeto.
         for item in query_db(
-            f"SELECT * FROM checklist_itens WHERE projeto_etapa_id IN ({placeholders}) ORDER BY projeto_etapa_id, id",
-            stage_ids,
+            f"""
+            SELECT id, project_stage_id AS projeto_etapa_id, title AS titulo,
+                   CASE WHEN status = ? THEN 1 ELSE 0 END AS concluido
+            FROM project_checklist_items
+            WHERE project_stage_id IN ({placeholders}) AND active = 1 AND status != ?
+            ORDER BY project_stage_id, order_index, id
+            """,
+            [CHECKLIST_STATUS_DONE] + stage_ids + [CHECKLIST_STATUS_NOT_APPLICABLE],
         ):
             matrix_checklists.setdefault(item["projeto_etapa_id"], []).append(item)
         for pending in query_db(
@@ -3611,20 +3681,20 @@ def projects():
             pending_by_stage.setdefault(pending["etapa_id"], []).append(pending)
             pending_by_project.setdefault(pending["projeto_id"], []).append(pending)
     project_ids = [project["id"] for project, _ in matrix]
-    movements_by_project = {}
+    notes_by_project = {}
     if project_ids:
         project_placeholders = ",".join("?" for _ in project_ids)
-        for movement in query_db(
+        for note in query_db(
             f"""
-            SELECT m.*, u.nome AS usuario_nome
-            FROM movimentacoes_etapa m
-            LEFT JOIN usuarios u ON u.id = m.usuario_id
-            WHERE m.projeto_id IN ({project_placeholders})
-            ORDER BY m.criado_em DESC
+            SELECT e.*, u.nome AS usuario_nome
+            FROM eventos_historico e
+            LEFT JOIN usuarios u ON u.id = e.usuario_id
+            WHERE e.projeto_id IN ({project_placeholders}) AND e.tipo_evento = 'anotacao'
+            ORDER BY e.criado_em DESC
             """,
             project_ids,
         ):
-            movements_by_project.setdefault(movement["projeto_id"], []).append(movement)
+            notes_by_project.setdefault(note["projeto_id"], []).append(note)
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
         "sete_dias": query_db(
@@ -3665,7 +3735,7 @@ def projects():
         matrix_checklists=matrix_checklists,
         pending_by_stage=pending_by_stage,
         pending_by_project=pending_by_project,
-        movements_by_project=movements_by_project,
+        notes_by_project=notes_by_project,
         summary=summary,
         etapas=query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem"),
         usuarios=query_db("SELECT * FROM usuarios WHERE ativo = 1 ORDER BY nome"),
@@ -3858,6 +3928,26 @@ def api_select_folder():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/open-folder", methods=["POST"])
+@login_required
+def api_open_folder():
+    """Abre a pasta do projeto no Windows Explorer (app roda na maquina do usuario)."""
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "Caminho nao informado"}), 400
+    if not os.path.isdir(path):
+        return jsonify({"error": "Pasta nao encontrada. Verifique o caminho cadastrado."}), 404
+    try:
+        os.startfile(path)  # type: ignore[attr-defined]  # disponivel apenas no Windows
+        return jsonify({"ok": True})
+    except AttributeError:
+        # Ambiente nao-Windows (ex.: servidor): nao ha explorer para abrir.
+        return jsonify({"error": "Abrir pasta so funciona no aplicativo instalado no Windows."}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/add-cliente", methods=["POST"])
 @login_required
 def api_add_cliente():
@@ -4016,6 +4106,23 @@ def project_detail(project_id):
         """,
         (project_id,),
     )
+    # Tempo por etapa: quando o projeto entrou e saiu de cada fase.
+    stage_history_rows = query_db(
+        "SELECT * FROM project_stage_history WHERE project_id = ? ORDER BY entered_at, id",
+        (project_id,),
+    )
+    stage_timeline = [
+        {
+            "stage_name": row["stage_name"],
+            "entered_at": row["entered_at"],
+            "exited_at": row["exited_at"],
+            "responsible_name": row["responsible_name"],
+            "em_andamento": not row["exited_at"],
+            "duracao": format_days(calculate_days_between(row["entered_at"], row["exited_at"])),
+        }
+        for row in stage_history_rows
+    ]
+    project_open_days = format_days(calculate_days_between(project["criado_em"])) if project["criado_em"] else "-"
     return render_template(
         "project_detail.html",
         project=project,
@@ -4032,6 +4139,8 @@ def project_detail(project_id):
         time_entries=time_entries,
         total_minutes=total_minutes,
         historico=historico,
+        stage_timeline=stage_timeline,
+        project_open_days=project_open_days,
         usuarios=query_db("SELECT * FROM usuarios WHERE ativo = 1 ORDER BY nome"),
         clientes_json=fetch_cliente_autocomplete_options(),
         cartorios=query_db("SELECT * FROM cartorios ORDER BY nome"),
@@ -4177,14 +4286,30 @@ def project_action(project_id):
         redirect_url = request.form.get("next") or url_for("project_detail", project_id=project_id)
 
         if old_stage and old_stage["id"] != new_stage["id"]:
-            old_ordem = old_stage["etapa_ordem"]
-            new_ordem = new_stage["etapa_ordem"]
-            is_advance = new_ordem > old_ordem
-            is_return = new_ordem < old_ordem
+            # Ordena pelas COLUNAS globais usadas pelo projeto (mesma sequencia mostrada na matriz),
+            # e nao pelo stage_order do modelo (que pode ter saltos/repeticoes por tipo de processo).
+            old_col = old_stage["legacy_etapa_ordem"]
+            new_col = new_stage["legacy_etapa_ordem"]
+            is_advance = new_col > old_col
+            is_return = new_col < old_col
 
-            if is_advance and new_ordem > old_ordem + 1:
-                flash("Nao e permitido pular etapas. Avance apenas para a proxima etapa em sequencia.", "danger")
-                return redirect(redirect_url)
+            if is_advance:
+                # Bloqueia o avanco enquanto houver pendencia aberta no projeto.
+                open_pendencias = scalar(
+                    db,
+                    "SELECT COUNT(*) FROM pendencias WHERE projeto_id = ? AND lower(status) NOT IN ('resolvida', 'cancelada')",
+                    (project_id,),
+                )
+                if open_pendencias:
+                    flash("Resolva as pendencias abertas deste projeto antes de avancar para a proxima etapa.", "danger")
+                    return redirect(redirect_url)
+
+                # So permite avancar para a proxima coluna utilizada (sem pular etapas).
+                used_cols = sorted({row["legacy_etapa_ordem"] for row in load_stage_rows(project_id)})
+                next_cols = [col for col in used_cols if col > old_col]
+                if not next_cols or new_col != next_cols[0]:
+                    flash("Nao e permitido pular etapas. Avance apenas para a proxima etapa em sequencia.", "danger")
+                    return redirect(redirect_url)
 
             if is_return:
                 observacao = request.form.get("observacao", "").strip()
@@ -4193,7 +4318,7 @@ def project_action(project_id):
                     return redirect(redirect_url)
 
         motivo_form = request.form.get("motivo", "")
-        is_return_move = old_stage and new_stage["etapa_ordem"] < old_stage["etapa_ordem"]
+        is_return_move = old_stage and new_stage["legacy_etapa_ordem"] < old_stage["legacy_etapa_ordem"]
         if not motivo_form:
             motivo = "retorno" if is_return_move else "avanco"
         else:
@@ -4276,6 +4401,25 @@ def project_action(project_id):
                     "cartorio" if motivo == "exigencia_cartorio" else "interna",
                     request.form.get("responsavel_id") or new_stage["responsavel_id"],
                     request.form.get("prazo") or None,
+                    date.today().isoformat(),
+                    now,
+                    now,
+                ),
+            )
+        # Ao retornar uma etapa, a justificativa do retorno vira uma pendencia que precisa ser
+        # resolvida antes de o projeto poder avancar novamente.
+        elif is_return_move and observacao:
+            execute_db(
+                """
+                INSERT INTO pendencias
+                    (projeto_id, etapa_id, descricao, origem, responsavel_id, status, data_abertura, criado_em, atualizado_em)
+                VALUES (?, ?, ?, 'interna', ?, 'aberta', ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    new_stage["id"],
+                    observacao,
+                    request.form.get("responsavel_id") or new_stage["responsavel_id"],
                     date.today().isoformat(),
                     now,
                     now,
@@ -4589,6 +4733,99 @@ def api_toggle_checklist(item_id):
     done = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = ? AND concluido = 1", (item["projeto_etapa_id"],), one=True)["n"]
     total = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = ?", (item["projeto_etapa_id"],), one=True)["n"]
     return jsonify({"ok": True, "concluido": bool(new_value), "progress": progress, "done": done, "total": total})
+
+
+@app.route("/api/project/<int:project_id>/note", methods=["POST"])
+@login_required
+def api_add_project_note(project_id):
+    """Adiciona uma anotacao livre ao projeto (popup da matriz)."""
+    data = request.get_json() or {}
+    texto = (data.get("texto") or "").strip()
+    if not texto:
+        return jsonify({"ok": False, "error": "Escreva a anotacao."}), 400
+    if not query_db("SELECT id FROM projetos WHERE id = ?", (project_id,), one=True):
+        return jsonify({"ok": False, "error": "Projeto nao encontrado"}), 404
+    now = datetime.now().isoformat(timespec="seconds")
+    note_id = execute_db(
+        "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (?, ?, 'anotacao', ?, ?)",
+        (project_id, g.user["id"], texto, now),
+    )
+    return jsonify({"ok": True, "id": note_id, "texto": texto, "autor": g.user["nome"], "data": format_datetime(now)})
+
+
+@app.route("/api/project-checklist/<int:item_id>/toggle", methods=["POST"])
+@login_required
+def api_toggle_project_checklist(item_id):
+    """Marca/desmarca um item do checklist do processo (usado no popup da matriz)."""
+    item = query_db("SELECT * FROM project_checklist_items WHERE id = ?", (item_id,), one=True)
+    if not item:
+        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
+    new_status = CHECKLIST_STATUS_NOT_STARTED if item["status"] == CHECKLIST_STATUS_DONE else CHECKLIST_STATUS_DONE
+    now = datetime.now().isoformat(timespec="seconds")
+    execute_db(
+        "UPDATE project_checklist_items SET status = ?, completed_at = ?, completed_by = ?, updated_at = ? WHERE id = ?",
+        (
+            new_status,
+            now if new_status == CHECKLIST_STATUS_DONE else None,
+            g.user["id"] if new_status == CHECKLIST_STATUS_DONE else None,
+            now,
+            item_id,
+        ),
+    )
+    done = total = progress = 0
+    if item["project_stage_id"]:
+        done, total, progress = project_checklist_stage_counts(item["project_stage_id"])
+        execute_db("UPDATE projeto_etapas SET progresso = ? WHERE id = ?", (progress, item["project_stage_id"]))
+    return jsonify({"ok": True, "concluido": new_status == CHECKLIST_STATUS_DONE, "progress": progress, "done": done, "total": total})
+
+
+@app.route("/api/project-checklist/add", methods=["POST"])
+@login_required
+def api_add_project_checklist_item():
+    """Adiciona um item livre ao checklist do processo de uma etapa (popup da matriz)."""
+    data = request.get_json() or {}
+    titulo = (data.get("titulo") or "").strip()
+    stage_id = data.get("stage_id")
+    if not titulo or not stage_id:
+        return jsonify({"ok": False, "error": "Dados incompletos"}), 400
+    stage = query_db("SELECT * FROM projeto_etapas WHERE id = ?", (stage_id,), one=True)
+    if not stage:
+        return jsonify({"ok": False, "error": "Etapa nao encontrada"}), 404
+    now = datetime.now().isoformat(timespec="seconds")
+    order_index = query_db(
+        "SELECT COALESCE(MAX(order_index), 0) + 1 AS n FROM project_checklist_items WHERE project_stage_id = ?",
+        (stage_id,),
+        one=True,
+    )["n"]
+    try:
+        item_id = execute_db(
+            """
+            INSERT INTO project_checklist_items
+                (project_id, project_stage_id, process_type_key, stage_key, stage_name, title, status,
+                 requirement_level, criticality, blocks_stage_completion, blocks_process_completion,
+                 requires_attachment, allows_observation, order_index, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 1, ?, 1, ?, ?)
+            """,
+            (
+                stage["projeto_id"],
+                stage_id,
+                stage["process_type_key"],
+                stage["stage_key"],
+                stage["stage_name"],
+                titulo,
+                CHECKLIST_STATUS_NOT_STARTED,
+                REQUIREMENT_RECOMMENDED,
+                CRITICALITY_LOW,
+                order_index,
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        return jsonify({"ok": False, "error": "Ja existe um item com esse nome nesta etapa."}), 409
+    done, total, progress = project_checklist_stage_counts(stage_id)
+    execute_db("UPDATE projeto_etapas SET progresso = ? WHERE id = ?", (progress, stage_id))
+    return jsonify({"ok": True, "id": item_id, "titulo": titulo, "concluido": False, "progress": progress, "done": done, "total": total})
 
 
 @app.route("/stage/<int:stage_id>/quick", methods=["POST"])

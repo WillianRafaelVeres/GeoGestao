@@ -285,7 +285,11 @@
 
                     {# Ações rápidas #}
                     <div class="pmodal-actions">
-                        {% if ns_next.proxima %}
+                        {% if project_pendings %}
+                        <span class="pmodal-advance-blocked" title="Resolva as pendencias abertas para liberar o avanco">
+                            🔒 Resolva as pendencias para avancar
+                        </span>
+                        {% elif ns_next.proxima %}
                         <button class="pmodal-btn-advance" type="button"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-avancar-{{ project.id }}')">
                             Avancar → {{ ns_next.proxima.etapa_nome }}
@@ -377,26 +381,26 @@
                             </div>
                             {% endif %}
 
-                            {% set recent_moves = movements_by_project.get(project.id, [])[:3] %}
-                            {% if recent_moves %}
+                            {% set project_notes = notes_by_project.get(project.id, []) %}
                             <div class="pmodal-section">
                                 <div class="pmodal-section-head">
-                                    <span class="pmodal-section-title">Movimentacoes recentes</span>
+                                    <span class="pmodal-section-title">Anotacoes</span>
                                 </div>
-                                <div class="pmodal-timeline">
-                                    {% for move in recent_moves %}
-                                    <div class="pmodal-timeline-item">
-                                        <div class="pmodal-timeline-dot"></div>
-                                        <div class="pmodal-timeline-content">
-                                            <div class="pmodal-timeline-route">{{ move.etapa_anterior or '—' }} → {{ move.etapa_nova or '—' }}</div>
-                                            <div class="pmodal-timeline-meta">{{ format_datetime(move.criado_em) }} · {{ move.usuario_nome or 'Sistema' }}</div>
-                                            {% if move.observacao %}<div class="pmodal-timeline-obs">{{ move.observacao }}</div>{% endif %}
-                                        </div>
+                                <div class="pmodal-notes" id="notes-{{ project.id }}">
+                                    {% for note in project_notes %}
+                                    <div class="pmodal-note">
+                                        <div class="pmodal-note-text">{{ note.descricao }}</div>
+                                        <div class="pmodal-note-meta">{{ format_datetime(note.criado_em) }} · {{ note.usuario_nome or 'Sistema' }}</div>
                                     </div>
+                                    {% else %}
+                                    <div class="pmodal-note-empty" id="notes-empty-{{ project.id }}">Nenhuma anotacao ainda.</div>
                                     {% endfor %}
                                 </div>
+                                <div class="pmodal-note-add">
+                                    <textarea class="pmodal-note-input" id="note-input-{{ project.id }}" rows="2" placeholder="Escrever uma anotacao..."></textarea>
+                                    <button class="pmodal-btn-ghost" type="button" onclick="addNote({{ project.id }})">Adicionar anotacao</button>
+                                </div>
                             </div>
-                            {% endif %}
 
                             {% if project.caminho_pasta %}
                             <div class="pmodal-section">
@@ -764,6 +768,19 @@
 }
 .pmodal-btn-advance:hover { background: #1d4ed8; }
 
+.pmodal-advance-blocked {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: #fef2f2;
+    border: 1px solid #fca5a5;
+    color: #b91c1c;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
 .pmodal-actions-sec {
     display: flex;
     gap: 6px;
@@ -928,6 +945,32 @@
 .pmodal-timeline-meta { font-size: 10.5px; color: #9ca3af; }
 .pmodal-timeline-obs { font-size: 11px; color: #6b7280; margin-top: 1px; font-style: italic; }
 
+/* Anotacoes */
+.pmodal-notes { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.pmodal-note {
+    padding: 7px 9px;
+    background: #fafafa;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+}
+.pmodal-note-text { font-size: 12.5px; color: #374151; white-space: pre-wrap; word-break: break-word; }
+.pmodal-note-meta { font-size: 10.5px; color: #9ca3af; margin-top: 3px; }
+.pmodal-note-empty { font-size: 12px; color: #9ca3af; padding: 4px 2px; }
+.pmodal-note-add { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.pmodal-note-input {
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-family: inherit;
+    color: #374151;
+    resize: vertical;
+    outline: none;
+}
+.pmodal-note-input:focus { border-color: #2563eb; }
+.pmodal-note-add .pmodal-btn-ghost { align-self: flex-end; }
+
 /* Folder */
 .pmodal-folder-row { display: flex; gap: 7px; align-items: center; }
 .pmodal-folder-path {
@@ -1023,7 +1066,7 @@ function openSubModal(mainId, subId) {
 
 /* Toggle checklist via API */
 function toggleCheck(cb, itemId, stageId) {
-    fetch(`/api/checklist/${itemId}/toggle`, { method: 'POST' })
+    fetch(`/api/project-checklist/${itemId}/toggle`, { method: 'POST' })
     .then(r => r.json())
     .then(data => {
         if (!data.ok) return;
@@ -1044,7 +1087,7 @@ function handleAddCheck(e, stageId) {
     const titulo = input.value.trim();
     if (!titulo) return;
 
-    fetch('/api/checklist/add', {
+    fetch('/api/project-checklist/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ titulo, stage_id: stageId })
@@ -1067,6 +1110,39 @@ function handleAddCheck(e, stageId) {
         const bar = document.getElementById(`progress-${stageId}`);
         if (bar) bar.style.width = data.progress + '%';
     });
+}
+
+/* Adicionar anotacao no projeto (popup) */
+function addNote(projectId) {
+    const input = document.getElementById('note-input-' + projectId);
+    if (!input) return;
+    const texto = input.value.trim();
+    if (!texto) return;
+    fetch('/api/project/' + projectId + '/note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texto })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.ok) { alert(data.error || 'Nao foi possivel salvar a anotacao.'); return; }
+        input.value = '';
+        const list = document.getElementById('notes-' + projectId);
+        const empty = document.getElementById('notes-empty-' + projectId);
+        if (empty) empty.remove();
+        const note = document.createElement('div');
+        note.className = 'pmodal-note';
+        const text = document.createElement('div');
+        text.className = 'pmodal-note-text';
+        text.textContent = data.texto;
+        const meta = document.createElement('div');
+        meta.className = 'pmodal-note-meta';
+        meta.textContent = data.data + ' · ' + data.autor;
+        note.appendChild(text);
+        note.appendChild(meta);
+        list.insertBefore(note, list.firstChild);
+    })
+    .catch(() => alert('Nao foi possivel salvar a anotacao.'));
 }
 
 /* ── DRAG-AND-DROP: reordenação de prioridade ───────── */

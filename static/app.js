@@ -95,6 +95,31 @@ window.addEventListener("DOMContentLoaded", () => {
         });
     });
 
+    // Abre a pasta do projeto no Windows Explorer (app local).
+    document.querySelectorAll("[data-open-folder]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const path = button.dataset.openFolder;
+            if (!path) return;
+            const originalText = button.textContent;
+            button.disabled = true;
+            button.textContent = "Abrindo...";
+            try {
+                const resp = await fetch("/api/open-folder", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ path }),
+                });
+                const data = await resp.json();
+                if (data.error) alert(data.error);
+            } catch {
+                alert("Nao foi possivel abrir a pasta.");
+            } finally {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        });
+    });
+
     initDocumentalClientForm();
     initClientLiveSearch();
     initProjectClientAutocompletes();

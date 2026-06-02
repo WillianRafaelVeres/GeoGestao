@@ -28,7 +28,7 @@ body {
     font-size: 12.5px;
     line-height: 1.45;
     -webkit-font-smoothing: antialiased;
-    min-width: 1100px;
+    min-width: 760px;
 }
 
 a { color: var(--blue); text-decoration: none; }
@@ -293,8 +293,9 @@ a:hover { color: #1d4ed8; }
 
 /* ===== CHECKLIST ===== */
 .checklist-list { display: grid; gap: 4px; }
-.check-item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 5px; padding: 5px; border: 1px solid var(--border-light); border-radius: 4px; font-size: 12px; }
-.check-toggle { width: 20px; height: 20px; border: 1px solid #9ca3af; border-radius: 3px; background: #fff; color: #fff; font-size: 9px; font-weight: 700; cursor: pointer; }
+.check-item { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 6px; border: 1px solid var(--border-light); border-radius: 4px; font-size: 12px; }
+.check-toggle { width: 24px; height: 24px; border: 1.5px solid #9ca3af; border-radius: 4px; background: #fff; color: #fff; font-size: 13px; line-height: 1; font-weight: 700; cursor: pointer; transition: border-color .12s, background .12s; }
+.check-toggle:hover { border-color: var(--green); }
 .check-toggle.checked { border-color: var(--green); background: var(--green); }
 .process-checklist-groups { display: grid; gap: 10px; }
 .process-checklist-stage { border: 1px solid var(--border); border-radius: 5px; background: #fff; overflow: hidden; }
@@ -314,15 +315,56 @@ a:hover { color: #1d4ed8; }
 .project-strip strong { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; }
 
 /* ===== TABS ===== */
-.detail-tabs { gap: 3px; margin-bottom: 10px; }
-.detail-tabs .nav-link { border-radius: 4px; padding: 4px 10px; font-size: 12px; }
+.detail-tabs { gap: 4px; margin-bottom: 12px; border-bottom: 2px solid var(--border-light); padding-bottom: 8px; flex-wrap: wrap; }
+.detail-tabs .nav-link {
+    border-radius: 5px;
+    padding: 7px 15px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--surface-2);
+    border: 1px solid var(--border-light);
+}
+.detail-tabs .nav-link:hover { background: #e9edf3; color: var(--text); }
+.detail-tabs .nav-link.active { background: var(--blue); color: #fff; border-color: var(--blue); font-weight: 600; }
 .tab-pane > .panel, .tab-pane > .stage-grid, .tab-pane > .document-grid { margin-bottom: 10px; }
+
+/* ===== FORM SECTIONS (project detail) ===== */
+.form-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 6px 0 -2px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--border-light);
+}
+.detail-form .form-label { font-weight: 600; color: var(--text-secondary); }
+.btn-lg-action { padding: 8px 22px; font-size: 13px; font-weight: 600; }
+
+/* Folder picker row */
+.folder-input-group .btn { white-space: nowrap; }
+
+/* "Add" forms get a clear separated block so they don't crowd the tables above */
+.inline-add-form {
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+}
+.inline-add-form .form-section-title { margin-top: 0; }
+.inline-add-form .form-label { font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
+
+/* Nested panels (itens adicionais por etapa) */
+.doc-subpanel { background: var(--surface-2); }
 
 .stage-grid, .document-grid, .mission-list { display: grid; gap: 8px; }
 .stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .document-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .slim-progress { height: 4px; background: var(--surface-2); }
-.stage-summary-panel { max-width: 1040px; }
+.stage-summary-panel { max-width: none; }
 .stage-summary-list { display: grid; gap: 8px; }
 .stage-summary-card {
     border: 1px solid var(--border);
@@ -332,6 +374,35 @@ a:hover { color: #1d4ed8; }
 }
 .stage-summary-card.is-done { border-left: 3px solid var(--green); }
 .stage-summary-card.is-inactive { background: #f9fafb; border-style: dashed; }
+.stage-summary-card.is-current { border: 2px solid var(--blue); box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12); }
+.stage-now-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--blue);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    vertical-align: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.stage-done-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+    font-size: 10px;
+    font-weight: 600;
+    vertical-align: middle;
+}
+/* Etapas que nao estao em execucao ficam discretas */
+.stage-summary-card:not(.is-current):not(.is-done) .stage-summary-main strong { color: var(--text-secondary); font-weight: 600; }
+.stage-summary-card:not(.is-current) .stage-summary-toggle { padding-top: 9px; padding-bottom: 9px; }
 .stage-summary-toggle {
     width: 100%;
     display: grid;
@@ -347,6 +418,18 @@ a:hover { color: #1d4ed8; }
     cursor: pointer;
 }
 .stage-summary-toggle:hover { background: #f8fafc; }
+.stage-summary-header, .stage-summary-static {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+}
+.stage-summary-static { grid-template-columns: 1fr; }
+/* Etapas que nao estao em execucao: cartao discreto, sem interacao */
+.stage-summary-card:not(.is-current) { background: #fbfcfd; }
+.stage-history-current { background: #eff6ff; }
+.stage-history-current td { font-weight: 600; }
 .stage-summary-main { min-width: 0; display: grid; gap: 2px; }
 .stage-summary-main strong { font-size: 13px; font-weight: 600; }
 .stage-summary-main span {
@@ -413,7 +496,7 @@ a:hover { color: #1d4ed8; }
 .mission-details, .mission-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 
 /* ===== FORM PANEL ===== */
-.form-panel { max-width: 980px; }
+.form-panel { max-width: none; }
 .inline-update { display: grid; grid-template-columns: minmax(110px, 1fr) 120px 140px auto; gap: 6px; }
 .table-actions { min-width: 110px; }
 .ac-wrapper { position: relative; }
@@ -1679,5 +1762,14 @@ a:hover { color: #1d4ed8; }
     .pending-action { grid-template-columns: 1fr; }
 }
 
-/* ===== NO RESPONSIVE — DESKTOP ONLY ===== */
-/* Disabled all responsive breakpoints intentionally */
+/* ===== RESPONSIVE — PROJECT DETAIL ===== */
+@media (max-width: 1100px) {
+    .project-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 820px) {
+    .project-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .detail-tabs { gap: 3px; }
+    .detail-tabs .nav-link { padding: 6px 11px; font-size: 12.5px; }
+    .stage-history-table th:nth-child(4),
+    .stage-history-table td:nth-child(4) { display: none; }
+}

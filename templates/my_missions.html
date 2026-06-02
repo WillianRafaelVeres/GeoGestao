@@ -50,17 +50,18 @@
                         <td>
                             <div class="quick-actions table-actions">
                                 {% if mission.kind == 'stage' %}
-                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
-                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">▶ Iniciar</button></form>
+                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">✓ Concluir</button></form>
                                 {% elif mission.kind == 'task' %}
-                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
-                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">▶ Iniciar</button></form>
+                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">✓ Concluir</button></form>
                                 {% else %}
-                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">Iniciar</button></form>
-                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Resolver</button></form>
+                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="start" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-primary btn-sm" type="submit">▶ Iniciar</button></form>
+                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">✓ Resolver</button></form>
                                 {% endif %}
                                 {% if mission.folder %}
-                                    <button class="btn btn-outline-secondary btn-sm" type="button" data-copy="{{ mission.folder }}">Pasta</button>
+                                    <button class="btn btn-outline-primary btn-sm" type="button" data-open-folder="{{ mission.folder }}" title="Abrir a pasta no Windows Explorer">📂 Abrir pasta</button>
+                                    <button class="btn btn-outline-secondary btn-sm" type="button" data-copy="{{ mission.folder }}" title="Copiar o caminho da pasta">Copiar</button>
                                 {% endif %}
                             </div>
                         </td>
