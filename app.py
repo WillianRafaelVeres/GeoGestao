@@ -4,6 +4,7 @@ load_dotenv()
 import csv
 import io
 import socket
+import time
 import psycopg2
 import psycopg2.extras
 import psycopg2.errors
@@ -355,25 +356,48 @@ def connect_db():
     database_url = app.config["DATABASE_URL"]
     if not database_url:
         raise RuntimeError("DATABASE_URL nao foi configurada no arquivo .env.")
-    try:
-        conn = psycopg2.connect(database_url, connect_timeout=10, sslmode="require")
-    except psycopg2.OperationalError as exc:
-        host = urlparse(database_url).hostname or "host indefinido"
-        if "could not translate host name" in str(exc):
+    host = urlparse(database_url).hostname or "host indefinido"
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            return PgConn(
+                psycopg2.connect(
+                    database_url,
+                    connect_timeout=10,
+                    sslmode="require",
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=3,
+                    application_name="geogestao",
+                )
+            )
+        except psycopg2.OperationalError as exc:
+            last_error = exc
+            message = str(exc)
+            if "could not translate host name" in message:
+                raise RuntimeError(
+                    f"Nao foi possivel resolver o host do banco Supabase ({host}). "
+                    "Confira se a DATABASE_URL no .env foi copiada exatamente do Supabase. "
+                    "Se estiver usando a conexao direta db.<projeto>.supabase.co, tente a URL do Pooler "
+                    "do Supabase, que funciona melhor em redes sem IPv6."
+                ) from exc
+            if "password authentication failed" in message or "tenant/user" in message:
+                raise
+            if attempt < 3:
+                time.sleep(attempt)
+                continue
+            raise
+        except socket.gaierror as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(attempt)
+                continue
             raise RuntimeError(
                 f"Nao foi possivel resolver o host do banco Supabase ({host}). "
-                "Confira se a DATABASE_URL no .env foi copiada exatamente do Supabase. "
-                "Se estiver usando a conexao direta db.<projeto>.supabase.co, tente a URL do Pooler "
-                "do Supabase, que funciona melhor em redes sem IPv6."
+                "Confira a DATABASE_URL no .env e sua conexao com a internet."
             ) from exc
-        raise
-    except socket.gaierror as exc:
-        host = urlparse(database_url).hostname or "host indefinido"
-        raise RuntimeError(
-            f"Nao foi possivel resolver o host do banco Supabase ({host}). "
-            "Confira a DATABASE_URL no .env e sua conexao com a internet."
-        ) from exc
-    return PgConn(conn)
+    raise last_error
 
 
 def get_db():
@@ -2488,7 +2512,7 @@ def build_reports_context():
     # ---------- Projetos enriquecidos ----------
     projects = query_db(
         """
-        SELECT
+        SELECT DISTINCT
             p.*,
             COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(pf.nome_completo, ''), NULLIF(pj.razao_social, ''), NULLIF(c.nome, ''), NULLIF(p.proprietario, '')) AS cliente_nome,
             ct.nome AS cartorio_nome,
@@ -3152,7 +3176,14 @@ def fetch_cliente_autocomplete_options():
         LEFT JOIN enderecos_proprietario ep ON ep.pessoa_fisica_id = pf.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
         LEFT JOIN procuradores pr ON pr.cliente_id = c.id
-        ORDER BY nome_display COLLATE NOCASE, c.nome COLLATE NOCASE
+        ORDER BY
+            lower(COALESCE(
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, '')
+            )),
+            lower(COALESCE(c.nome, ''))
         """
     )
     options = []
@@ -3701,7 +3732,7 @@ def projects():
     where_clause = "WHERE " + " AND ".join(sql_filters) if sql_filters else ""
     projetos = query_db(
         f"""
-        SELECT DISTINCT
+        SELECT
             p.*,
             COALESCE(
                 NULLIF(c.nome_exibicao, ''),
@@ -3717,6 +3748,8 @@ def projects():
             tp.usa_orgao_externo AS tipo_processo_orgao_externo,
             u.nome AS responsavel_nome,
             ur.nome AS responsavel_etapa_nome,
+            COALESCE(p.ordem_prioridade, 99999) AS sort_ordem_prioridade,
+            COALESCE(p.criado_em, '') AS sort_criado_em,
             (
                 SELECT MIN(e.prazo_resposta)
                 FROM exigencias_cartorio e
@@ -3737,8 +3770,8 @@ def projects():
         {where_clause}
         ORDER BY
             external_deadline ASC NULLS LAST,
-            COALESCE(p.ordem_prioridade, 99999),
-            COALESCE(p.criado_em, ''),
+            sort_ordem_prioridade,
+            sort_criado_em,
             p.id
         """,
         params,
@@ -5824,16 +5857,14 @@ def clients():
             COALESCE(ep.cidade, pj.cidade) AS cidade_cadastro,
             pr.nome_completo AS procurador_nome_doc,
             pr.cpf AS procurador_cpf_doc,
-            COUNT(DISTINCT p.id) AS projetos
+            (SELECT COUNT(*) FROM projetos p WHERE p.cliente_id = c.id) AS projetos
         FROM clientes c
-        LEFT JOIN projetos p ON p.cliente_id = c.id
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
         LEFT JOIN enderecos_proprietario ep ON ep.pessoa_fisica_id = pf.id
         LEFT JOIN procuradores pr ON pr.cliente_id = c.id
         {where_clause}
-        GROUP BY c.id
-        ORDER BY c.nome_exibicao COLLATE NOCASE, c.nome COLLATE NOCASE
+        ORDER BY lower(COALESCE(NULLIF(c.nome_exibicao, ''), c.nome, '')), lower(COALESCE(c.nome, ''))
         """,
         params,
     )
