@@ -326,7 +326,7 @@ _refreshing_due_statuses = False
 
 
 class PgConn:
-    """Wrapper em cima da conexão psycopg2 que imita a interface do sqlite3."""
+    """Wrapper pequeno em cima da conexão psycopg2 usada pelo app."""
 
     def __init__(self, conn, release_callback=None):
         self._conn = conn
@@ -338,24 +338,16 @@ class PgConn:
         _execute_cursor(cur, query, args if args else ())
         return cur
 
-    def executescript(self, script):
+    def execute_statements(self, script):
         cur = self._conn.cursor()
         try:
             for statement in script.split(";"):
                 statement = statement.strip()
                 if not statement:
                     continue
-                cur.execute(self._sqlite_schema_to_postgres(statement))
+                cur.execute(statement)
         finally:
             cur.close()
-
-    @staticmethod
-    def _sqlite_schema_to_postgres(statement):
-        return (
-            statement
-            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-            .replace("REAL", "DOUBLE PRECISION")
-        )
 
     def cursor(self, cursor_factory=None):
         if cursor_factory:
@@ -590,10 +582,10 @@ def scalar(db, query, args=()):
 def init_db():
     os.makedirs(BASE_DIR, exist_ok=True)
     db = connect_db(use_pool=False)
-    db.executescript(
+    db.execute_statements(
         """
         CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             nome TEXT NOT NULL,
             email TEXT NOT NULL UNIQUE,
             senha_hash TEXT NOT NULL,
@@ -602,7 +594,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS clientes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             nome TEXT NOT NULL,
             tipo_cliente TEXT DEFAULT 'PESSOA_FISICA',
             nome_exibicao TEXT,
@@ -632,7 +624,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS pessoas_fisicas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             cliente_id INTEGER NOT NULL UNIQUE,
             sexo TEXT,
             nome_completo TEXT,
@@ -657,7 +649,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS conjuges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             pessoa_fisica_id INTEGER NOT NULL UNIQUE,
             sexo TEXT,
             nome_completo TEXT,
@@ -677,7 +669,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS pessoas_juridicas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             cliente_id INTEGER NOT NULL UNIQUE,
             razao_social TEXT,
             nome_fantasia TEXT,
@@ -697,7 +689,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS enderecos_proprietario (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             pessoa_fisica_id INTEGER NOT NULL UNIQUE,
             logradouro TEXT,
             uf TEXT,
@@ -712,7 +704,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS procuradores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             cliente_id INTEGER NOT NULL UNIQUE,
             sexo TEXT,
             nome_completo TEXT,
@@ -744,7 +736,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS imoveis (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             nome_imovel TEXT,
             nome_terreno TEXT,
             cartorio_comarca TEXT,
@@ -754,26 +746,26 @@ def init_db():
             estado_imovel TEXT,
             cidade_imovel TEXT,
             localidade_denominacao TEXT,
-            valor_imovel_terra_nua REAL,
-            area_antiga_m2 REAL,
-            nova_area_m2 REAL,
-            perimetro_m REAL,
+            valor_imovel_terra_nua DOUBLE PRECISION,
+            area_antiga_m2 DOUBLE PRECISION,
+            nova_area_m2 DOUBLE PRECISION,
+            perimetro_m DOUBLE PRECISION,
             codigo_certificacao_sigef TEXT,
             codigo_sncr TEXT,
             estrada_acesso TEXT,
             ponto_referencia TEXT,
-            distancia_ponto_referencia_km REAL,
+            distancia_ponto_referencia_km DOUBLE PRECISION,
             observacoes TEXT,
             criado_em TEXT,
             atualizado_em TEXT
         );
 
         CREATE TABLE IF NOT EXISTS clientes_imoveis (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             cliente_id INTEGER NOT NULL,
             imovel_id INTEGER NOT NULL,
             papel TEXT DEFAULT 'PROPRIETARIO',
-            percentual_participacao REAL,
+            percentual_participacao DOUBLE PRECISION,
             principal INTEGER NOT NULL DEFAULT 0,
             criado_em TEXT,
             atualizado_em TEXT,
@@ -782,16 +774,16 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS vertices_imovel (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             imovel_id INTEGER NOT NULL,
             ordem INTEGER NOT NULL,
             codigo_vertice TEXT,
             longitude TEXT,
             latitude TEXT,
-            altitude_m REAL,
+            altitude_m DOUBLE PRECISION,
             codigo_vertice_destino TEXT,
             azimute TEXT,
-            distancia_m REAL,
+            distancia_m DOUBLE PRECISION,
             confrontacao TEXT,
             criado_em TEXT,
             atualizado_em TEXT,
@@ -799,7 +791,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS document_field_requirements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             tipo_documento TEXT NOT NULL,
             campo TEXT NOT NULL,
             obrigatorio INTEGER NOT NULL DEFAULT 1,
@@ -809,7 +801,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS cartorios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             nome TEXT NOT NULL,
             cidade TEXT,
             uf TEXT,
@@ -818,7 +810,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS etapas_modelo (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             nome TEXT NOT NULL,
             ordem INTEGER NOT NULL,
             cor_padrao TEXT NOT NULL,
@@ -826,7 +818,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS tipos_processo (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             chave TEXT NOT NULL UNIQUE,
             nome TEXT NOT NULL,
             descricao TEXT,
@@ -842,7 +834,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS process_stage_templates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             process_type_key TEXT NOT NULL,
             stage_key TEXT NOT NULL,
             stage_name TEXT NOT NULL,
@@ -865,7 +857,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS process_checklist_templates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             process_type_key TEXT NOT NULL,
             stage_key TEXT NOT NULL,
             title TEXT NOT NULL,
@@ -888,7 +880,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS projetos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             codigo TEXT NOT NULL,
             nome TEXT NOT NULL,
             proprietario TEXT,
@@ -912,7 +904,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS projeto_etapas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
             etapa_modelo_id INTEGER NOT NULL,
             process_type_key TEXT,
@@ -942,7 +934,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS tarefas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
             projeto_etapa_id INTEGER,
             titulo TEXT NOT NULL,
@@ -958,7 +950,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS checklist_itens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_etapa_id INTEGER,
             titulo TEXT NOT NULL,
             concluido INTEGER DEFAULT 0,
@@ -969,7 +961,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS project_checklist_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             project_id INTEGER NOT NULL,
             project_stage_id INTEGER,
             template_id INTEGER,
@@ -1007,7 +999,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS eventos_historico (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_id INTEGER,
             usuario_id INTEGER,
             tipo_evento TEXT,
@@ -1018,7 +1010,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS exigencias_cartorio (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
             cartorio_id INTEGER,
             data_recebimento TEXT,
@@ -1034,7 +1026,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS apontamentos_tempo (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
             etapa_id INTEGER,
             tarefa_id INTEGER,
@@ -1052,7 +1044,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS notificacoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             usuario_id INTEGER,
             projeto_id INTEGER,
             tipo TEXT,
@@ -1066,7 +1058,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS pendencias (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
             etapa_id INTEGER,
             descricao TEXT NOT NULL,
@@ -1084,7 +1076,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS movimentacoes_etapa (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
             etapa_anterior_id INTEGER,
             etapa_nova_id INTEGER,
@@ -1103,7 +1095,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS project_stage_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             project_id INTEGER NOT NULL,
             stage_id INTEGER,
             stage_key TEXT,
@@ -1150,7 +1142,7 @@ def init_db():
     add_column_if_missing(db, "conjuges", "email", "TEXT")
     add_column_if_missing(db, "conjuges", "telefone", "TEXT")
     add_column_if_missing(db, "procuradores", "telefone", "TEXT")
-    add_column_if_missing(db, "projetos", "valor", "REAL")
+    add_column_if_missing(db, "projetos", "valor", "DOUBLE PRECISION")
     add_column_if_missing(db, "projetos", "ordem_prioridade", "INTEGER")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "atraso_origem", "TEXT")

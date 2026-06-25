@@ -1,4 +1,5 @@
 .env
+geo.db
 __pycache__/
 *.py[cod]
 *.log

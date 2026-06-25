@@ -2,7 +2,7 @@
 
 Fonte analisada: `c:\Users\willi\Downloads\Plano_GeoGestao_Processos_Checklists.docx`.
 
-Observacao: o arquivo nao estava em `docs/`, mas foi possivel ler o DOCX informado na pasta Downloads. A analise abaixo tambem considera o codigo atual do sistema Flask/Jinja/SQLite.
+Observacao: o arquivo nao estava em `docs/`, mas foi possivel ler o DOCX informado na pasta Downloads. A analise abaixo tambem considera o codigo atual do sistema Flask/Jinja/PostgreSQL.
 
 ## 1. Resumo executivo
 

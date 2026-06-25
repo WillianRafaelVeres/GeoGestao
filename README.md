@@ -88,17 +88,16 @@ O arquivo `render.yaml` ja deixa essa configuracao preparada. Nao envie o arquiv
 
 ## Estrutura
 
-- `app.py`: backend Flask, rotas, migracao do SQLite e regras do prototipo.
+- `app.py`: backend Flask, rotas, inicializacao do schema PostgreSQL/Supabase e regras do prototipo.
 - `templates/`: telas HTML/Jinja.
 - `static/style.css`: interface visual.
 - `static/app.js`: comportamento pequeno da interface.
-- `geo.db`: banco SQLite local, migrado automaticamente ao iniciar.
 - `Documento_Tecnico_GeoGestao_Topografia.docx`: documento de produto usado como base.
 
 ## Proximos passos tecnicos
 
 - Separar o backend em blueprints/services quando o fluxo estiver validado.
-- Migrar para PostgreSQL/Supabase quando houver usuarios reais simultaneos.
+- Evoluir migrations e observabilidade do PostgreSQL/Supabase conforme houver usuarios reais simultaneos.
 - Criar testes automatizados para regras de prazo, permissoes e historico.
 - Evoluir abertura de pastas para app desktop com Tauri.
 - Integrar notificacoes por e-mail e WhatsApp Business Cloud API em fase posterior.
