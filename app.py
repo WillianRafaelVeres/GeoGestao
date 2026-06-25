@@ -1,7 +1,11 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import csv
 import io
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import psycopg2.errors
 import unicodedata
 from datetime import date, datetime, timedelta
 from functools import wraps
@@ -78,7 +82,7 @@ from process_checklist_templates import (
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATABASE = os.path.join(BASE_DIR, "geo.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 SECRET_KEY = os.environ.get("GEOGESTAO_SECRET_KEY", "dev-change-this-secret-key")
 
 STATUS_META = {
@@ -301,13 +305,35 @@ BACKLOG_FUTURO = [
 ]
 
 app = Flask(__name__)
-app.config.from_mapping(SECRET_KEY=SECRET_KEY, DATABASE=DATABASE)
+app.config.from_mapping(SECRET_KEY=SECRET_KEY, DATABASE_URL=DATABASE_URL)
+
+
+class PgConn:
+    """Wrapper em cima da conexão psycopg2 que imita a interface do sqlite3."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, query, args=()):
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(query, args if args else ())
+        return cur
+
+    def cursor(self, cursor_factory=None):
+        if cursor_factory:
+            return self._conn.cursor(cursor_factory=cursor_factory)
+        return self._conn.cursor()
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
 
 
 def connect_db():
-    db = sqlite3.connect(app.config["DATABASE"])
-    db.row_factory = sqlite3.Row
-    return db
+    conn = psycopg2.connect(app.config["DATABASE_URL"])
+    return PgConn(conn)
 
 
 def get_db():
@@ -333,15 +359,27 @@ def query_db(query, args=(), one=False):
 
 def execute_db(query, args=()):
     db = get_db()
-    cur = db.execute(query, args)
+    cur = db.cursor()
+    q = query.strip().rstrip(';')
+    is_insert = q.upper().lstrip().startswith('INSERT')
+    if is_insert and 'RETURNING' not in q.upper():
+        q += ' RETURNING id'
+    cur.execute(q, args if args else ())
     db.commit()
-    last_id = cur.lastrowid
+    last_id = None
+    if is_insert:
+        try:
+            row = cur.fetchone()
+            last_id = row[0] if row else None
+        except Exception:
+            pass
     cur.close()
     return last_id
 
 
 def table_columns(db, table_name):
-    return {row["name"] for row in db.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    # PRAGMA não existe no PostgreSQL; retorna set vazio (não usado em produção)
+    return set()
 
 
 def add_column_if_missing(db, table_name, column_name, definition):
@@ -354,10 +392,11 @@ def first_row(db, query, args=()):
 
 
 def scalar(db, query, args=()):
-    row = first_row(db, query, args)
-    if row is None:
-        return 0
-    return row[0]
+    cur = db.cursor()
+    cur.execute(query, args if args else ())
+    row = cur.fetchone()
+    cur.close()
+    return row[0] if row else 0
 
 
 def init_db():
@@ -973,7 +1012,7 @@ def seed_document_requirements(db):
                 """
                 INSERT INTO document_field_requirements
                     (tipo_documento, campo, obrigatorio, origem, label, mensagem_erro)
-                VALUES (?, ?, 1, ?, ?, ?)
+                VALUES (%s, %s, 1, %s, %s, %s)
                 """,
                 (tipo_documento, campo, origem, label, mensagem),
             )
@@ -982,7 +1021,7 @@ def seed_document_requirements(db):
 def seed_process_types(db):
     now = datetime.now().isoformat(timespec="seconds")
     for item in PROCESS_TYPES:
-        existing = first_row(db, "SELECT id FROM tipos_processo WHERE chave = ?", (item["key"],))
+        existing = first_row(db, "SELECT id FROM tipos_processo WHERE chave = %s", (item["key"],))
         values = (
             item["key"],
             item["nome"],
@@ -1000,9 +1039,9 @@ def seed_process_types(db):
             db.execute(
                 """
                 UPDATE tipos_processo
-                SET nome = ?, descricao = ?, categoria = ?, usa_campo = ?, usa_cartorio = ?,
-                    usa_orgao_externo = ?, possui_documentos_especificos = ?, ativo = ?, ordem = ?, atualizado_em = ?
-                WHERE chave = ?
+                SET nome = %s, descricao = %s, categoria = %s, usa_campo = %s, usa_cartorio = %s,
+                    usa_orgao_externo = %s, possui_documentos_especificos = %s, ativo = %s, ordem = %s, atualizado_em = %s
+                WHERE chave = %s
                 """,
                 values[1:] + (item["key"],),
             )
@@ -1012,7 +1051,7 @@ def seed_process_types(db):
                 INSERT INTO tipos_processo
                     (chave, nome, descricao, categoria, usa_campo, usa_cartorio, usa_orgao_externo,
                      possui_documentos_especificos, ativo, ordem, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 values + (now,),
             )
@@ -1027,7 +1066,7 @@ def seed_process_stage_templates(db):
                 """
                 SELECT id
                 FROM process_stage_templates
-                WHERE process_type_key = ? AND stage_key = ?
+                WHERE process_type_key = %s AND stage_key = %s
                 """,
                 (process_type_key, template["stage_key"]),
             )
@@ -1053,11 +1092,11 @@ def seed_process_stage_templates(db):
                 db.execute(
                     """
                     UPDATE process_stage_templates
-                    SET stage_name = ?, stage_order = ?, applicability = ?, description = ?,
-                        default_responsible_role = ?, default_deadline_days = ?, can_skip = ?,
-                        blocks_completion = ?, show_in_matrix = ?, show_in_project = ?,
-                        external_actor_type = ?, notes = ?, active = ?, updated_at = ?
-                    WHERE process_type_key = ? AND stage_key = ?
+                    SET stage_name = %s, stage_order = %s, applicability = %s, description = %s,
+                        default_responsible_role = %s, default_deadline_days = %s, can_skip = %s,
+                        blocks_completion = %s, show_in_matrix = %s, show_in_project = %s,
+                        external_actor_type = %s, notes = %s, active = %s, updated_at = %s
+                    WHERE process_type_key = %s AND stage_key = %s
                     """,
                     values[2:] + (process_type_key, template["stage_key"]),
                 )
@@ -1068,7 +1107,7 @@ def seed_process_stage_templates(db):
                         (process_type_key, stage_key, stage_name, stage_order, applicability, description,
                          default_responsible_role, default_deadline_days, can_skip, blocks_completion,
                          show_in_matrix, show_in_project, external_actor_type, notes, active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     values + (now,),
                 )
@@ -1083,7 +1122,7 @@ def seed_process_checklist_templates(db):
                 """
                 SELECT id
                 FROM process_checklist_templates
-                WHERE process_type_key = ? AND stage_key = ? AND title = ?
+                WHERE process_type_key = %s AND stage_key = %s AND title = %s
                 """,
                 (process_type_key, template["stage_key"], template["title"]),
             )
@@ -1109,11 +1148,11 @@ def seed_process_checklist_templates(db):
                 db.execute(
                     """
                     UPDATE process_checklist_templates
-                    SET description = ?, order_index = ?, requirement_level = ?, criticality = ?,
-                        default_responsible_role = ?, blocks_stage_completion = ?, blocks_process_completion = ?,
-                        requires_attachment = ?, allows_observation = ?, condition_text = ?, help_text = ?,
-                        active = ?, updated_at = ?
-                    WHERE process_type_key = ? AND stage_key = ? AND title = ?
+                    SET description = %s, order_index = %s, requirement_level = %s, criticality = %s,
+                        default_responsible_role = %s, blocks_stage_completion = %s, blocks_process_completion = %s,
+                        requires_attachment = %s, allows_observation = %s, condition_text = %s, help_text = %s,
+                        active = %s, updated_at = %s
+                    WHERE process_type_key = %s AND stage_key = %s AND title = %s
                     """,
                     values[3:] + (process_type_key, template["stage_key"], template["title"]),
                 )
@@ -1124,7 +1163,7 @@ def seed_process_checklist_templates(db):
                         (process_type_key, stage_key, title, description, order_index, requirement_level,
                          criticality, default_responsible_role, blocks_stage_completion, blocks_process_completion,
                          requires_attachment, allows_observation, condition_text, help_text, active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     values + (now,),
                 )
@@ -1137,7 +1176,7 @@ def normalize_legacy_project_process_types(db):
         legacy_text = (row["tipo_servico_legado"] or "").strip()
         if not current:
             db.execute(
-                "UPDATE projetos SET tipo_servico = ?, tipo_servico_legado = COALESCE(tipo_servico_legado, ?) WHERE id = ?",
+                "UPDATE projetos SET tipo_servico = %s, tipo_servico_legado = COALESCE(tipo_servico_legado, %s) WHERE id = %s",
                 ("OUTRO", "", row["id"]),
             )
             continue
@@ -1145,7 +1184,7 @@ def normalize_legacy_project_process_types(db):
             resolved_legacy = resolve_process_type_key(legacy_text)
             if resolved_legacy != "OUTRO":
                 db.execute(
-                    "UPDATE projetos SET tipo_servico = ? WHERE id = ?",
+                    "UPDATE projetos SET tipo_servico = %s WHERE id = %s",
                     (resolved_legacy, row["id"]),
                 )
             continue
@@ -1154,7 +1193,7 @@ def normalize_legacy_project_process_types(db):
             continue
         legacy = legacy_text or current
         db.execute(
-            "UPDATE projetos SET tipo_servico = ?, tipo_servico_legado = ? WHERE id = ?",
+            "UPDATE projetos SET tipo_servico = %s, tipo_servico_legado = %s WHERE id = %s",
             (resolved, legacy, row["id"]),
         )
 
@@ -1169,31 +1208,32 @@ def migrate_legacy_clients(db):
         db.execute(
             """
             UPDATE clientes
-            SET tipo_cliente = ?, nome_exibicao = ?, quem_assina = ?, status_cadastro = COALESCE(status_cadastro, 'RASCUNHO'),
-                criado_em = COALESCE(criado_em, ?), atualizado_em = COALESCE(atualizado_em, ?)
-            WHERE id = ?
+            SET tipo_cliente = %s, nome_exibicao = %s, quem_assina = %s, status_cadastro = COALESCE(status_cadastro, 'RASCUNHO'),
+                criado_em = COALESCE(criado_em, %s), atualizado_em = COALESCE(atualizado_em, %s)
+            WHERE id = %s
             """,
             (tipo_cliente, nome_exibicao, quem_assina, now, now, client["id"]),
         )
 
         if tipo_cliente == "PESSOA_JURIDICA":
-            if not first_row(db, "SELECT id FROM pessoas_juridicas WHERE cliente_id = ?", (client["id"],)):
+            if not first_row(db, "SELECT id FROM pessoas_juridicas WHERE cliente_id = %s", (client["id"],)):
                 db.execute(
                     """
                     INSERT INTO pessoas_juridicas
                         (cliente_id, razao_social, cnpj, email, telefone, criado_em, atualizado_em)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (client["id"], client["nome"], only_digits(client["cpf_cnpj"]), client["email"], client["telefone"], now, now),
                 )
         else:
-            pf = first_row(db, "SELECT id FROM pessoas_fisicas WHERE cliente_id = ?", (client["id"],))
+            pf = first_row(db, "SELECT id FROM pessoas_fisicas WHERE cliente_id = %s", (client["id"],))
             if not pf:
                 pf_id = db.execute(
                     """
                     INSERT INTO pessoas_fisicas
                         (cliente_id, nome_completo, estado_civil, regime_casamento, cpf, email, telefone, criado_em, atualizado_em)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
                     """,
                     (
                         client["id"],
@@ -1206,33 +1246,33 @@ def migrate_legacy_clients(db):
                         now,
                         now,
                     ),
-                ).lastrowid
+                ).fetchone()["id"]
             else:
                 pf_id = pf["id"]
-            if client["endereco"] and not first_row(db, "SELECT id FROM enderecos_proprietario WHERE pessoa_fisica_id = ?", (pf_id,)):
+            if client["endereco"] and not first_row(db, "SELECT id FROM enderecos_proprietario WHERE pessoa_fisica_id = %s", (pf_id,)):
                 db.execute(
                     """
                     INSERT INTO enderecos_proprietario
                         (pessoa_fisica_id, logradouro, criado_em, atualizado_em)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                     """,
                     (pf_id, client["endereco"], now, now),
                 )
-            if client["conjuge_nome"] and not first_row(db, "SELECT id FROM conjuges WHERE pessoa_fisica_id = ?", (pf_id,)):
+            if client["conjuge_nome"] and not first_row(db, "SELECT id FROM conjuges WHERE pessoa_fisica_id = %s", (pf_id,)):
                 db.execute(
                     """
                     INSERT INTO conjuges
                         (pessoa_fisica_id, nome_completo, cpf, criado_em, atualizado_em)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     (pf_id, client["conjuge_nome"], only_digits(client["conjuge_cpf_cnpj"]), now, now),
                 )
-        if client["procurador_nome"] and not first_row(db, "SELECT id FROM procuradores WHERE cliente_id = ?", (client["id"],)):
+        if client["procurador_nome"] and not first_row(db, "SELECT id FROM procuradores WHERE cliente_id = %s", (client["id"],)):
             db.execute(
                 """
                 INSERT INTO procuradores
                     (cliente_id, nome_completo, cpf, email, telefone, logradouro, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     client["id"],
@@ -1282,13 +1322,13 @@ def seed_initial_data(db):
             ("Ana Paula", "ana@geogestao.local", "tecnico123", "tecnico", "Documentacao"),
         ]
         db.executemany(
-            "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo) VALUES (%s, %s, %s, %s, %s)",
             [(name, email, generate_password_hash(password), role, cargo) for name, email, password, role, cargo in users],
         )
 
     if scalar(db, "SELECT COUNT(*) FROM clientes") == 0:
         db.executemany(
-            "INSERT INTO clientes (nome, cpf_cnpj, telefone, email, endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO clientes (nome, cpf_cnpj, telefone, email, endereco, observacoes) VALUES (%s, %s, %s, %s, %s, %s)",
             [
                 ("Joao da Silva", "123.456.789-00", "(11) 99999-0001", "joao.silva@email.com", "Rua das Flores, 100 - Campinas/SP", ""),
                 ("Maria Oliveira", "234.567.890-11", "(11) 99999-0002", "maria.oliveira@email.com", "Av. Brasil, 250 - Jundiai/SP", ""),
@@ -1300,7 +1340,7 @@ def seed_initial_data(db):
 
     if scalar(db, "SELECT COUNT(*) FROM cartorios") == 0:
         db.executemany(
-            "INSERT INTO cartorios (nome, cidade, uf, contato, observacoes) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO cartorios (nome, cidade, uf, contato, observacoes) VALUES (%s, %s, %s, %s, %s)",
             [
                 ("Cartorio Central", "Sao Paulo", "SP", "central@cartorio.com", ""),
                 ("Cartorio Norte", "Campinas", "SP", "norte@cartorio.com", ""),
@@ -1310,15 +1350,15 @@ def seed_initial_data(db):
 
     if scalar(db, "SELECT COUNT(*) FROM etapas_modelo") == 0:
         db.executemany(
-            "INSERT INTO etapas_modelo (nome, ordem, cor_padrao, ativa) VALUES (?, ?, ?, 1)",
+            "INSERT INTO etapas_modelo (nome, ordem, cor_padrao, ativa) VALUES (%s, %s, %s, 1)",
             [(stage["nome"], stage["ordem"], stage["cor"]) for stage in DEFAULT_STAGES],
         )
     else:
         for stage in DEFAULT_STAGES:
-            exists = first_row(db, "SELECT id FROM etapas_modelo WHERE lower(nome) = lower(?)", [stage["nome"]])
+            exists = first_row(db, "SELECT id FROM etapas_modelo WHERE lower(nome) = lower(%s)", [stage["nome"]])
             if not exists:
                 db.execute(
-                    "INSERT INTO etapas_modelo (nome, ordem, cor_padrao, ativa) VALUES (?, ?, ?, 1)",
+                    "INSERT INTO etapas_modelo (nome, ordem, cor_padrao, ativa) VALUES (%s, %s, %s, 1)",
                     (stage["nome"], stage["ordem"], stage["cor"]),
                 )
 
@@ -1342,7 +1382,8 @@ def seed_initial_data(db):
                 """
                 INSERT INTO projetos
                     (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, prioridade, status, responsavel_geral_id, caminho_pasta, criado_em, atualizado_em, ordem_prioridade)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     codigo,
@@ -1361,7 +1402,7 @@ def seed_initial_data(db):
                     now,
                     index,
                 ),
-            ).lastrowid
+            ).fetchone()["id"]
             initialize_project_workflow(db, project_id, ptype["key"], user_id=admin_id)
 
 
@@ -1378,7 +1419,7 @@ def initialize_project_order(db):
     if unordered:
         max_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) FROM projetos").fetchone()[0]
         for i, row in enumerate(unordered, max_order + 1):
-            db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (i, row["id"]))
+            db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (i, row["id"]))
 
 
 def default_checklist_for_stage(stage_name):
@@ -1410,20 +1451,20 @@ def normalize_stage_models(db):
             keep = matches[0]
             used_ids.add(keep["id"])
             db.execute(
-                "UPDATE etapas_modelo SET nome = ?, ordem = ?, cor_padrao = ?, ativa = 1 WHERE id = ?",
+                "UPDATE etapas_modelo SET nome = %s, ordem = %s, cor_padrao = %s, ativa = 1 WHERE id = %s",
                 (stage["nome"], stage["ordem"], stage["cor"], keep["id"]),
             )
             for duplicate in matches[1:]:
-                db.execute("UPDATE etapas_modelo SET ativa = 0 WHERE id = ?", (duplicate["id"],))
+                db.execute("UPDATE etapas_modelo SET ativa = 0 WHERE id = %s", (duplicate["id"],))
         else:
             db.execute(
-                "INSERT INTO etapas_modelo (nome, ordem, cor_padrao, ativa) VALUES (?, ?, ?, 1)",
+                "INSERT INTO etapas_modelo (nome, ordem, cor_padrao, ativa) VALUES (%s, %s, %s, 1)",
                 (stage["nome"], stage["ordem"], stage["cor"]),
             )
 
     for row in rows:
         if stage_key(row["nome"]) not in canonical and row["id"] not in used_ids:
-            db.execute("UPDATE etapas_modelo SET ativa = 0 WHERE id = ?", (row["id"],))
+            db.execute("UPDATE etapas_modelo SET ativa = 0 WHERE id = %s", (row["id"],))
 
 
 def create_stage_rows(db, project_id, responsavel_id, prazo_critico):
@@ -1436,16 +1477,17 @@ def create_stage_rows(db, project_id, responsavel_id, prazo_critico):
             """
             INSERT INTO projeto_etapas
                 (projeto_id, etapa_modelo_id, status, responsavel_id, prazo, progresso, subetapa_ativa)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
             """,
             (project_id, stage["id"], status, responsavel_id, prazo, 10 if index == 0 else 0, default_checklist_for_stage(stage["nome"])[0]),
-        ).lastrowid
+        ).fetchone()["id"]
         for item in default_checklist_for_stage(stage["nome"]):
-            db.execute("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (?, ?)", (stage_id, item))
+            db.execute("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (%s, %s)", (stage_id, item))
         if index == 0:
             current_stage_id = stage_id
     if current_stage_id:
-        db.execute("UPDATE projetos SET etapa_atual_id = ?, atualizado_em = ? WHERE id = ?", (current_stage_id, datetime.now().isoformat(timespec="seconds"), project_id))
+        db.execute("UPDATE projetos SET etapa_atual_id = %s, atualizado_em = %s WHERE id = %s", (current_stage_id, datetime.now().isoformat(timespec="seconds"), project_id))
 
 
 def get_stage_model_id_for_process_stage(db, template_stage_key):
@@ -1463,7 +1505,7 @@ def project_has_workflow_initialized_db(db, project_id):
         """
         SELECT COUNT(*)
         FROM projeto_etapas
-        WHERE projeto_id = ?
+        WHERE projeto_id = %s
           AND stage_key IS NOT NULL
           AND stage_key != ''
         """,
@@ -1477,8 +1519,8 @@ def find_project_stage_id_for_template_stage(db, project_id, template_stage_key)
         """
         SELECT id
         FROM projeto_etapas
-        WHERE projeto_id = ?
-          AND stage_key = ?
+        WHERE projeto_id = %s
+          AND stage_key = %s
           AND COALESCE(show_in_project, 1) = 1
         ORDER BY COALESCE(stage_order, 999), id
         LIMIT 1
@@ -1494,7 +1536,7 @@ def find_project_stage_id_for_template_stage(db, project_id, template_stage_key)
         SELECT pe.id, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.projeto_id = ?
+        WHERE pe.projeto_id = %s
           AND COALESCE(pe.show_in_project, 1) = 1
         ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
         """,
@@ -1513,7 +1555,7 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
         """
         SELECT *
         FROM process_checklist_templates
-        WHERE process_type_key = ? AND active = 1
+        WHERE process_type_key = %s AND active = 1
         """,
         (process_key,),
     ).fetchall()
@@ -1527,13 +1569,14 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
         project_stage_id = find_project_stage_id_for_template_stage(db, project_id, template["stage_key"])
         cursor = db.execute(
             """
-            INSERT OR IGNORE INTO project_checklist_items
+            INSERT INTO project_checklist_items
                 (project_id, project_stage_id, template_id, process_type_key, stage_key, stage_name, title,
                  description, status, requirement_level, criticality, responsible_name, due_date, completed_at,
                  completed_by, observation, attachment_path, blocks_stage_completion, blocks_process_completion,
                  requires_attachment, allows_observation, condition_text, help_text, order_index, active,
                  created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, NULL, NULL, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)
+            ON CONFLICT DO NOTHING
             """,
             (
                 project_id,
@@ -1569,7 +1612,7 @@ def sync_project_checklist_stage_links(db, project_id):
         """
         SELECT id, stage_key
         FROM project_checklist_items
-        WHERE project_id = ?
+        WHERE project_id = %s
         """,
         (project_id,),
     ).fetchall()
@@ -1578,7 +1621,7 @@ def sync_project_checklist_stage_links(db, project_id):
         stage_id = find_project_stage_id_for_template_stage(db, project_id, item["stage_key"])
         if stage_id:
             cursor = db.execute(
-                "UPDATE project_checklist_items SET project_stage_id = ?, updated_at = ? WHERE id = ? AND COALESCE(project_stage_id, 0) != ?",
+                "UPDATE project_checklist_items SET project_stage_id = %s, updated_at = %s WHERE id = %s AND COALESCE(project_stage_id, 0) != %s",
                 (stage_id, datetime.now().isoformat(timespec="seconds"), item["id"], stage_id),
             )
             updated += cursor.rowcount
@@ -1587,7 +1630,7 @@ def sync_project_checklist_stage_links(db, project_id):
 
 def initialize_project_workflow(db, project_id, process_type_key, user_id=None, force=False):
     process_key = normalize_project_process_type(process_type_key)
-    project = first_row(db, "SELECT * FROM projetos WHERE id = ?", (project_id,))
+    project = first_row(db, "SELECT * FROM projetos WHERE id = %s", (project_id,))
     if not project:
         return {"created_stages": 0, "updated_stages": 0, "created_checklist": 0, "warnings": ["Projeto nao encontrado."]}
 
@@ -1607,7 +1650,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
             """
             UPDATE projeto_etapas
             SET workflow_active = 0, show_in_matrix = 0, show_in_project = 0
-            WHERE projeto_id = ?
+            WHERE projeto_id = %s
               AND (stage_key IS NULL OR stage_key = '')
             """,
             (project_id,),
@@ -1617,7 +1660,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
         """
         SELECT *
         FROM process_stage_templates
-        WHERE process_type_key = ? AND active = 1
+        WHERE process_type_key = %s AND active = 1
         ORDER BY stage_order, id
         """,
         (process_key,),
@@ -1651,7 +1694,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
 
         existing = first_row(
             db,
-            "SELECT * FROM projeto_etapas WHERE projeto_id = ? AND stage_key = ? ORDER BY id LIMIT 1",
+            "SELECT * FROM projeto_etapas WHERE projeto_id = %s AND stage_key = %s ORDER BY id LIMIT 1",
             (project_id, template["stage_key"]),
         )
         values = (
@@ -1674,10 +1717,10 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
             db.execute(
                 """
                 UPDATE projeto_etapas
-                SET process_type_key = ?, stage_key = ?, stage_name = ?, stage_order = ?, applicability = ?,
-                    workflow_active = ?, can_skip = ?, blocks_completion = ?, show_in_matrix = ?, show_in_project = ?,
-                    external_actor_type = ?, template_stage_id = ?, stage_description = ?, model_notes = ?
-                WHERE id = ?
+                SET process_type_key = %s, stage_key = %s, stage_name = %s, stage_order = %s, applicability = %s,
+                    workflow_active = %s, can_skip = %s, blocks_completion = %s, show_in_matrix = %s, show_in_project = %s,
+                    external_actor_type = %s, template_stage_id = %s, stage_description = %s, model_notes = %s
+                WHERE id = %s
                 """,
                 values + (existing["id"],),
             )
@@ -1691,7 +1734,8 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
                      status, responsavel_id, data_inicio, prazo, progresso, subetapa_ativa, workflow_active,
                      can_skip, blocks_completion, show_in_matrix, show_in_project, external_actor_type,
                      template_stage_id, stage_description, model_notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     project_id,
@@ -1705,7 +1749,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
                     default_checklist_for_stage(template["stage_name"])[0],
                     *values[5:],
                 ),
-            ).lastrowid
+            ).fetchone()["id"]
             created_stages += 1
 
         if workflow_active and first_active_stage_id is None:
@@ -1713,24 +1757,24 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
 
     if first_active_stage_id:
         db.execute(
-            "UPDATE projetos SET etapa_atual_id = ?, tipo_servico = ?, atualizado_em = ? WHERE id = ?",
+            "UPDATE projetos SET etapa_atual_id = %s, tipo_servico = %s, atualizado_em = %s WHERE id = %s",
             (first_active_stage_id, process_key, now, project_id),
         )
         current_stage = first_row(
             db,
-            "SELECT * FROM projeto_etapas WHERE id = ?",
+            "SELECT * FROM projeto_etapas WHERE id = %s",
             (first_active_stage_id,),
         )
         if current_stage and not first_row(
             db,
-            "SELECT id FROM project_stage_history WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL LIMIT 1",
+            "SELECT id FROM project_stage_history WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL LIMIT 1",
             (project_id, first_active_stage_id),
         ):
             db.execute(
                 """
                 INSERT INTO project_stage_history
                     (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
-                VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -1750,7 +1794,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
     db.execute(
         """
         INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
         """,
         (
             project_id,
@@ -1782,7 +1826,7 @@ def infer_current_stage_id_db(db, project_id):
         SELECT pe.id
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.projeto_id = ?
+        WHERE pe.projeto_id = %s
           AND em.ativa = 1
           AND COALESCE(pe.show_in_project, 1) = 1
           AND COALESCE(pe.workflow_active, 1) = 1
@@ -1810,7 +1854,7 @@ def infer_current_stage_id_db(db, project_id):
         SELECT pe.id
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.projeto_id = ?
+        WHERE pe.projeto_id = %s
           AND em.ativa = 1
           AND COALESCE(pe.show_in_project, 1) = 1
           AND COALESCE(pe.workflow_active, 1) = 1
@@ -1828,7 +1872,7 @@ def infer_current_stage_id_db(db, project_id):
         SELECT pe.id
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.projeto_id = ?
+        WHERE pe.projeto_id = %s
           AND em.ativa = 1
           AND COALESCE(pe.show_in_project, 1) = 1
           AND COALESCE(pe.workflow_active, 1) = 1
@@ -1850,7 +1894,7 @@ def ensure_project_structure(db):
             for stage in stages:
                 existing_stage = first_row(
                     db,
-                    "SELECT * FROM projeto_etapas WHERE projeto_id = ? AND etapa_modelo_id = ?",
+                    "SELECT * FROM projeto_etapas WHERE projeto_id = %s AND etapa_modelo_id = %s",
                     (project["id"], stage["id"]),
                 )
                 if existing_stage is None:
@@ -1859,18 +1903,19 @@ def ensure_project_structure(db):
                         """
                         INSERT INTO projeto_etapas
                             (projeto_id, etapa_modelo_id, status, responsavel_id, prazo, progresso, subetapa_ativa)
-                        VALUES (?, ?, ?, ?, ?, 0, ?)
+                        VALUES (%s, %s, %s, %s, %s, 0, %s)
+                        RETURNING id
                         """,
                         (project["id"], stage["id"], "nao iniciado", project["responsavel_geral_id"], due, default_checklist_for_stage(stage["nome"])[0]),
-                    ).lastrowid
+                    ).fetchone()["id"]
                 else:
                     stage_id = existing_stage["id"]
                     if "subetapa_ativa" in existing_stage.keys() and not existing_stage["subetapa_ativa"]:
-                        db.execute("UPDATE projeto_etapas SET subetapa_ativa = ? WHERE id = ?", (default_checklist_for_stage(stage["nome"])[0], stage_id))
+                        db.execute("UPDATE projeto_etapas SET subetapa_ativa = %s WHERE id = %s", (default_checklist_for_stage(stage["nome"])[0], stage_id))
 
-                if scalar(db, "SELECT COUNT(*) FROM checklist_itens WHERE projeto_etapa_id = ?", (stage_id,)) == 0:
+                if scalar(db, "SELECT COUNT(*) FROM checklist_itens WHERE projeto_etapa_id = %s", (stage_id,)) == 0:
                     for item in default_checklist_for_stage(stage["nome"]):
-                        db.execute("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (?, ?)", (stage_id, item))
+                        db.execute("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (%s, %s)", (stage_id, item))
 
         current_valid = None
         if project["etapa_atual_id"]:
@@ -1880,7 +1925,7 @@ def ensure_project_structure(db):
                 SELECT pe.id
                 FROM projeto_etapas pe
                 JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE pe.id = ? AND pe.projeto_id = ? AND em.ativa = 1
+                WHERE pe.id = %s AND pe.projeto_id = %s AND em.ativa = 1
                   AND COALESCE(pe.show_in_project, 1) = 1
                   AND lower(pe.status) != 'nao aplicavel'
                 """,
@@ -1888,24 +1933,24 @@ def ensure_project_structure(db):
             )
         current_stage_id = project["etapa_atual_id"] if current_valid else infer_current_stage_id_db(db, project["id"])
         if current_stage_id != project["etapa_atual_id"]:
-            db.execute("UPDATE projetos SET etapa_atual_id = ?, atualizado_em = COALESCE(atualizado_em, criado_em) WHERE id = ?", (current_stage_id, project["id"]))
+            db.execute("UPDATE projetos SET etapa_atual_id = %s, atualizado_em = COALESCE(atualizado_em, criado_em) WHERE id = %s", (current_stage_id, project["id"]))
         if not project["proprietario"]:
-            client = first_row(db, "SELECT nome FROM clientes WHERE id = ?", (project["cliente_id"],))
+            client = first_row(db, "SELECT nome FROM clientes WHERE id = %s", (project["cliente_id"],))
             db.execute(
-                "UPDATE projetos SET proprietario = ?, atualizado_em = COALESCE(atualizado_em, criado_em) WHERE id = ?",
+                "UPDATE projetos SET proprietario = %s, atualizado_em = COALESCE(atualizado_em, criado_em) WHERE id = %s",
                 ((client["nome"] if client else project["nome"]), project["id"]),
             )
         if not project["atualizado_em"]:
-            db.execute("UPDATE projetos SET atualizado_em = COALESCE(criado_em, ?) WHERE id = ?", (datetime.now().isoformat(timespec="seconds"), project["id"]))
+            db.execute("UPDATE projetos SET atualizado_em = COALESCE(criado_em, %s) WHERE id = %s", (datetime.now().isoformat(timespec="seconds"), project["id"]))
 
-        if scalar(db, "SELECT COUNT(*) FROM tarefas WHERE projeto_id = ?", (project["id"],)) == 0:
+        if scalar(db, "SELECT COUNT(*) FROM tarefas WHERE projeto_id = %s", (project["id"],)) == 0:
             active_stage = first_row(
                 db,
                 """
                 SELECT pe.*, em.nome AS etapa_nome
                 FROM projeto_etapas pe
                 JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE pe.projeto_id = ?
+                WHERE pe.projeto_id = %s
                   AND lower(pe.status) != 'concluido'
                   AND lower(pe.status) != 'nao aplicavel'
                   AND COALESCE(pe.show_in_project, 1) = 1
@@ -1920,7 +1965,7 @@ def ensure_project_structure(db):
                     """
                     INSERT INTO tarefas
                         (projeto_id, projeto_etapa_id, titulo, descricao, responsavel_id, prioridade, status, prazo, criado_em)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         project["id"],
@@ -1935,9 +1980,9 @@ def ensure_project_structure(db):
                     ),
                 )
 
-        if scalar(db, "SELECT COUNT(*) FROM eventos_historico WHERE projeto_id = ?", (project["id"],)) == 0:
+        if scalar(db, "SELECT COUNT(*) FROM eventos_historico WHERE projeto_id = %s", (project["id"],)) == 0:
             db.execute(
-                "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (?, NULL, ?, ?, ?)",
+                "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (%s, NULL, %s, %s, %s)",
                 (project["id"], "importacao", "Projeto importado para o prototipo.", datetime.now().isoformat(timespec="seconds")),
             )
 
@@ -1948,7 +1993,7 @@ def ensure_project_structure(db):
                 """
                 INSERT INTO exigencias_cartorio
                     (projeto_id, cartorio_id, data_recebimento, prazo_resposta, descricao, status, responsavel_id, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project["id"],
@@ -1970,7 +2015,7 @@ def ensure_project_structure(db):
                 """
                 INSERT INTO apontamentos_tempo
                     (projeto_id, etapa_id, usuario_id, duracao_minutos, tipo_tempo, observacoes, criado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (stage["projeto_id"], stage["id"], stage["responsavel_id"], 95, "execucao", "Apontamento de exemplo.", datetime.now().isoformat(timespec="seconds")),
             )
@@ -2027,7 +2072,7 @@ def ensure_project_stage_history(db):
             FROM projeto_etapas pe
             JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
             LEFT JOIN usuarios u ON u.id = pe.responsavel_id
-            WHERE pe.projeto_id = ?
+            WHERE pe.projeto_id = %s
               AND em.ativa = 1
               AND COALESCE(pe.show_in_project, 1) = 1
               AND COALESCE(pe.workflow_active, 1) = 1
@@ -2041,7 +2086,7 @@ def ensure_project_stage_history(db):
         current_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project["id"])
         current_stage = next((stage for stage in stages if stage["id"] == current_stage_id), stages[0])
         current_order = current_stage["etapa_ordem"]
-        history_count = scalar(db, "SELECT COUNT(*) FROM project_stage_history WHERE project_id = ?", (project["id"],))
+        history_count = scalar(db, "SELECT COUNT(*) FROM project_stage_history WHERE project_id = %s", (project["id"],))
 
         if history_count == 0:
             past_stages = [stage for stage in stages if stage["etapa_ordem"] <= current_order]
@@ -2066,7 +2111,7 @@ def ensure_project_stage_history(db):
                     """
                     INSERT INTO project_stage_history
                         (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         project["id"],
@@ -2087,14 +2132,14 @@ def ensure_project_stage_history(db):
             db.execute(
                 """
                 UPDATE project_stage_history
-                SET exited_at = COALESCE(exited_at, ?)
-                WHERE project_id = ? AND exited_at IS NULL AND stage_id != ?
+                SET exited_at = COALESCE(exited_at, %s)
+                WHERE project_id = %s AND exited_at IS NULL AND stage_id != %s
                 """,
                 (now.isoformat(timespec="seconds"), project["id"], current_stage["id"]),
             )
             open_current = first_row(
                 db,
-                "SELECT id FROM project_stage_history WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL LIMIT 1",
+                "SELECT id FROM project_stage_history WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL LIMIT 1",
                 (project["id"], current_stage["id"]),
             )
             if not open_current:
@@ -2105,7 +2150,7 @@ def ensure_project_stage_history(db):
                     """
                     INSERT INTO project_stage_history
                         (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
-                    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
                     """,
                     (
                         project["id"],
@@ -2124,27 +2169,27 @@ def ensure_project_stage_history(db):
 def record_stage_history_transition(project_id, old_stage, new_stage, moved_at, responsible_id=None, reason=None):
     responsible_name = None
     if responsible_id:
-        user = query_db("SELECT nome FROM usuarios WHERE id = ?", (responsible_id,), one=True)
+        user = query_db("SELECT nome FROM usuarios WHERE id = %s", (responsible_id,), one=True)
         responsible_name = user["nome"] if user else None
     if old_stage:
         execute_db(
             """
             UPDATE project_stage_history
-            SET exited_at = COALESCE(exited_at, ?)
-            WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL
+            SET exited_at = COALESCE(exited_at, %s)
+            WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL
             """,
             (moved_at, project_id, old_stage["id"]),
         )
     execute_db(
         """
         UPDATE project_stage_history
-        SET exited_at = COALESCE(exited_at, ?)
-        WHERE project_id = ? AND stage_id != ? AND exited_at IS NULL
+        SET exited_at = COALESCE(exited_at, %s)
+        WHERE project_id = %s AND stage_id != %s AND exited_at IS NULL
         """,
         (moved_at, project_id, new_stage["id"]),
     )
     open_current = query_db(
-        "SELECT id FROM project_stage_history WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL LIMIT 1",
+        "SELECT id FROM project_stage_history WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL LIMIT 1",
         (project_id, new_stage["id"]),
         one=True,
     )
@@ -2153,7 +2198,7 @@ def record_stage_history_transition(project_id, old_stage, new_stage, moved_at, 
             """
             INSERT INTO project_stage_history
                 (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
-            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
             """,
             (
                 project_id,
@@ -2569,7 +2614,7 @@ def refresh_due_statuses():
         SET status = 'atrasado', atraso_origem = COALESCE(atraso_origem, 'interno')
         WHERE prazo IS NOT NULL
           AND prazo != ''
-          AND prazo < ?
+          AND prazo < %s
           AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
           AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo')
         """,
@@ -2581,7 +2626,7 @@ def refresh_due_statuses():
         SET status = 'atrasado'
         WHERE prazo IS NOT NULL
           AND prazo != ''
-          AND prazo < ?
+          AND prazo < %s
           AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo')
         """,
         (today,),
@@ -2589,10 +2634,10 @@ def refresh_due_statuses():
     execute_db(
         """
         UPDATE exigencias_cartorio
-        SET status = 'atrasado', atualizado_em = ?
+        SET status = 'atrasado', atualizado_em = %s
         WHERE prazo_resposta IS NOT NULL
           AND prazo_resposta != ''
-          AND prazo_resposta < ?
+          AND prazo_resposta < %s
           AND lower(status) NOT IN ('concluido', 'cancelado')
         """,
         (datetime.now().isoformat(timespec="seconds"), today),
@@ -2604,7 +2649,7 @@ def record_event(project_id, event_type, description, user_id=None):
         user = getattr(g, "user", None)
         user_id = user["id"] if user else None
     execute_db(
-        "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (%s, %s, %s, %s, %s)",
         (project_id, user_id, event_type, description, datetime.now().isoformat(timespec="seconds")),
     )
 
@@ -2616,7 +2661,7 @@ def update_stage_progress(stage_id):
             COUNT(*) AS total,
             SUM(CASE WHEN concluido = 1 THEN 1 ELSE 0 END) AS done
         FROM checklist_itens
-        WHERE projeto_etapa_id = ?
+        WHERE projeto_etapa_id = %s
         """,
         (stage_id,),
         one=True,
@@ -2624,7 +2669,7 @@ def update_stage_progress(stage_id):
     total = counts["total"] or 0
     done = counts["done"] or 0
     progress = int((done / total) * 100) if total else 0
-    execute_db("UPDATE projeto_etapas SET progresso = ? WHERE id = ?", (progress, stage_id))
+    execute_db("UPDATE projeto_etapas SET progresso = %s WHERE id = %s", (progress, stage_id))
     return progress
 
 
@@ -2634,9 +2679,9 @@ def project_checklist_stage_counts(stage_id):
         """
         SELECT
             COUNT(*) AS total,
-            SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS done
+            SUM(CASE WHEN status = %s THEN 1 ELSE 0 END) AS done
         FROM project_checklist_items
-        WHERE project_stage_id = ? AND active = 1 AND status != ?
+        WHERE project_stage_id = %s AND active = 1 AND status != %s
         """,
         (CHECKLIST_STATUS_DONE, stage_id, CHECKLIST_STATUS_NOT_APPLICABLE),
         one=True,
@@ -2659,16 +2704,16 @@ def load_stage_rows(project_id):
             u.nome AS responsavel_nome,
             CASE
                 WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
-                THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status != ?)
+                THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status != %s)
                 ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id)
             END AS checklist_total,
             CASE
                 WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
-                THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status = ?)
+                THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status = %s)
                 ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 1)
             END AS checklist_done,
             COALESCE(
-                (SELECT pci.title FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status NOT IN (?, ?) ORDER BY pci.order_index, pci.id LIMIT 1),
+                (SELECT pci.title FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status NOT IN (%s, %s) ORDER BY pci.order_index, pci.id LIMIT 1),
                 (SELECT ci.titulo FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 0 ORDER BY ci.id LIMIT 1)
             ) AS proximo_checklist,
             (
@@ -2676,9 +2721,9 @@ def load_stage_rows(project_id):
                 FROM project_checklist_items pci
                 WHERE pci.project_stage_id = pe.id
                   AND pci.active = 1
-                  AND pci.requirement_level = ?
+                  AND pci.requirement_level = %s
                   AND pci.blocks_stage_completion = 1
-                  AND pci.status NOT IN (?, ?)
+                  AND pci.status NOT IN (%s, %s)
             ) AS required_pending,
             (
                 SELECT t.titulo
@@ -2692,7 +2737,7 @@ def load_stage_rows(project_id):
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         LEFT JOIN usuarios u ON u.id = pe.responsavel_id
-        WHERE pe.projeto_id = ?
+        WHERE pe.projeto_id = %s
           AND em.ativa = 1
           AND COALESCE(pe.show_in_project, 1) = 1
         ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
@@ -2711,7 +2756,7 @@ def load_stage_rows(project_id):
 
 
 def load_matrix_stage_rows(project_id):
-    project = query_db("SELECT etapa_atual_id FROM projetos WHERE id = ?", (project_id,), one=True)
+    project = query_db("SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,), one=True)
     current_stage_id = project["etapa_atual_id"] if project else None
     global_stages = query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")
     project_stages = load_stage_rows(project_id)
@@ -2768,7 +2813,7 @@ def load_project_stage_for_action(stage_id, project_id=None):
     params = [stage_id]
     project_filter = ""
     if project_id is not None:
-        project_filter = "AND pe.projeto_id = ?"
+        project_filter = "AND pe.projeto_id = %s"
         params.append(project_id)
     return query_db(
         f"""
@@ -2780,7 +2825,7 @@ def load_project_stage_for_action(stage_id, project_id=None):
             em.ordem AS legacy_etapa_ordem
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.id = ?
+        WHERE pe.id = %s
           {project_filter}
           AND em.ativa = 1
           AND COALESCE(pe.show_in_project, 1) = 1
@@ -2795,11 +2840,11 @@ def get_stage_blocking_checklist_items(stage_id):
         """
         SELECT *
         FROM project_checklist_items
-        WHERE project_stage_id = ?
+        WHERE project_stage_id = %s
           AND active = 1
-          AND requirement_level = ?
+          AND requirement_level = %s
           AND blocks_stage_completion = 1
-          AND status NOT IN (?, ?)
+          AND status NOT IN (%s, %s)
         ORDER BY order_index, id
         """,
         (stage_id, REQUIREMENT_REQUIRED, CHECKLIST_STATUS_DONE, CHECKLIST_STATUS_NOT_APPLICABLE),
@@ -2821,11 +2866,11 @@ def get_next_applicable_stage(project_id, current_stage):
             COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.projeto_id = ?
+        WHERE pe.projeto_id = %s
           AND COALESCE(pe.show_in_project, 1) = 1
           AND COALESCE(pe.workflow_active, 1) = 1
           AND lower(pe.status) NOT IN ('concluido', 'cancelado', 'nao aplicavel')
-          AND COALESCE(pe.stage_order, em.ordem) > ?
+          AND COALESCE(pe.stage_order, em.ordem) > %s
         ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
         LIMIT 1
         """,
@@ -2835,7 +2880,7 @@ def get_next_applicable_stage(project_id, current_stage):
 
 
 def advance_project_after_stage_completion(project_id, completed_stage, responsible_id=None, reason="conclusao_etapa"):
-    project = query_db("SELECT * FROM projetos WHERE id = ?", (project_id,), one=True)
+    project = query_db("SELECT * FROM projetos WHERE id = %s", (project_id,), one=True)
     if not project or not completed_stage or project["etapa_atual_id"] != completed_stage["id"]:
         return None
 
@@ -2845,21 +2890,21 @@ def advance_project_after_stage_completion(project_id, completed_stage, responsi
         execute_db(
             """
             UPDATE projeto_etapas
-            SET status = 'em andamento', data_inicio = COALESCE(data_inicio, ?), data_fim = NULL,
-                responsavel_id = COALESCE(responsavel_id, ?), progresso = CASE WHEN COALESCE(progresso, 0) < 10 THEN 10 ELSE progresso END
-            WHERE id = ?
+            SET status = 'em andamento', data_inicio = COALESCE(data_inicio, %s), data_fim = NULL,
+                responsavel_id = COALESCE(responsavel_id, %s), progresso = CASE WHEN COALESCE(progresso, 0) < 10 THEN 10 ELSE progresso END
+            WHERE id = %s
             """,
             (now, responsible_id, next_stage["id"]),
         )
         execute_db(
-            "UPDATE projetos SET etapa_atual_id = ?, status = 'Em andamento', atualizado_em = ? WHERE id = ?",
+            "UPDATE projetos SET etapa_atual_id = %s, status = 'Em andamento', atualizado_em = %s WHERE id = %s",
             (next_stage["id"], now, project_id),
         )
         execute_db(
             """
             INSERT INTO movimentacoes_etapa
                 (projeto_id, etapa_anterior_id, etapa_nova_id, etapa_anterior, etapa_nova, motivo, observacao, responsavel_id, usuario_id, criado_em)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 project_id,
@@ -2878,14 +2923,14 @@ def advance_project_after_stage_completion(project_id, completed_stage, responsi
         return next_stage
 
     execute_db(
-        "UPDATE projetos SET status = 'Concluido', atualizado_em = ? WHERE id = ?",
+        "UPDATE projetos SET status = 'Concluido', atualizado_em = %s WHERE id = %s",
         (now, project_id),
     )
     execute_db(
         """
         UPDATE project_stage_history
-        SET exited_at = COALESCE(exited_at, ?)
-        WHERE project_id = ? AND stage_id = ? AND exited_at IS NULL
+        SET exited_at = COALESCE(exited_at, %s)
+        WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL
         """,
         (now, project_id, completed_stage["id"]),
     )
@@ -2907,7 +2952,7 @@ def login_required(view):
     def wrapped_view(**kwargs):
         if "user_id" not in session:
             return redirect(url_for("login"))
-        g.user = query_db("SELECT * FROM usuarios WHERE id = ? AND ativo = 1", [session["user_id"]], one=True)
+        g.user = query_db("SELECT * FROM usuarios WHERE id = %s AND ativo = 1", [session["user_id"]], one=True)
         if g.user is None:
             session.clear()
             return redirect(url_for("login"))
@@ -2921,7 +2966,7 @@ def load_logged_user():
     g.user = None
     if "user_id" in session:
         db = get_db()
-        g.user = db.execute("SELECT * FROM usuarios WHERE id = ? AND ativo = 1", (session["user_id"],)).fetchone()
+        g.user = db.execute("SELECT * FROM usuarios WHERE id = %s AND ativo = 1", (session["user_id"],)).fetchone()
 
 
 def format_date(value):
@@ -3007,7 +3052,7 @@ def get_cliente_display_name(cliente_id):
         FROM clientes c
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
-        WHERE c.id = ?
+        WHERE c.id = %s
         """,
         (cliente_id,),
         one=True,
@@ -3123,7 +3168,8 @@ def create_draft_cliente(nome, origem="criado_no_projeto"):
         """
         INSERT INTO clientes
             (nome, tipo_cliente, nome_exibicao, quem_assina, status_cadastro, tipo_pessoa, observacoes, criado_em, atualizado_em)
-        VALUES (?, 'PESSOA_FISICA', ?, 'PROPRIETARIO', 'RASCUNHO', 'fisica', ?, ?, ?)
+        VALUES (%s, 'PESSOA_FISICA', %s, 'PROPRIETARIO', 'RASCUNHO', 'fisica', %s, %s, %s)
+        RETURNING id
         """,
         (
             clean_name,
@@ -3133,12 +3179,13 @@ def create_draft_cliente(nome, origem="criado_no_projeto"):
             now,
         ),
     )
-    cliente_id = cursor.lastrowid
+    cliente_id = cursor.fetchone()["id"]
     db.execute(
         """
-        INSERT OR IGNORE INTO pessoas_fisicas
+        INSERT INTO pessoas_fisicas
             (cliente_id, nome_completo, criado_em, atualizado_em)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT DO NOTHING
         """,
         (cliente_id, clean_name, now, now),
     )
@@ -3248,7 +3295,7 @@ def get_stage_checklist_progress(project_id, stage_key):
         """
         SELECT *
         FROM project_checklist_items
-        WHERE project_id = ? AND stage_key = ? AND active = 1
+        WHERE project_id = %s AND stage_key = %s AND active = 1
         ORDER BY order_index, id
         """,
         (project_id, stage_key),
@@ -3262,7 +3309,7 @@ def load_project_checklist_items(project_id):
         SELECT pci.*, u.nome AS completed_by_name
         FROM project_checklist_items pci
         LEFT JOIN usuarios u ON u.id = pci.completed_by
-        WHERE pci.project_id = ? AND pci.active = 1
+        WHERE pci.project_id = %s AND pci.active = 1
         ORDER BY
             CASE pci.stage_key
                 WHEN 'ORCAMENTO' THEN 1
@@ -3345,7 +3392,7 @@ def login():
     if request.method == "POST":
         email = request.form["email"].strip().lower()
         senha = request.form["senha"]
-        usuario = query_db("SELECT * FROM usuarios WHERE lower(email) = ? AND ativo = 1", [email], one=True)
+        usuario = query_db("SELECT * FROM usuarios WHERE lower(email) = %s AND ativo = 1", [email], one=True)
         if usuario and check_password_hash(usuario["senha_hash"], senha):
             session.clear()
             session["user_id"] = usuario["id"]
@@ -3378,7 +3425,7 @@ def dashboard():
         """
         SELECT COUNT(*) AS count FROM exigencias_cartorio
         WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
-          AND COALESCE(prazo_resposta, '') != '' AND prazo_resposta < ?
+          AND COALESCE(prazo_resposta, '') != '' AND prazo_resposta < %s
         """,
         (today_iso,),
         one=True,
@@ -3391,7 +3438,7 @@ def dashboard():
         """
         SELECT COUNT(*) AS count FROM exigencias_cartorio
         WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
-          AND prazo_resposta BETWEEN ? AND ?
+          AND prazo_resposta BETWEEN %s AND %s
         """,
         (today_iso, in_7),
         one=True,
@@ -3507,36 +3554,36 @@ def projects():
         sql_filters.append(
             """
             (
-                p.nome LIKE ? OR p.codigo LIKE ? OR p.proprietario LIKE ? OR p.cidade LIKE ?
-                OR c.nome LIKE ? OR c.nome_exibicao LIKE ?
-                OR pf.nome_completo LIKE ? OR pf.cpf LIKE ?
-                OR pj.razao_social LIKE ? OR pj.nome_fantasia LIKE ? OR pj.cnpj LIKE ?
-                OR pr.nome_completo LIKE ? OR pr.cpf LIKE ?
-                OR ct.nome LIKE ? OR ct.cidade LIKE ? OR ct.uf LIKE ?
-                OR p.tipo_servico LIKE ? OR p.tipo_servico_legado LIKE ? OR tp.nome LIKE ? OR tp.categoria LIKE ?
-                OR u.nome LIKE ? OR ur.nome LIKE ?
+                p.nome LIKE %s OR p.codigo LIKE %s OR p.proprietario LIKE %s OR p.cidade LIKE %s
+                OR c.nome LIKE %s OR c.nome_exibicao LIKE %s
+                OR pf.nome_completo LIKE %s OR pf.cpf LIKE %s
+                OR pj.razao_social LIKE %s OR pj.nome_fantasia LIKE %s OR pj.cnpj LIKE %s
+                OR pr.nome_completo LIKE %s OR pr.cpf LIKE %s
+                OR ct.nome LIKE %s OR ct.cidade LIKE %s OR ct.uf LIKE %s
+                OR p.tipo_servico LIKE %s OR p.tipo_servico_legado LIKE %s OR tp.nome LIKE %s OR tp.categoria LIKE %s
+                OR u.nome LIKE %s OR ur.nome LIKE %s
             )
             """
         )
         like_q = f"%{q}%"
         params.extend([like_q] * 22)
     if filters.get("cidade"):
-        sql_filters.append("p.cidade LIKE ?")
+        sql_filters.append("p.cidade LIKE %s")
         params.append(f"%{filters['cidade']}%")
     if filters.get("cliente_id"):
-        sql_filters.append("p.cliente_id = ?")
+        sql_filters.append("p.cliente_id = %s")
         params.append(filters["cliente_id"])
     if filters.get("cartorio_id"):
-        sql_filters.append("p.cartorio_id = ?")
+        sql_filters.append("p.cartorio_id = %s")
         params.append(filters["cartorio_id"])
     if filters.get("responsavel_id"):
         sql_filters.append(
             """
             (
-                p.responsavel_geral_id = ?
+                p.responsavel_geral_id = %s
                 OR EXISTS (
                     SELECT 1 FROM projeto_etapas pe2
-                    WHERE pe2.id = p.etapa_atual_id AND pe2.responsavel_id = ?
+                    WHERE pe2.id = p.etapa_atual_id AND pe2.responsavel_id = %s
                 )
             )
             """
@@ -3544,14 +3591,14 @@ def projects():
         params.extend([filters["responsavel_id"], filters["responsavel_id"]])
     if filters.get("status"):
         sql_filters.append(
-            "(lower(p.status) = ? OR EXISTS (SELECT 1 FROM projeto_etapas pe3 WHERE pe3.projeto_id = p.id AND lower(pe3.status) = ?))"
+            "(lower(p.status) = %s OR EXISTS (SELECT 1 FROM projeto_etapas pe3 WHERE pe3.projeto_id = p.id AND lower(pe3.status) = %s))"
         )
         params.extend([filters["status"], filters["status"]])
     if filters.get("prioridade"):
-        sql_filters.append("p.prioridade = ?")
+        sql_filters.append("p.prioridade = %s")
         params.append(filters["prioridade"])
     if filters.get("tipo_servico"):
-        sql_filters.append("p.tipo_servico = ?")
+        sql_filters.append("p.tipo_servico = %s")
         params.append(normalize_project_process_type(filters["tipo_servico"]))
     if filters.get("etapa_id"):
         sql_filters.append(
@@ -3560,7 +3607,7 @@ def projects():
                 SELECT 1
                 FROM projeto_etapas pe4
                 WHERE pe4.projeto_id = p.id
-                  AND pe4.etapa_modelo_id = ?
+                  AND pe4.etapa_modelo_id = %s
                   AND pe4.id = p.etapa_atual_id
                   AND lower(pe4.status) NOT IN ('concluido', 'cancelado')
             )
@@ -3573,8 +3620,8 @@ def projects():
         sql_filters.append(
             """
             (
-                EXISTS (SELECT 1 FROM projeto_etapas pe7 WHERE pe7.id = p.etapa_atual_id AND pe7.prazo < ? AND lower(pe7.status) NOT IN ('concluido', 'cancelado', 'aguardando externo'))
-                OR EXISTS (SELECT 1 FROM pendencias pd2 WHERE pd2.projeto_id = p.id AND pd2.prazo < ? AND lower(pd2.status) NOT IN ('resolvida', 'cancelada'))
+                EXISTS (SELECT 1 FROM projeto_etapas pe7 WHERE pe7.id = p.etapa_atual_id AND pe7.prazo < %s AND lower(pe7.status) NOT IN ('concluido', 'cancelado', 'aguardando externo'))
+                OR EXISTS (SELECT 1 FROM pendencias pd2 WHERE pd2.projeto_id = p.id AND pd2.prazo < %s AND lower(pd2.status) NOT IN ('resolvida', 'cancelada'))
             )
             """
         )
@@ -3591,12 +3638,12 @@ def projects():
     prazo_filter = filters.get("prazo")
     if prazo_filter == "vencido":
         sql_filters.append(
-            "EXISTS (SELECT 1 FROM projeto_etapas pe5 WHERE pe5.id = p.etapa_atual_id AND pe5.prazo < ? AND lower(pe5.status) NOT IN ('concluido', 'cancelado', 'aguardando externo'))"
+            "EXISTS (SELECT 1 FROM projeto_etapas pe5 WHERE pe5.id = p.etapa_atual_id AND pe5.prazo < %s AND lower(pe5.status) NOT IN ('concluido', 'cancelado', 'aguardando externo'))"
         )
         params.append(date.today().isoformat())
     elif prazo_filter == "7dias":
         sql_filters.append(
-            "EXISTS (SELECT 1 FROM projeto_etapas pe6 WHERE pe6.id = p.etapa_atual_id AND pe6.prazo BETWEEN ? AND ? AND lower(pe6.status) NOT IN ('concluido', 'cancelado'))"
+            "EXISTS (SELECT 1 FROM projeto_etapas pe6 WHERE pe6.id = p.etapa_atual_id AND pe6.prazo BETWEEN %s AND %s AND lower(pe6.status) NOT IN ('concluido', 'cancelado'))"
         )
         params.extend([date.today().isoformat(), (date.today() + timedelta(days=7)).isoformat()])
     elif prazo_filter == "sem_prazo":
@@ -3654,14 +3701,14 @@ def projects():
     pending_by_stage = {}
     pending_by_project = {}
     if stage_ids:
-        placeholders = ",".join("?" for _ in stage_ids)
+        placeholders = ",".join("%s" for _ in stage_ids)
         # Checklist do processo (por tipo) — somente a tarefa, sem selos, agrupado por etapa do projeto.
         for item in query_db(
             f"""
             SELECT id, project_stage_id AS projeto_etapa_id, title AS titulo,
-                   CASE WHEN status = ? THEN 1 ELSE 0 END AS concluido
+                   CASE WHEN status = %s THEN 1 ELSE 0 END AS concluido
             FROM project_checklist_items
-            WHERE project_stage_id IN ({placeholders}) AND active = 1 AND status != ?
+            WHERE project_stage_id IN ({placeholders}) AND active = 1 AND status != %s
             ORDER BY project_stage_id, order_index, id
             """,
             [CHECKLIST_STATUS_DONE] + stage_ids + [CHECKLIST_STATUS_NOT_APPLICABLE],
@@ -3683,7 +3730,7 @@ def projects():
     project_ids = [project["id"] for project, _ in matrix]
     notes_by_project = {}
     if project_ids:
-        project_placeholders = ",".join("?" for _ in project_ids)
+        project_placeholders = ",".join("%s" for _ in project_ids)
         for note in query_db(
             f"""
             SELECT e.*, u.nome AS usuario_nome
@@ -3704,7 +3751,7 @@ def projects():
             JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
             WHERE em.ativa = 1
               AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-              AND pe.prazo BETWEEN ? AND ?
+              AND pe.prazo BETWEEN %s AND %s
               AND lower(pe.status) NOT IN ('concluido', 'cancelado')
             """,
             (date.today().isoformat(), (date.today() + timedelta(days=7)).isoformat()),
@@ -3819,7 +3866,7 @@ def project_create():
             """
             INSERT INTO projetos
                 (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, valor, caminho_pasta, observacoes, criado_em, atualizado_em)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 codigo,
@@ -3839,8 +3886,8 @@ def project_create():
         )
         db = get_db()
         initialize_project_workflow(db, project_id, process_key, user_id=g.user["id"])
-        next_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) + 1 FROM projetos WHERE id != ?", (project_id,)).fetchone()[0]
-        db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (next_order, project_id))
+        next_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) + 1 FROM projetos WHERE id != %s", (project_id,)).fetchone()[0]
+        db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (next_order, project_id))
         db.commit()
         record_event(project_id, "projeto_criado", f"Projeto {codigo} criado.")
         flash("Projeto criado com sucesso.", "success")
@@ -3866,7 +3913,7 @@ def api_projects_reorder():
         return jsonify({"ok": False, "error": "Sem IDs"}), 400
     db = get_db()
     for i, project_id in enumerate(ids, 1):
-        db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (i, project_id))
+        db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (i, project_id))
     db.commit()
     return jsonify({"ok": True})
 
@@ -3885,7 +3932,7 @@ def api_project_set_top(project_id):
         all_ids.remove(project_id)
     all_ids.insert(0, project_id)
     for i, pid in enumerate(all_ids, 1):
-        db.execute("UPDATE projetos SET ordem_prioridade = ? WHERE id = ?", (i, pid))
+        db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (i, pid))
     db.commit()
     return jsonify({"ok": True})
 
@@ -3902,7 +3949,7 @@ def api_add_cartorio():
         return {"error": "Nome obrigatorio"}, 400
 
     try:
-        cartorio_id = execute_db("INSERT INTO cartorios (nome) VALUES (?)", (nome,))
+        cartorio_id = execute_db("INSERT INTO cartorios (nome) VALUES (%s)", (nome,))
         return {"id": cartorio_id, "nome": nome}, 201
     except Exception as e:
         return {"error": str(e)}, 500
@@ -3991,7 +4038,7 @@ def project_detail(project_id):
         LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
         LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
-        WHERE p.id = ?
+        WHERE p.id = %s
         """,
         (project_id,),
         one=True,
@@ -4002,7 +4049,7 @@ def project_detail(project_id):
 
     db = get_db()
     workflow_initialized = project_has_workflow_initialized_db(db, project_id)
-    if not scalar(db, "SELECT COUNT(*) FROM project_checklist_items WHERE project_id = ?", (project_id,)):
+    if not scalar(db, "SELECT COUNT(*) FROM project_checklist_items WHERE project_id = %s", (project_id,)):
         create_project_checklist_from_template(db, project_id, project["tipo_servico"])
         db.commit()
     else:
@@ -4021,7 +4068,7 @@ def project_detail(project_id):
         LEFT JOIN usuarios u ON u.id = t.responsavel_id
         LEFT JOIN projeto_etapas pe ON pe.id = t.projeto_etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE t.projeto_id = ?
+        WHERE t.projeto_id = %s
         ORDER BY
             CASE t.prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
             COALESCE(t.prazo, '9999-12-31')
@@ -4033,7 +4080,7 @@ def project_detail(project_id):
         SELECT ci.*, u.nome AS concluido_por_nome
         FROM checklist_itens ci
         LEFT JOIN usuarios u ON u.id = ci.concluido_por
-        WHERE ci.projeto_etapa_id IN (SELECT id FROM projeto_etapas WHERE projeto_id = ?)
+        WHERE ci.projeto_etapa_id IN (SELECT id FROM projeto_etapas WHERE projeto_id = %s)
         ORDER BY ci.projeto_etapa_id, ci.id
         """,
         (project_id,),
@@ -4048,7 +4095,7 @@ def project_detail(project_id):
         FROM exigencias_cartorio e
         LEFT JOIN cartorios c ON c.id = e.cartorio_id
         LEFT JOIN usuarios u ON u.id = e.responsavel_id
-        WHERE e.projeto_id = ?
+        WHERE e.projeto_id = %s
         ORDER BY COALESCE(e.prazo_resposta, '9999-12-31')
         """,
         (project_id,),
@@ -4060,7 +4107,7 @@ def project_detail(project_id):
         LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         LEFT JOIN usuarios u ON u.id = pd.responsavel_id
-        WHERE pd.projeto_id = ?
+        WHERE pd.projeto_id = %s
         ORDER BY
             CASE WHEN lower(pd.status) IN ('resolvida', 'cancelada') THEN 1 ELSE 0 END,
             COALESCE(pd.prazo, '9999-12-31')
@@ -4073,7 +4120,7 @@ def project_detail(project_id):
         FROM movimentacoes_etapa m
         LEFT JOIN usuarios u ON u.id = m.usuario_id
         LEFT JOIN usuarios r ON r.id = m.responsavel_id
-        WHERE m.projeto_id = ?
+        WHERE m.projeto_id = %s
         ORDER BY m.criado_em DESC
         """,
         (project_id,),
@@ -4086,13 +4133,13 @@ def project_detail(project_id):
         LEFT JOIN projeto_etapas pe ON pe.id = a.etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         LEFT JOIN tarefas t ON t.id = a.tarefa_id
-        WHERE a.projeto_id = ?
+        WHERE a.projeto_id = %s
         ORDER BY a.criado_em DESC
         """,
         (project_id,),
     )
     total_minutes = query_db(
-        "SELECT COALESCE(SUM(duracao_minutos), 0) AS total FROM apontamentos_tempo WHERE projeto_id = ?",
+        "SELECT COALESCE(SUM(duracao_minutos), 0) AS total FROM apontamentos_tempo WHERE projeto_id = %s",
         (project_id,),
         one=True,
     )["total"]
@@ -4101,14 +4148,14 @@ def project_detail(project_id):
         SELECT e.*, u.nome AS usuario_nome
         FROM eventos_historico e
         LEFT JOIN usuarios u ON u.id = e.usuario_id
-        WHERE e.projeto_id = ?
+        WHERE e.projeto_id = %s
         ORDER BY e.criado_em DESC
         """,
         (project_id,),
     )
     # Tempo por etapa: quando o projeto entrou e saiu de cada fase.
     stage_history_rows = query_db(
-        "SELECT * FROM project_stage_history WHERE project_id = ? ORDER BY entered_at, id",
+        "SELECT * FROM project_stage_history WHERE project_id = %s ORDER BY entered_at, id",
         (project_id,),
     )
     stage_timeline = [
@@ -4151,7 +4198,7 @@ def project_detail(project_id):
 @app.route("/project/<int:project_id>/action", methods=["POST"])
 @login_required
 def project_action(project_id):
-    project = query_db("SELECT * FROM projetos WHERE id = ?", (project_id,), one=True)
+    project = query_db("SELECT * FROM projetos WHERE id = %s", (project_id,), one=True)
     if not project:
         flash("Projeto nao encontrado.", "danger")
         return redirect(url_for("projects"))
@@ -4171,10 +4218,10 @@ def project_action(project_id):
         execute_db(
             """
             UPDATE projetos
-            SET nome = ?, proprietario = ?, cliente_id = ?, cidade = ?, uf = ?, cartorio_id = ?, tipo_servico = ?,
-                prioridade = ?, status = ?, prazo_critico = ?, responsavel_geral_id = ?, caminho_pasta = ?,
-                observacoes = ?, valor = ?, atualizado_em = ?
-            WHERE id = ?
+            SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s,
+                prioridade = %s, status = %s, prazo_critico = %s, responsavel_geral_id = %s, caminho_pasta = %s,
+                observacoes = %s, valor = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             (
                 project_name,
@@ -4238,9 +4285,9 @@ def project_action(project_id):
         execute_db(
             """
             UPDATE projeto_etapas
-            SET status = ?, responsavel_id = ?, prazo = ?, progresso = ?, subetapa_ativa = ?,
-                atraso_origem = ?, observacoes = ?, data_inicio = ?, data_fim = ?
-            WHERE id = ?
+            SET status = %s, responsavel_id = %s, prazo = %s, progresso = %s, subetapa_ativa = %s,
+                atraso_origem = %s, observacoes = %s, data_inicio = %s, data_fim = %s
+            WHERE id = %s
             """,
             (
                 status,
@@ -4297,7 +4344,7 @@ def project_action(project_id):
                 # Bloqueia o avanco enquanto houver pendencia aberta no projeto.
                 open_pendencias = scalar(
                     db,
-                    "SELECT COUNT(*) FROM pendencias WHERE projeto_id = ? AND lower(status) NOT IN ('resolvida', 'cancelada')",
+                    "SELECT COUNT(*) FROM pendencias WHERE projeto_id = %s AND lower(status) NOT IN ('resolvida', 'cancelada')",
                     (project_id,),
                 )
                 if open_pendencias:
@@ -4332,8 +4379,8 @@ def project_action(project_id):
             execute_db(
                 """
                 UPDATE projeto_etapas
-                SET status = ?, data_fim = ?, progresso = CASE WHEN ? = 'concluido' THEN 100 ELSE progresso END
-                WHERE id = ?
+                SET status = %s, data_fim = %s, progresso = CASE WHEN %s = 'concluido' THEN 100 ELSE progresso END
+                WHERE id = %s
                 """,
                 (old_status, None if is_rework else now, old_status, old_stage["id"]),
             )
@@ -4342,9 +4389,9 @@ def project_action(project_id):
         execute_db(
             """
             UPDATE projeto_etapas
-            SET status = ?, responsavel_id = COALESCE(?, responsavel_id), prazo = COALESCE(?, prazo),
-                data_inicio = COALESCE(data_inicio, ?), data_fim = NULL, subetapa_ativa = COALESCE(NULLIF(?, ''), subetapa_ativa)
-            WHERE id = ?
+            SET status = %s, responsavel_id = COALESCE(%s, responsavel_id), prazo = COALESCE(%s, prazo),
+                data_inicio = COALESCE(data_inicio, %s), data_fim = NULL, subetapa_ativa = COALESCE(NULLIF(%s, ''), subetapa_ativa)
+            WHERE id = %s
             """,
             (
                 new_status,
@@ -4356,14 +4403,14 @@ def project_action(project_id):
             ),
         )
         execute_db(
-            "UPDATE projetos SET etapa_atual_id = ?, status = ?, atualizado_em = ? WHERE id = ?",
+            "UPDATE projetos SET etapa_atual_id = %s, status = %s, atualizado_em = %s WHERE id = %s",
             (new_stage["id"], "Atencao" if is_rework else "Em andamento", now, project_id),
         )
         execute_db(
             """
             INSERT INTO movimentacoes_etapa
                 (projeto_id, etapa_anterior_id, etapa_nova_id, etapa_anterior, etapa_nova, motivo, observacao, responsavel_id, usuario_id, criado_em)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 project_id,
@@ -4392,7 +4439,7 @@ def project_action(project_id):
                 """
                 INSERT INTO pendencias
                     (projeto_id, etapa_id, descricao, origem, responsavel_id, prazo, status, data_abertura, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, 'aberta', ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, 'aberta', %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4413,7 +4460,7 @@ def project_action(project_id):
                 """
                 INSERT INTO pendencias
                     (projeto_id, etapa_id, descricao, origem, responsavel_id, status, data_abertura, criado_em, atualizado_em)
-                VALUES (?, ?, ?, 'interna', ?, 'aberta', ?, ?, ?)
+                VALUES (%s, %s, %s, 'interna', %s, 'aberta', %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4435,7 +4482,7 @@ def project_action(project_id):
                 """
                 INSERT INTO tarefas
                     (projeto_id, projeto_etapa_id, titulo, descricao, responsavel_id, prioridade, status, prazo, criado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4456,18 +4503,18 @@ def project_action(project_id):
         title = request.form.get("titulo", "").strip()
         stage_id = request.form.get("etapa_id")
         if title and stage_id:
-            execute_db("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (?, ?)", (stage_id, title))
+            execute_db("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (%s, %s)", (stage_id, title))
             update_stage_progress(stage_id)
             record_event(project_id, "checklist_adicionado", f"Checklist adicionado: {title}.")
             flash("Item de checklist adicionado.", "success")
 
     elif action == "toggle_checklist":
         item_id = request.form.get("item_id")
-        item = query_db("SELECT * FROM checklist_itens WHERE id = ?", (item_id,), one=True)
+        item = query_db("SELECT * FROM checklist_itens WHERE id = %s", (item_id,), one=True)
         if item:
             new_value = 0 if item["concluido"] else 1
             execute_db(
-                "UPDATE checklist_itens SET concluido = ?, concluido_por = ?, concluido_em = ? WHERE id = ?",
+                "UPDATE checklist_itens SET concluido = %s, concluido_por = %s, concluido_em = %s WHERE id = %s",
                 (
                     new_value,
                     g.user["id"] if new_value else None,
@@ -4482,7 +4529,7 @@ def project_action(project_id):
     elif action == "toggle_project_checklist":
         item_id = request.form.get("item_id")
         item = query_db(
-            "SELECT * FROM project_checklist_items WHERE id = ? AND project_id = ?",
+            "SELECT * FROM project_checklist_items WHERE id = %s AND project_id = %s",
             (item_id, project_id),
             one=True,
         )
@@ -4491,8 +4538,8 @@ def project_action(project_id):
             execute_db(
                 """
                 UPDATE project_checklist_items
-                SET status = ?, completed_at = ?, completed_by = ?, updated_at = ?
-                WHERE id = ?
+                SET status = %s, completed_at = %s, completed_by = %s, updated_at = %s
+                WHERE id = %s
                 """,
                 (
                     new_status,
@@ -4508,7 +4555,7 @@ def project_action(project_id):
     elif action == "mark_project_checklist_not_applicable":
         item_id = request.form.get("item_id")
         item = query_db(
-            "SELECT * FROM project_checklist_items WHERE id = ? AND project_id = ?",
+            "SELECT * FROM project_checklist_items WHERE id = %s AND project_id = %s",
             (item_id, project_id),
             one=True,
         )
@@ -4517,10 +4564,10 @@ def project_action(project_id):
             execute_db(
                 """
                 UPDATE project_checklist_items
-                SET status = ?, completed_at = NULL, completed_by = NULL,
-                    observation = COALESCE(NULLIF(?, ''), observation, 'Marcado como nao aplicavel.'),
-                    updated_at = ?
-                WHERE id = ?
+                SET status = %s, completed_at = NULL, completed_by = NULL,
+                    observation = COALESCE(NULLIF(%s, ''), observation, 'Marcado como nao aplicavel.'),
+                    updated_at = %s
+                WHERE id = %s
                 """,
                 (
                     CHECKLIST_STATUS_NOT_APPLICABLE,
@@ -4540,7 +4587,7 @@ def project_action(project_id):
                 """
                 INSERT INTO pendencias
                     (projeto_id, etapa_id, descricao, origem, responsavel_id, prazo, status, data_abertura, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4556,16 +4603,16 @@ def project_action(project_id):
                 ),
             )
             if request.form.get("etapa_id"):
-                execute_db("UPDATE projeto_etapas SET status = 'atencao' WHERE id = ? AND lower(status) NOT IN ('concluido', 'cancelado')", (request.form.get("etapa_id"),))
+                execute_db("UPDATE projeto_etapas SET status = 'atencao' WHERE id = %s AND lower(status) NOT IN ('concluido', 'cancelado')", (request.form.get("etapa_id"),))
                 if str(request.form.get("etapa_id")) == str(project["etapa_atual_id"]):
-                    execute_db("UPDATE projetos SET status = 'Atencao', atualizado_em = ? WHERE id = ?", (now, project_id))
+                    execute_db("UPDATE projetos SET status = 'Atencao', atualizado_em = %s WHERE id = %s", (now, project_id))
             record_event(project_id, "pendencia_criada", f"Pendencia #{pending_id} registrada: {description}.")
             flash("Pendencia registrada.", "success")
 
     elif action == "resolve_pending":
         pending_id = request.form.get("pendencia_id")
         execute_db(
-            "UPDATE pendencias SET status = 'resolvida', data_resolucao = ?, atualizado_em = ? WHERE id = ? AND projeto_id = ?",
+            "UPDATE pendencias SET status = 'resolvida', data_resolucao = %s, atualizado_em = %s WHERE id = %s AND projeto_id = %s",
             (date.today().isoformat(), datetime.now().isoformat(timespec="seconds"), pending_id, project_id),
         )
         record_event(project_id, "pendencia_resolvida", f"Pendencia #{pending_id} resolvida.")
@@ -4578,7 +4625,7 @@ def project_action(project_id):
                 """
                 INSERT INTO exigencias_cartorio
                     (projeto_id, cartorio_id, data_recebimento, prazo_resposta, descricao, status, responsavel_id, criado_em, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4597,19 +4644,19 @@ def project_action(project_id):
                 SELECT pe.id
                 FROM projeto_etapas pe
                 JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE pe.projeto_id = ? AND lower(em.nome) = 'cartorio' AND em.ativa = 1
+                WHERE pe.projeto_id = %s AND lower(em.nome) = 'cartorio' AND em.ativa = 1
                 LIMIT 1
                 """,
                 (project_id,),
                 one=True,
             )
             if cartorio_stage:
-                execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = ? WHERE id = ?", ("Exigencia em correcao", cartorio_stage["id"]))
+                execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", cartorio_stage["id"]))
             execute_db(
                 """
                 INSERT INTO pendencias
                     (projeto_id, etapa_id, descricao, origem, responsavel_id, prazo, status, data_abertura, criado_em, atualizado_em)
-                VALUES (?, ?, ?, 'cartorio', ?, ?, 'aberta', ?, ?, ?)
+                VALUES (%s, %s, %s, 'cartorio', %s, %s, 'aberta', %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4626,7 +4673,7 @@ def project_action(project_id):
                 """
                 INSERT INTO tarefas
                     (projeto_id, projeto_etapa_id, titulo, descricao, responsavel_id, prioridade, status, prazo, criado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4648,8 +4695,8 @@ def project_action(project_id):
         execute_db(
             """
             UPDATE exigencias_cartorio
-            SET status = ?, responsavel_id = ?, prazo_resposta = ?, atualizado_em = ?
-            WHERE id = ? AND projeto_id = ?
+            SET status = %s, responsavel_id = %s, prazo_resposta = %s, atualizado_em = %s
+            WHERE id = %s AND projeto_id = %s
             """,
             (
                 request.form.get("status", "em andamento"),
@@ -4670,7 +4717,7 @@ def project_action(project_id):
                 """
                 INSERT INTO apontamentos_tempo
                     (projeto_id, etapa_id, tarefa_id, usuario_id, inicio, fim, duracao_minutos, tipo_tempo, observacoes, criado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
@@ -4706,13 +4753,13 @@ def api_add_checklist_item():
     stage_id = data.get("stage_id")
     if not titulo or not stage_id:
         return jsonify({"ok": False, "error": "Dados incompletos"}), 400
-    stage = query_db("SELECT * FROM projeto_etapas WHERE id = ?", (stage_id,), one=True)
+    stage = query_db("SELECT * FROM projeto_etapas WHERE id = %s", (stage_id,), one=True)
     if not stage:
         return jsonify({"ok": False, "error": "Etapa nao encontrada"}), 404
-    item_id = execute_db("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (?, ?)", (stage_id, titulo))
+    item_id = execute_db("INSERT INTO checklist_itens (projeto_etapa_id, titulo) VALUES (%s, %s)", (stage_id, titulo))
     progress = update_stage_progress(stage_id)
-    done = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = ? AND concluido = 1", (stage_id,), one=True)["n"]
-    total = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = ?", (stage_id,), one=True)["n"]
+    done = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = %s AND concluido = 1", (stage_id,), one=True)["n"]
+    total = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = %s", (stage_id,), one=True)["n"]
     return jsonify({"ok": True, "id": item_id, "titulo": titulo, "concluido": False, "progress": progress, "done": done, "total": total})
 
 
@@ -4720,18 +4767,18 @@ def api_add_checklist_item():
 @login_required
 def api_toggle_checklist(item_id):
     from flask import jsonify
-    item = query_db("SELECT * FROM checklist_itens WHERE id = ?", (item_id,), one=True)
+    item = query_db("SELECT * FROM checklist_itens WHERE id = %s", (item_id,), one=True)
     if not item:
         return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     new_value = 0 if item["concluido"] else 1
     now = datetime.now().isoformat(timespec="seconds")
     execute_db(
-        "UPDATE checklist_itens SET concluido = ?, concluido_por = ?, concluido_em = ? WHERE id = ?",
+        "UPDATE checklist_itens SET concluido = %s, concluido_por = %s, concluido_em = %s WHERE id = %s",
         (new_value, g.user["id"] if new_value else None, now if new_value else None, item_id),
     )
     progress = update_stage_progress(item["projeto_etapa_id"])
-    done = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = ? AND concluido = 1", (item["projeto_etapa_id"],), one=True)["n"]
-    total = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = ?", (item["projeto_etapa_id"],), one=True)["n"]
+    done = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = %s AND concluido = 1", (item["projeto_etapa_id"],), one=True)["n"]
+    total = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = %s", (item["projeto_etapa_id"],), one=True)["n"]
     return jsonify({"ok": True, "concluido": bool(new_value), "progress": progress, "done": done, "total": total})
 
 
@@ -4743,11 +4790,11 @@ def api_add_project_note(project_id):
     texto = (data.get("texto") or "").strip()
     if not texto:
         return jsonify({"ok": False, "error": "Escreva a anotacao."}), 400
-    if not query_db("SELECT id FROM projetos WHERE id = ?", (project_id,), one=True):
+    if not query_db("SELECT id FROM projetos WHERE id = %s", (project_id,), one=True):
         return jsonify({"ok": False, "error": "Projeto nao encontrado"}), 404
     now = datetime.now().isoformat(timespec="seconds")
     note_id = execute_db(
-        "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (?, ?, 'anotacao', ?, ?)",
+        "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (%s, %s, 'anotacao', %s, %s)",
         (project_id, g.user["id"], texto, now),
     )
     return jsonify({"ok": True, "id": note_id, "texto": texto, "autor": g.user["nome"], "data": format_datetime(now)})
@@ -4757,13 +4804,13 @@ def api_add_project_note(project_id):
 @login_required
 def api_toggle_project_checklist(item_id):
     """Marca/desmarca um item do checklist do processo (usado no popup da matriz)."""
-    item = query_db("SELECT * FROM project_checklist_items WHERE id = ?", (item_id,), one=True)
+    item = query_db("SELECT * FROM project_checklist_items WHERE id = %s", (item_id,), one=True)
     if not item:
         return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     new_status = CHECKLIST_STATUS_NOT_STARTED if item["status"] == CHECKLIST_STATUS_DONE else CHECKLIST_STATUS_DONE
     now = datetime.now().isoformat(timespec="seconds")
     execute_db(
-        "UPDATE project_checklist_items SET status = ?, completed_at = ?, completed_by = ?, updated_at = ? WHERE id = ?",
+        "UPDATE project_checklist_items SET status = %s, completed_at = %s, completed_by = %s, updated_at = %s WHERE id = %s",
         (
             new_status,
             now if new_status == CHECKLIST_STATUS_DONE else None,
@@ -4775,7 +4822,7 @@ def api_toggle_project_checklist(item_id):
     done = total = progress = 0
     if item["project_stage_id"]:
         done, total, progress = project_checklist_stage_counts(item["project_stage_id"])
-        execute_db("UPDATE projeto_etapas SET progresso = ? WHERE id = ?", (progress, item["project_stage_id"]))
+        execute_db("UPDATE projeto_etapas SET progresso = %s WHERE id = %s", (progress, item["project_stage_id"]))
     return jsonify({"ok": True, "concluido": new_status == CHECKLIST_STATUS_DONE, "progress": progress, "done": done, "total": total})
 
 
@@ -4788,12 +4835,12 @@ def api_add_project_checklist_item():
     stage_id = data.get("stage_id")
     if not titulo or not stage_id:
         return jsonify({"ok": False, "error": "Dados incompletos"}), 400
-    stage = query_db("SELECT * FROM projeto_etapas WHERE id = ?", (stage_id,), one=True)
+    stage = query_db("SELECT * FROM projeto_etapas WHERE id = %s", (stage_id,), one=True)
     if not stage:
         return jsonify({"ok": False, "error": "Etapa nao encontrada"}), 404
     now = datetime.now().isoformat(timespec="seconds")
     order_index = query_db(
-        "SELECT COALESCE(MAX(order_index), 0) + 1 AS n FROM project_checklist_items WHERE project_stage_id = ?",
+        "SELECT COALESCE(MAX(order_index), 0) + 1 AS n FROM project_checklist_items WHERE project_stage_id = %s",
         (stage_id,),
         one=True,
     )["n"]
@@ -4804,7 +4851,7 @@ def api_add_project_checklist_item():
                 (project_id, project_stage_id, process_type_key, stage_key, stage_name, title, status,
                  requirement_level, criticality, blocks_stage_completion, blocks_process_completion,
                  requires_attachment, allows_observation, order_index, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 1, ?, 1, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 1, %s, 1, %s, %s)
             """,
             (
                 stage["projeto_id"],
@@ -4821,10 +4868,10 @@ def api_add_project_checklist_item():
                 now,
             ),
         )
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
         return jsonify({"ok": False, "error": "Ja existe um item com esse nome nesta etapa."}), 409
     done, total, progress = project_checklist_stage_counts(stage_id)
-    execute_db("UPDATE projeto_etapas SET progresso = ? WHERE id = ?", (progress, stage_id))
+    execute_db("UPDATE projeto_etapas SET progresso = %s WHERE id = %s", (progress, stage_id))
     return jsonify({"ok": True, "id": item_id, "titulo": titulo, "concluido": False, "progress": progress, "done": done, "total": total})
 
 
@@ -4851,7 +4898,7 @@ def stage_quick(stage_id):
         progress = 100
         data_fim = datetime.now().isoformat(timespec="seconds")
     execute_db(
-        "UPDATE projeto_etapas SET status = ?, progresso = ?, data_inicio = ?, data_fim = ? WHERE id = ?",
+        "UPDATE projeto_etapas SET status = %s, progresso = %s, data_inicio = %s, data_fim = %s WHERE id = %s",
         (status, progress, data_inicio, data_fim, stage_id),
     )
     next_stage = None
@@ -4869,7 +4916,7 @@ def stage_quick(stage_id):
 @app.route("/task/<int:task_id>/quick", methods=["POST"])
 @login_required
 def task_quick(task_id):
-    task = query_db("SELECT * FROM tarefas WHERE id = ?", (task_id,), one=True)
+    task = query_db("SELECT * FROM tarefas WHERE id = %s", (task_id,), one=True)
     if not task:
         flash("Tarefa nao encontrada.", "danger")
         return redirect(url_for("my_missions"))
@@ -4886,7 +4933,7 @@ def task_quick(task_id):
         status = "concluido"
         concluido_em = datetime.now().isoformat(timespec="seconds")
     execute_db(
-        "UPDATE tarefas SET status = ?, data_inicio = ?, concluido_em = ? WHERE id = ?",
+        "UPDATE tarefas SET status = %s, data_inicio = %s, concluido_em = %s WHERE id = %s",
         (status, data_inicio, concluido_em, task_id),
     )
     record_event(task["projeto_id"], "acao_rapida_tarefa", f"Tarefa {task['titulo']} atualizada para {STATUS_META.get(status, {}).get('label', status)}.")
@@ -4897,7 +4944,7 @@ def task_quick(task_id):
 @app.route("/pending/<int:pending_id>/quick", methods=["POST"])
 @login_required
 def pending_quick(pending_id):
-    pending = query_db("SELECT * FROM pendencias WHERE id = ?", (pending_id,), one=True)
+    pending = query_db("SELECT * FROM pendencias WHERE id = %s", (pending_id,), one=True)
     if not pending:
         flash("Pendencia nao encontrada.", "danger")
         return redirect(url_for("my_missions"))
@@ -4913,7 +4960,7 @@ def pending_quick(pending_id):
         status = "cancelada"
         resolved_at = date.today().isoformat()
     execute_db(
-        "UPDATE pendencias SET status = ?, data_resolucao = ?, atualizado_em = ? WHERE id = ?",
+        "UPDATE pendencias SET status = %s, data_resolucao = %s, atualizado_em = %s WHERE id = %s",
         (status, resolved_at, datetime.now().isoformat(timespec="seconds"), pending_id),
     )
     record_event(pending["projeto_id"], "pendencia_atualizada", f"Pendencia #{pending_id} atualizada para {status}.")
@@ -4927,7 +4974,7 @@ def get_first_imovel_for_client(cliente_id):
         SELECT i.*, ci.id AS vinculo_id, ci.papel, ci.percentual_participacao, ci.principal
         FROM clientes_imoveis ci
         JOIN imoveis i ON i.id = ci.imovel_id
-        WHERE ci.cliente_id = ?
+        WHERE ci.cliente_id = %s
         ORDER BY ci.principal DESC, ci.id
         LIMIT 1
         """,
@@ -4937,23 +4984,23 @@ def get_first_imovel_for_client(cliente_id):
 
 
 def load_cliente_documental(cliente_id):
-    cliente = query_db("SELECT * FROM clientes WHERE id = ?", (cliente_id,), one=True)
+    cliente = query_db("SELECT * FROM clientes WHERE id = %s", (cliente_id,), one=True)
     if not cliente:
         return None
-    pf = query_db("SELECT * FROM pessoas_fisicas WHERE cliente_id = ?", (cliente_id,), one=True)
+    pf = query_db("SELECT * FROM pessoas_fisicas WHERE cliente_id = %s", (cliente_id,), one=True)
     conjuge = None
     endereco = None
     if pf:
-        conjuge = query_db("SELECT * FROM conjuges WHERE pessoa_fisica_id = ?", (pf["id"],), one=True)
-        endereco = query_db("SELECT * FROM enderecos_proprietario WHERE pessoa_fisica_id = ?", (pf["id"],), one=True)
-    pj = query_db("SELECT * FROM pessoas_juridicas WHERE cliente_id = ?", (cliente_id,), one=True)
-    procurador = query_db("SELECT * FROM procuradores WHERE cliente_id = ?", (cliente_id,), one=True)
+        conjuge = query_db("SELECT * FROM conjuges WHERE pessoa_fisica_id = %s", (pf["id"],), one=True)
+        endereco = query_db("SELECT * FROM enderecos_proprietario WHERE pessoa_fisica_id = %s", (pf["id"],), one=True)
+    pj = query_db("SELECT * FROM pessoas_juridicas WHERE cliente_id = %s", (cliente_id,), one=True)
+    procurador = query_db("SELECT * FROM procuradores WHERE cliente_id = %s", (cliente_id,), one=True)
     imoveis = query_db(
         """
         SELECT i.*, ci.id AS vinculo_id, ci.papel, ci.percentual_participacao, ci.principal
         FROM clientes_imoveis ci
         JOIN imoveis i ON i.id = ci.imovel_id
-        WHERE ci.cliente_id = ?
+        WHERE ci.cliente_id = %s
         ORDER BY ci.principal DESC, i.nome_imovel
         """,
         (cliente_id,),
@@ -4961,7 +5008,7 @@ def load_cliente_documental(cliente_id):
     vertices_by_imovel = {}
     for imovel in imoveis:
         vertices_by_imovel[imovel["id"]] = query_db(
-            "SELECT * FROM vertices_imovel WHERE imovel_id = ? ORDER BY ordem, id",
+            "SELECT * FROM vertices_imovel WHERE imovel_id = %s ORDER BY ordem, id",
             (imovel["id"],),
         )
     context = {
@@ -5099,9 +5146,9 @@ def save_cliente_documental():
         execute_db(
             """
             UPDATE clientes
-            SET nome = ?, tipo_cliente = ?, nome_exibicao = ?, quem_assina = ?, tipo_pessoa = ?,
-                cpf_cnpj = ?, telefone = ?, email = ?, observacoes = ?, atualizado_em = ?
-            WHERE id = ?
+            SET nome = %s, tipo_cliente = %s, nome_exibicao = %s, quem_assina = %s, tipo_pessoa = %s,
+                cpf_cnpj = %s, telefone = %s, email = %s, observacoes = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             (
                 nome_exibicao,
@@ -5123,7 +5170,7 @@ def save_cliente_documental():
             """
             INSERT INTO clientes
                 (nome, tipo_cliente, nome_exibicao, quem_assina, status_cadastro, tipo_pessoa, cpf_cnpj, telefone, email, observacoes, criado_em, atualizado_em)
-            VALUES (?, ?, ?, ?, 'RASCUNHO', ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, 'RASCUNHO', %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 nome_exibicao,
@@ -5150,7 +5197,7 @@ def save_cliente_documental():
     if quem_assina == "PROCURADOR" or tipo_cliente == "PESSOA_JURIDICA":
         upsert_procurador(cliente_id, now)
     else:
-        execute_db("DELETE FROM procuradores WHERE cliente_id = ?", (cliente_id,))
+        execute_db("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
 
     upsert_imovel_vinculado(cliente_id, now)
     refresh_cliente_status(cliente_id)
@@ -5162,7 +5209,7 @@ def save_cliente_documental():
 
 
 def upsert_pessoa_fisica(cliente_id, now):
-    existing = query_db("SELECT id FROM pessoas_fisicas WHERE cliente_id = ?", (cliente_id,), one=True)
+    existing = query_db("SELECT id FROM pessoas_fisicas WHERE cliente_id = %s", (cliente_id,), one=True)
     estado_civil = get_form_value("pf_estado_civil") or None
     regime_casamento = get_form_value("pf_regime_casamento") if estado_civil in ("CASADO", "UNIAO_ESTAVEL") else None
     incluir_conjuge = 1 if estado_civil in ("CASADO", "UNIAO_ESTAVEL") and request.form.get("pf_incluir_conjuge") else 0
@@ -5190,11 +5237,11 @@ def upsert_pessoa_fisica(cliente_id, now):
         execute_db(
             """
             UPDATE pessoas_fisicas
-            SET sexo = ?, nome_completo = ?, nacionalidade = ?, estado_civil = ?, regime_casamento = ?,
-                incluir_conjuge = ?, profissao_ocupacao = ?, rg = ?, orgao_expedidor_rg = ?, cpf = ?,
-                nome_pai = ?, nome_mae = ?, data_nascimento = ?, uf_nascimento = ?, cidade_nascimento = ?,
-                email = ?, telefone = ?, atualizado_em = ?
-            WHERE id = ?
+            SET sexo = %s, nome_completo = %s, nacionalidade = %s, estado_civil = %s, regime_casamento = %s,
+                incluir_conjuge = %s, profissao_ocupacao = %s, rg = %s, orgao_expedidor_rg = %s, cpf = %s,
+                nome_pai = %s, nome_mae = %s, data_nascimento = %s, uf_nascimento = %s, cidade_nascimento = %s,
+                email = %s, telefone = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             values + (existing["id"],),
         )
@@ -5205,18 +5252,18 @@ def upsert_pessoa_fisica(cliente_id, now):
             (sexo, nome_completo, nacionalidade, estado_civil, regime_casamento, incluir_conjuge,
              profissao_ocupacao, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae, data_nascimento,
              uf_nascimento, cidade_nascimento, email, telefone, atualizado_em, cliente_id, criado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         values + (cliente_id, now),
     )
 
 
 def upsert_conjuge(pessoa_fisica_id, now):
-    existing = query_db("SELECT id FROM conjuges WHERE pessoa_fisica_id = ?", (pessoa_fisica_id,), one=True)
-    pf = query_db("SELECT estado_civil, regime_casamento, incluir_conjuge FROM pessoas_fisicas WHERE id = ?", (pessoa_fisica_id,), one=True)
+    existing = query_db("SELECT id FROM conjuges WHERE pessoa_fisica_id = %s", (pessoa_fisica_id,), one=True)
+    pf = query_db("SELECT estado_civil, regime_casamento, incluir_conjuge FROM pessoas_fisicas WHERE id = %s", (pessoa_fisica_id,), one=True)
     if not pf or not requires_conjuge(pf["estado_civil"], pf["regime_casamento"], bool(pf["incluir_conjuge"])):
         if existing:
-            execute_db("DELETE FROM conjuges WHERE id = ?", (existing["id"],))
+            execute_db("DELETE FROM conjuges WHERE id = %s", (existing["id"],))
         return None
     has_data = any(get_form_value(field) for field in [
         "conj_nome_completo", "conj_cpf", "conj_profissao_ocupacao", "conj_rg", "conj_data_nascimento",
@@ -5224,7 +5271,7 @@ def upsert_conjuge(pessoa_fisica_id, now):
     ])
     if not has_data:
         if existing:
-            execute_db("DELETE FROM conjuges WHERE id = ?", (existing["id"],))
+            execute_db("DELETE FROM conjuges WHERE id = %s", (existing["id"],))
         return None
     values = (
         get_form_value("conj_sexo") or None,
@@ -5245,10 +5292,10 @@ def upsert_conjuge(pessoa_fisica_id, now):
         execute_db(
             """
             UPDATE conjuges
-            SET sexo = ?, nome_completo = ?, cpf = ?, profissao_ocupacao = ?, nacionalidade = ?, rg = ?,
-                orgao_expedidor_rg = ?, uf_nascimento = ?, cidade_nascimento = ?, data_nascimento = ?,
-                email = ?, telefone = ?, atualizado_em = ?
-            WHERE id = ?
+            SET sexo = %s, nome_completo = %s, cpf = %s, profissao_ocupacao = %s, nacionalidade = %s, rg = %s,
+                orgao_expedidor_rg = %s, uf_nascimento = %s, cidade_nascimento = %s, data_nascimento = %s,
+                email = %s, telefone = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             values + (existing["id"],),
         )
@@ -5258,14 +5305,14 @@ def upsert_conjuge(pessoa_fisica_id, now):
         INSERT INTO conjuges
             (sexo, nome_completo, cpf, profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg,
              uf_nascimento, cidade_nascimento, data_nascimento, email, telefone, atualizado_em, pessoa_fisica_id, criado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         values + (pessoa_fisica_id, now),
     )
 
 
 def upsert_endereco_pf(pessoa_fisica_id, now):
-    existing = query_db("SELECT id FROM enderecos_proprietario WHERE pessoa_fisica_id = ?", (pessoa_fisica_id,), one=True)
+    existing = query_db("SELECT id FROM enderecos_proprietario WHERE pessoa_fisica_id = %s", (pessoa_fisica_id,), one=True)
     values = (
         get_form_value("pf_end_logradouro") or None,
         get_form_value("pf_end_uf") or None,
@@ -5280,8 +5327,8 @@ def upsert_endereco_pf(pessoa_fisica_id, now):
         execute_db(
             """
             UPDATE enderecos_proprietario
-            SET logradouro = ?, uf = ?, cidade = ?, bairro = ?, cep = ?, numero = ?, complemento = ?, atualizado_em = ?
-            WHERE id = ?
+            SET logradouro = %s, uf = %s, cidade = %s, bairro = %s, cep = %s, numero = %s, complemento = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             values + (existing["id"],),
         )
@@ -5290,14 +5337,14 @@ def upsert_endereco_pf(pessoa_fisica_id, now):
         """
         INSERT INTO enderecos_proprietario
             (logradouro, uf, cidade, bairro, cep, numero, complemento, atualizado_em, pessoa_fisica_id, criado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         values + (pessoa_fisica_id, now),
     )
 
 
 def upsert_pessoa_juridica(cliente_id, now):
-    existing = query_db("SELECT id FROM pessoas_juridicas WHERE cliente_id = ?", (cliente_id,), one=True)
+    existing = query_db("SELECT id FROM pessoas_juridicas WHERE cliente_id = %s", (cliente_id,), one=True)
     values = (
         get_form_value("pj_razao_social") or None,
         get_form_value("pj_nome_fantasia") or None,
@@ -5317,9 +5364,9 @@ def upsert_pessoa_juridica(cliente_id, now):
         execute_db(
             """
             UPDATE pessoas_juridicas
-            SET razao_social = ?, nome_fantasia = ?, cnpj = ?, logradouro = ?, uf = ?, cidade = ?, bairro = ?,
-                cep = ?, numero = ?, complemento = ?, email = ?, telefone = ?, atualizado_em = ?
-            WHERE id = ?
+            SET razao_social = %s, nome_fantasia = %s, cnpj = %s, logradouro = %s, uf = %s, cidade = %s, bairro = %s,
+                cep = %s, numero = %s, complemento = %s, email = %s, telefone = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             values + (existing["id"],),
         )
@@ -5329,14 +5376,14 @@ def upsert_pessoa_juridica(cliente_id, now):
         INSERT INTO pessoas_juridicas
             (razao_social, nome_fantasia, cnpj, logradouro, uf, cidade, bairro, cep, numero, complemento,
              email, telefone, atualizado_em, cliente_id, criado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         values + (cliente_id, now),
     )
 
 
 def upsert_procurador(cliente_id, now):
-    existing = query_db("SELECT id FROM procuradores WHERE cliente_id = ?", (cliente_id,), one=True)
+    existing = query_db("SELECT id FROM procuradores WHERE cliente_id = %s", (cliente_id,), one=True)
     values = (
         get_form_value("proc_sexo") or None,
         get_form_value("proc_nome_completo") or None,
@@ -5368,11 +5415,11 @@ def upsert_procurador(cliente_id, now):
         execute_db(
             """
             UPDATE procuradores
-            SET sexo = ?, nome_completo = ?, estado_civil = ?, regime_casamento = ?, profissao_ocupacao = ?,
-                nacionalidade = ?, rg = ?, orgao_expedidor_rg = ?, cpf = ?, nome_pai = ?, nome_mae = ?,
-                data_nascimento = ?, uf_nascimento = ?, cidade_nascimento = ?, email = ?, telefone = ?, texto_adicional = ?,
-                logradouro = ?, uf = ?, cidade = ?, bairro = ?, cep = ?, numero = ?, complemento = ?, atualizado_em = ?
-            WHERE id = ?
+            SET sexo = %s, nome_completo = %s, estado_civil = %s, regime_casamento = %s, profissao_ocupacao = %s,
+                nacionalidade = %s, rg = %s, orgao_expedidor_rg = %s, cpf = %s, nome_pai = %s, nome_mae = %s,
+                data_nascimento = %s, uf_nascimento = %s, cidade_nascimento = %s, email = %s, telefone = %s, texto_adicional = %s,
+                logradouro = %s, uf = %s, cidade = %s, bairro = %s, cep = %s, numero = %s, complemento = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             values + (existing["id"],),
         )
@@ -5384,7 +5431,7 @@ def upsert_procurador(cliente_id, now):
              rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae, data_nascimento, uf_nascimento,
              cidade_nascimento, email, telefone, texto_adicional, logradouro, uf, cidade, bairro, cep, numero,
              complemento, atualizado_em, cliente_id, criado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         values + (cliente_id, now),
     )
@@ -5429,12 +5476,12 @@ def upsert_imovel_vinculado(cliente_id, now):
         execute_db(
             """
             UPDATE imoveis
-            SET nome_imovel = ?, nome_terreno = ?, cartorio_comarca = ?, cns_cartorio = ?, tipo_certidao = ?,
-                numero_certidao = ?, estado_imovel = ?, cidade_imovel = ?, localidade_denominacao = ?,
-                valor_imovel_terra_nua = ?, area_antiga_m2 = ?, nova_area_m2 = ?, perimetro_m = ?,
-                codigo_certificacao_sigef = ?, codigo_sncr = ?, estrada_acesso = ?, ponto_referencia = ?,
-                distancia_ponto_referencia_km = ?, observacoes = ?, atualizado_em = ?
-            WHERE id = ?
+            SET nome_imovel = %s, nome_terreno = %s, cartorio_comarca = %s, cns_cartorio = %s, tipo_certidao = %s,
+                numero_certidao = %s, estado_imovel = %s, cidade_imovel = %s, localidade_denominacao = %s,
+                valor_imovel_terra_nua = %s, area_antiga_m2 = %s, nova_area_m2 = %s, perimetro_m = %s,
+                codigo_certificacao_sigef = %s, codigo_sncr = %s, estrada_acesso = %s, ponto_referencia = %s,
+                distancia_ponto_referencia_km = %s, observacoes = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             values + (existing_id,),
         )
@@ -5447,7 +5494,7 @@ def upsert_imovel_vinculado(cliente_id, now):
                  estado_imovel, cidade_imovel, localidade_denominacao, valor_imovel_terra_nua, area_antiga_m2,
                  nova_area_m2, perimetro_m, codigo_certificacao_sigef, codigo_sncr, estrada_acesso,
                  ponto_referencia, distancia_ponto_referencia_km, observacoes, atualizado_em, criado_em)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             values + (now,),
         )
@@ -5458,18 +5505,18 @@ def upsert_imovel_vinculado(cliente_id, now):
 
 def ensure_cliente_imovel_link(cliente_id, imovel_id, now, principal=0):
     existing = query_db(
-        "SELECT id FROM clientes_imoveis WHERE cliente_id = ? AND imovel_id = ?",
+        "SELECT id FROM clientes_imoveis WHERE cliente_id = %s AND imovel_id = %s",
         (cliente_id, imovel_id),
         one=True,
     )
     if principal:
-        execute_db("UPDATE clientes_imoveis SET principal = 0 WHERE cliente_id = ?", (cliente_id,))
+        execute_db("UPDATE clientes_imoveis SET principal = 0 WHERE cliente_id = %s", (cliente_id,))
     if existing:
         execute_db(
             """
             UPDATE clientes_imoveis
-            SET papel = ?, percentual_participacao = ?, principal = ?, atualizado_em = ?
-            WHERE id = ?
+            SET papel = %s, percentual_participacao = %s, principal = %s, atualizado_em = %s
+            WHERE id = %s
             """,
             (
                 get_form_value("vinculo_papel") or "PROPRIETARIO",
@@ -5484,7 +5531,7 @@ def ensure_cliente_imovel_link(cliente_id, imovel_id, now, principal=0):
         """
         INSERT INTO clientes_imoveis
             (cliente_id, imovel_id, papel, percentual_participacao, principal, criado_em, atualizado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
         (
             cliente_id,
@@ -5502,7 +5549,7 @@ def upsert_vertices(imovel_id, now):
     codigos = request.form.getlist("vert_codigo_vertice[]")
     if not codigos:
         return
-    execute_db("DELETE FROM vertices_imovel WHERE imovel_id = ?", (imovel_id,))
+    execute_db("DELETE FROM vertices_imovel WHERE imovel_id = %s", (imovel_id,))
     longitudes = request.form.getlist("vert_longitude[]")
     latitudes = request.form.getlist("vert_latitude[]")
     altitudes = request.form.getlist("vert_altitude_m[]")
@@ -5524,7 +5571,7 @@ def upsert_vertices(imovel_id, now):
             INSERT INTO vertices_imovel
                 (imovel_id, ordem, codigo_vertice, longitude, latitude, altitude_m, codigo_vertice_destino,
                  azimute, distancia_m, confrontacao, criado_em, atualizado_em)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 imovel_id,
@@ -5558,7 +5605,7 @@ def refresh_cliente_status(cliente_id):
     pendencias = context["cliente_pendencias"]
     status = pendencias["statusCadastro"]
     execute_db(
-        "UPDATE clientes SET status_cadastro = ?, atualizado_em = ? WHERE id = ?",
+        "UPDATE clientes SET status_cadastro = %s, atualizado_em = %s WHERE id = %s",
         (status, datetime.now().isoformat(timespec="seconds"), cliente_id),
     )
 
@@ -5599,7 +5646,7 @@ def my_missions():
         FROM projeto_etapas pe
         JOIN projetos p ON p.id = pe.projeto_id
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.responsavel_id = ? AND lower(pe.status) NOT IN ('concluido', 'cancelado') AND em.ativa = 1
+        WHERE pe.responsavel_id = %s AND lower(pe.status) NOT IN ('concluido', 'cancelado') AND em.ativa = 1
         """,
         (g.user["id"],),
     )
@@ -5610,7 +5657,7 @@ def my_missions():
         JOIN projetos p ON p.id = t.projeto_id
         LEFT JOIN projeto_etapas pe ON pe.id = t.projeto_etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE t.responsavel_id = ? AND lower(COALESCE(t.status, '')) NOT IN ('concluido', 'cancelado')
+        WHERE t.responsavel_id = %s AND lower(COALESCE(t.status, '')) NOT IN ('concluido', 'cancelado')
         """,
         (g.user["id"],),
     )
@@ -5621,7 +5668,7 @@ def my_missions():
         JOIN projetos p ON p.id = pd.projeto_id
         LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pd.responsavel_id = ? AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
+        WHERE pd.responsavel_id = %s AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
         """,
         (g.user["id"],),
     )
@@ -5701,13 +5748,13 @@ def clients():
     where = []
     params = []
     if filters.get("tipo_cliente"):
-        where.append("c.tipo_cliente = ?")
+        where.append("c.tipo_cliente = %s")
         params.append(filters["tipo_cliente"])
     if filters.get("status_cadastro"):
-        where.append("c.status_cadastro = ?")
+        where.append("c.status_cadastro = %s")
         params.append(filters["status_cadastro"])
     if filters.get("cidade"):
-        where.append("(ep.cidade LIKE ? OR pj.cidade LIKE ?)")
+        where.append("(ep.cidade LIKE %s OR pj.cidade LIKE %s)")
         params.extend([f"%{filters['cidade']}%", f"%{filters['cidade']}%"])
     if filters.get("com_procurador") == "1":
         where.append("pr.id IS NOT NULL")
@@ -5777,7 +5824,7 @@ def cartorios():
         name = request.form.get("nome", "").strip()
         if name:
             execute_db(
-                "INSERT INTO cartorios (nome, cidade, uf, contato, observacoes) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO cartorios (nome, cidade, uf, contato, observacoes) VALUES (%s, %s, %s, %s, %s)",
                 (
                     name,
                     request.form.get("cidade", "").strip(),
@@ -5813,7 +5860,7 @@ def users():
         if name and email:
             try:
                 execute_db(
-                    "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo, ativo) VALUES (?, ?, ?, ?, ?, 1)",
+                    "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo, ativo) VALUES (%s, %s, %s, %s, %s, 1)",
                     (
                         name,
                         email,
@@ -5823,7 +5870,7 @@ def users():
                     ),
                 )
                 flash("Usuario cadastrado.", "success")
-            except sqlite3.IntegrityError:
+            except psycopg2.errors.UniqueViolation:
                 flash("Ja existe usuario com este e-mail.", "danger")
         return redirect(url_for("users"))
     return render_template("users.html", users=query_db("SELECT * FROM usuarios ORDER BY ativo DESC, nome"))
