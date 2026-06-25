@@ -4,16 +4,19 @@ load_dotenv()
 import csv
 import io
 import socket
+import sys
 import time
 import psycopg2
+import psycopg2.extensions
 import psycopg2.extras
 import psycopg2.errors
+import psycopg2.pool
 import unicodedata
 from datetime import date, datetime, timedelta
 from functools import wraps
 from urllib.parse import quote, urlparse
 
-from flask import Flask, Response, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from documental import (
@@ -309,16 +312,30 @@ BACKLOG_FUTURO = [
 app = Flask(__name__)
 app.config.from_mapping(SECRET_KEY=SECRET_KEY, DATABASE_URL=DATABASE_URL)
 
+DB_POOL_MINCONN = int(os.environ.get("GEOGESTAO_DB_POOL_MINCONN", "1"))
+DB_POOL_MAXCONN = int(os.environ.get("GEOGESTAO_DB_POOL_MAXCONN", "4"))
+DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("GEOGESTAO_DB_STATEMENT_TIMEOUT_MS", "30000"))
+PERF_LOG_ENABLED = os.environ.get("GEOGESTAO_PERF_LOG", "0") == "1"
+REPORTS_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_REPORTS_CACHE_TTL_SECONDS", "60"))
+DUE_STATUS_REFRESH_TTL_SECONDS = int(os.environ.get("GEOGESTAO_DUE_STATUS_REFRESH_TTL_SECONDS", "300"))
+
+_db_pool = None
+_reports_cache = {"expires_at": 0.0, "value": None}
+_due_statuses_next_refresh = 0.0
+_refreshing_due_statuses = False
+
 
 class PgConn:
     """Wrapper em cima da conexão psycopg2 que imita a interface do sqlite3."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, release_callback=None):
         self._conn = conn
+        self._release_callback = release_callback
+        self._closed = False
 
     def execute(self, query, args=()):
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(query, args if args else ())
+        _execute_cursor(cur, query, args if args else ())
         return cur
 
     def executescript(self, script):
@@ -349,29 +366,86 @@ class PgConn:
         self._conn.commit()
 
     def close(self):
-        self._conn.close()
+        if self._closed:
+            return
+        self._closed = True
+        if not self._conn.closed and self._conn.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+            self._conn.rollback()
+        if self._release_callback:
+            self._release_callback(self._conn)
+        else:
+            self._conn.close()
 
 
-def connect_db():
-    database_url = app.config["DATABASE_URL"]
-    if not database_url:
-        raise RuntimeError("DATABASE_URL nao foi configurada no arquivo .env.")
+def _record_query_time(elapsed):
+    if has_request_context():
+        g._query_count = getattr(g, "_query_count", 0) + 1
+        g._query_time = getattr(g, "_query_time", 0.0) + elapsed
+
+
+def _execute_cursor(cur, query, args=()):
+    start = time.perf_counter()
+    try:
+        return cur.execute(query, args if args else ())
+    finally:
+        _record_query_time(time.perf_counter() - start)
+
+
+def _create_raw_connection(database_url):
+    conn = psycopg2.connect(
+        database_url,
+        connect_timeout=10,
+        sslmode="require",
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+        application_name="geogestao",
+    )
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+    conn.commit()
+    return conn
+
+
+def _get_db_pool(database_url):
+    global _db_pool
+    if _db_pool is None:
+        _db_pool = psycopg2.pool.ThreadedConnectionPool(
+            DB_POOL_MINCONN,
+            DB_POOL_MAXCONN,
+            dsn=database_url,
+            connect_timeout=10,
+            sslmode="require",
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+            application_name="geogestao",
+        )
+        conn = _db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+            conn.commit()
+        finally:
+            _db_pool.putconn(conn)
+    return _db_pool
+
+
+def _connect_with_retry(database_url, use_pool=True):
     host = urlparse(database_url).hostname or "host indefinido"
     last_error = None
     for attempt in range(1, 4):
         try:
-            return PgConn(
-                psycopg2.connect(
-                    database_url,
-                    connect_timeout=10,
-                    sslmode="require",
-                    keepalives=1,
-                    keepalives_idle=30,
-                    keepalives_interval=10,
-                    keepalives_count=3,
-                    application_name="geogestao",
-                )
-            )
+            if use_pool:
+                pool = _get_db_pool(database_url)
+                conn = pool.getconn()
+                with conn.cursor() as cur:
+                    cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+                conn.commit()
+                return PgConn(conn, release_callback=pool.putconn)
+            return PgConn(_create_raw_connection(database_url))
         except psycopg2.OperationalError as exc:
             last_error = exc
             message = str(exc)
@@ -400,6 +474,13 @@ def connect_db():
     raise last_error
 
 
+def connect_db(use_pool=True):
+    database_url = app.config["DATABASE_URL"]
+    if not database_url:
+        raise RuntimeError("DATABASE_URL nao foi configurada no arquivo .env.")
+    return _connect_with_retry(database_url, use_pool=use_pool)
+
+
 def get_db():
     db = getattr(g, "_database", None)
     if db is None:
@@ -414,11 +495,42 @@ def close_connection(exception):
         db.close()
 
 
+@app.before_request
+def start_perf_timer():
+    if PERF_LOG_ENABLED:
+        g._request_start = time.perf_counter()
+        g._query_count = 0
+        g._query_time = 0.0
+
+
+@app.after_request
+def log_perf_metrics(response):
+    if PERF_LOG_ENABLED and hasattr(g, "_request_start"):
+        elapsed = time.perf_counter() - g._request_start
+        app.logger.info(
+            "perf route=%s method=%s status=%s total_ms=%.1f queries=%s db_ms=%.1f",
+            request.path,
+            request.method,
+            response.status_code,
+            elapsed * 1000,
+            getattr(g, "_query_count", 0),
+            getattr(g, "_query_time", 0.0) * 1000,
+        )
+    return response
+
+
 def query_db(query, args=(), one=False):
     cur = get_db().execute(query, args)
     rows = cur.fetchall()
     cur.close()
     return (rows[0] if rows else None) if one else rows
+
+
+def invalidate_runtime_caches():
+    global _reports_cache, _due_statuses_next_refresh
+    _reports_cache = {"expires_at": 0.0, "value": None}
+    if not _refreshing_due_statuses:
+        _due_statuses_next_refresh = 0.0
 
 
 def execute_db(query, args=()):
@@ -428,8 +540,9 @@ def execute_db(query, args=()):
     is_insert = q.upper().lstrip().startswith('INSERT')
     if is_insert and 'RETURNING' not in q.upper():
         q += ' RETURNING id'
-    cur.execute(q, args if args else ())
+    _execute_cursor(cur, q, args if args else ())
     db.commit()
+    invalidate_runtime_caches()
     last_id = None
     if is_insert:
         try:
@@ -443,7 +556,8 @@ def execute_db(query, args=()):
 
 def table_columns(db, table_name):
     cur = db.cursor()
-    cur.execute(
+    _execute_cursor(
+        cur,
         """
         SELECT column_name
         FROM information_schema.columns
@@ -467,7 +581,7 @@ def first_row(db, query, args=()):
 
 def scalar(db, query, args=()):
     cur = db.cursor()
-    cur.execute(query, args if args else ())
+    _execute_cursor(cur, query, args if args else ())
     row = cur.fetchone()
     cur.close()
     return row[0] if row else 0
@@ -475,7 +589,7 @@ def scalar(db, query, args=()):
 
 def init_db():
     os.makedirs(BASE_DIR, exist_ok=True)
-    db = connect_db()
+    db = connect_db(use_pool=False)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -2680,42 +2794,62 @@ def build_reports_context():
     }
 
 
-def refresh_due_statuses():
+def get_reports_context_cached():
+    now_monotonic = time.monotonic()
+    cached = _reports_cache.get("value")
+    if cached is not None and now_monotonic < _reports_cache.get("expires_at", 0.0):
+        return cached
+    context = build_reports_context()
+    _reports_cache["value"] = context
+    _reports_cache["expires_at"] = now_monotonic + REPORTS_CACHE_TTL_SECONDS
+    return context
+
+
+def refresh_due_statuses(force=False):
+    global _due_statuses_next_refresh, _refreshing_due_statuses
+    now_monotonic = time.monotonic()
+    if not force and now_monotonic < _due_statuses_next_refresh:
+        return
+    _refreshing_due_statuses = True
     today = date.today().isoformat()
-    execute_db(
-        """
-        UPDATE projeto_etapas
-        SET status = 'atrasado', atraso_origem = COALESCE(atraso_origem, 'interno')
-        WHERE prazo IS NOT NULL
-          AND prazo != ''
-          AND prazo < %s
-          AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-          AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo')
-        """,
-        (today,),
-    )
-    execute_db(
-        """
-        UPDATE tarefas
-        SET status = 'atrasado'
-        WHERE prazo IS NOT NULL
-          AND prazo != ''
-          AND prazo < %s
-          AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo')
-        """,
-        (today,),
-    )
-    execute_db(
-        """
-        UPDATE exigencias_cartorio
-        SET status = 'atrasado', atualizado_em = %s
-        WHERE prazo_resposta IS NOT NULL
-          AND prazo_resposta != ''
-          AND prazo_resposta < %s
-          AND lower(status) NOT IN ('concluido', 'cancelado')
-        """,
-        (datetime.now().isoformat(timespec="seconds"), today),
-    )
+    try:
+        execute_db(
+            """
+            UPDATE projeto_etapas
+            SET status = 'atrasado', atraso_origem = COALESCE(atraso_origem, 'interno')
+            WHERE prazo IS NOT NULL
+              AND prazo != ''
+              AND prazo < %s
+              AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+              AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo')
+            """,
+            (today,),
+        )
+        execute_db(
+            """
+            UPDATE tarefas
+            SET status = 'atrasado'
+            WHERE prazo IS NOT NULL
+              AND prazo != ''
+              AND prazo < %s
+              AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo')
+            """,
+            (today,),
+        )
+        execute_db(
+            """
+            UPDATE exigencias_cartorio
+            SET status = 'atrasado', atualizado_em = %s
+            WHERE prazo_resposta IS NOT NULL
+              AND prazo_resposta != ''
+              AND prazo_resposta < %s
+              AND lower(status) NOT IN ('concluido', 'cancelado')
+            """,
+            (datetime.now().isoformat(timespec="seconds"), today),
+        )
+        _due_statuses_next_refresh = time.monotonic() + DUE_STATUS_REFRESH_TTL_SECONDS
+    finally:
+        _refreshing_due_statuses = False
 
 
 def record_event(project_id, event_type, description, user_id=None):
@@ -2881,6 +3015,131 @@ def load_matrix_stage_rows(project_id):
                 "show_in_project": 0,
             })
     return matrix_rows
+
+
+def load_matrix_stage_rows_bulk(projects):
+    project_ids = [project["id"] for project in projects]
+    if not project_ids:
+        return {}
+
+    global_stages = [dict(row) for row in query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")]
+    placeholders = ",".join("%s" for _ in project_ids)
+    params = [
+        CHECKLIST_STATUS_NOT_APPLICABLE,
+        CHECKLIST_STATUS_DONE,
+        CHECKLIST_STATUS_DONE,
+        CHECKLIST_STATUS_NOT_APPLICABLE,
+        REQUIREMENT_REQUIRED,
+        CHECKLIST_STATUS_DONE,
+        CHECKLIST_STATUS_NOT_APPLICABLE,
+    ] + project_ids
+    project_stages = [
+        dict(row)
+        for row in query_db(
+            f"""
+            SELECT
+                pe.*,
+                COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+                COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
+                em.nome AS legacy_etapa_nome,
+                em.ordem AS legacy_etapa_ordem,
+                u.nome AS responsavel_nome,
+                CASE
+                    WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
+                    THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status != %s)
+                    ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id)
+                END AS checklist_total,
+                CASE
+                    WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
+                    THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status = %s)
+                    ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 1)
+                END AS checklist_done,
+                COALESCE(
+                    (SELECT pci.title FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status NOT IN (%s, %s) ORDER BY pci.order_index, pci.id LIMIT 1),
+                    (SELECT ci.titulo FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 0 ORDER BY ci.id LIMIT 1)
+                ) AS proximo_checklist,
+                (
+                    SELECT COUNT(*)
+                    FROM project_checklist_items pci
+                    WHERE pci.project_stage_id = pe.id
+                      AND pci.active = 1
+                      AND pci.requirement_level = %s
+                      AND pci.blocks_stage_completion = 1
+                      AND pci.status NOT IN (%s, %s)
+                ) AS required_pending,
+                (
+                    SELECT t.titulo
+                    FROM tarefas t
+                    WHERE t.projeto_etapa_id = pe.id AND lower(COALESCE(t.status, '')) != 'concluido'
+                    ORDER BY
+                        CASE t.prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
+                        COALESCE(t.prazo, '9999-12-31')
+                    LIMIT 1
+                ) AS tarefa_ativa
+            FROM projeto_etapas pe
+            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            LEFT JOIN usuarios u ON u.id = pe.responsavel_id
+            WHERE pe.projeto_id IN ({placeholders})
+              AND em.ativa = 1
+              AND COALESCE(pe.show_in_project, 1) = 1
+            ORDER BY pe.projeto_id, COALESCE(pe.stage_order, em.ordem), pe.id
+            """,
+            params,
+        )
+    ]
+    stages_by_project_model = {}
+    for stage in project_stages:
+        stages_by_project_model.setdefault(stage["projeto_id"], {}).setdefault(stage["etapa_modelo_id"], []).append(stage)
+
+    current_stage_by_project = {project["id"]: project["etapa_atual_id"] for project in projects}
+    rows_by_project = {}
+    for project_id in project_ids:
+        project_rows = []
+        stages_by_model = stages_by_project_model.get(project_id, {})
+        current_stage_id = current_stage_by_project.get(project_id)
+        for global_stage in global_stages:
+            candidates = stages_by_model.get(global_stage["id"], [])
+            selected = None
+            if candidates:
+                selected = next((stage for stage in candidates if stage["id"] == current_stage_id), None)
+                if not selected:
+                    selected = next(
+                        (
+                            stage for stage in candidates
+                            if stage.get("workflow_active", 1)
+                            and str(stage.get("status") or "").lower() not in ("nao aplicavel", "cancelado")
+                        ),
+                        None,
+                    )
+                selected = selected or candidates[0]
+
+            if selected:
+                row = dict(selected)
+                row["etapa_ordem"] = global_stage["ordem"]
+                row["etapa_nome"] = global_stage["nome"]
+                project_rows.append(row)
+            else:
+                project_rows.append({
+                    "id": None,
+                    "projeto_id": project_id,
+                    "etapa_modelo_id": global_stage["id"],
+                    "etapa_nome": global_stage["nome"],
+                    "legacy_etapa_nome": global_stage["nome"],
+                    "etapa_ordem": global_stage["ordem"],
+                    "status": "nao aplicavel",
+                    "responsavel_nome": None,
+                    "prazo": None,
+                    "progresso": 0,
+                    "checklist_total": 0,
+                    "checklist_done": 0,
+                    "required_pending": 0,
+                    "proximo_checklist": None,
+                    "tarefa_ativa": None,
+                    "workflow_active": 0,
+                    "show_in_project": 0,
+                })
+        rows_by_project[project_id] = project_rows
+    return rows_by_project
 
 
 def load_project_stage_for_action(stage_id, project_id=None):
@@ -3623,8 +3882,6 @@ def dashboard():
 @login_required
 def projects():
     refresh_due_statuses()
-    for client_row in query_db("SELECT id FROM clientes"):
-        refresh_cliente_status(client_row["id"])
 
     filters = request.args.to_dict()
     sql_filters = []
@@ -3776,7 +4033,8 @@ def projects():
         """,
         params,
     )
-    matrix = [(project, load_matrix_stage_rows(project["id"])) for project in projetos]
+    matrix_rows_by_project = load_matrix_stage_rows_bulk(projetos)
+    matrix = [(project, matrix_rows_by_project.get(project["id"], [])) for project in projetos]
     stage_ids = [stage["id"] for _, project_stages in matrix for stage in project_stages if stage.get("id")]
     matrix_checklists = {}
     pending_by_stage = {}
@@ -5978,16 +6236,16 @@ def cartorio_board():
 @login_required
 def reports():
     refresh_due_statuses()
-    db = get_db()
-    ensure_project_stage_history(db)
-    db.commit()
-    return render_template("reports.html", **build_reports_context())
-
-
-init_db()
+    return render_template("reports.html", **get_reports_context_cached())
 
 
 if __name__ == "__main__":
+    if "--init-db" in sys.argv:
+        init_db()
+        print("Banco inicializado.")
+        raise SystemExit(0)
+    if os.environ.get("GEOGESTAO_AUTO_INIT_DB", "0") == "1":
+        init_db()
     port = int(os.environ.get("PORT", "5000"))
     debug = os.environ.get("GEOGESTAO_DEBUG", "1") == "1"
     app.run(debug=debug, use_reloader=debug, host="127.0.0.1", port=port)

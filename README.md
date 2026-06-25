@@ -28,17 +28,23 @@ Prototipo funcional em Flask para validar a ideia do sistema de gestao de projet
    ```env
    DATABASE_URL=postgresql://...
    GEOGESTAO_SECRET_KEY=troque-esta-chave
+   GEOGESTAO_AUTO_INIT_DB=0
    ```
 
    No Supabase, copie a connection string em **Project Settings > Database > Connection string**.
    Se a URL direta `db.<projeto>.supabase.co` falhar no Windows com erro de DNS, use a URL do **Connection Pooler** do Supabase.
 
-3. Execute:
+3. Inicialize/migre o banco apenas quando necessario:
+   ```bash
+   python app.py --init-db
+   ```
+
+4. Execute o servidor:
    ```bash
    python app.py
    ```
 
-4. Acesse:
+5. Acesse:
    ```text
    http://127.0.0.1:5000
    ```
@@ -69,6 +75,7 @@ No Render:
    DATABASE_URL=postgresql://...
    GEOGESTAO_SECRET_KEY=uma-chave-secreta-forte
    GEOGESTAO_DEBUG=0
+   GEOGESTAO_AUTO_INIT_DB=0
    ```
 
 O arquivo `render.yaml` ja deixa essa configuracao preparada. Nao envie o arquivo `.env` para o GitHub; ele deve existir somente na maquina local.

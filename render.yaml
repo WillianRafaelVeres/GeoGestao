@@ -8,6 +8,8 @@ services:
     envVars:
       - key: GEOGESTAO_DEBUG
         value: "0"
+      - key: GEOGESTAO_AUTO_INIT_DB
+        value: "0"
       - key: GEOGESTAO_SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
