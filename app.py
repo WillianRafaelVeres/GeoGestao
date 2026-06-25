@@ -3,13 +3,14 @@ from dotenv import load_dotenv
 load_dotenv()
 import csv
 import io
+import socket
 import psycopg2
 import psycopg2.extras
 import psycopg2.errors
 import unicodedata
 from datetime import date, datetime, timedelta
 from functools import wraps
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from flask import Flask, Response, flash, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -319,6 +320,25 @@ class PgConn:
         cur.execute(query, args if args else ())
         return cur
 
+    def executescript(self, script):
+        cur = self._conn.cursor()
+        try:
+            for statement in script.split(";"):
+                statement = statement.strip()
+                if not statement:
+                    continue
+                cur.execute(self._sqlite_schema_to_postgres(statement))
+        finally:
+            cur.close()
+
+    @staticmethod
+    def _sqlite_schema_to_postgres(statement):
+        return (
+            statement
+            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+            .replace("REAL", "DOUBLE PRECISION")
+        )
+
     def cursor(self, cursor_factory=None):
         if cursor_factory:
             return self._conn.cursor(cursor_factory=cursor_factory)
@@ -332,7 +352,27 @@ class PgConn:
 
 
 def connect_db():
-    conn = psycopg2.connect(app.config["DATABASE_URL"])
+    database_url = app.config["DATABASE_URL"]
+    if not database_url:
+        raise RuntimeError("DATABASE_URL nao foi configurada no arquivo .env.")
+    try:
+        conn = psycopg2.connect(database_url, connect_timeout=10, sslmode="require")
+    except psycopg2.OperationalError as exc:
+        host = urlparse(database_url).hostname or "host indefinido"
+        if "could not translate host name" in str(exc):
+            raise RuntimeError(
+                f"Nao foi possivel resolver o host do banco Supabase ({host}). "
+                "Confira se a DATABASE_URL no .env foi copiada exatamente do Supabase. "
+                "Se estiver usando a conexao direta db.<projeto>.supabase.co, tente a URL do Pooler "
+                "do Supabase, que funciona melhor em redes sem IPv6."
+            ) from exc
+        raise
+    except socket.gaierror as exc:
+        host = urlparse(database_url).hostname or "host indefinido"
+        raise RuntimeError(
+            f"Nao foi possivel resolver o host do banco Supabase ({host}). "
+            "Confira a DATABASE_URL no .env e sua conexao com a internet."
+        ) from exc
     return PgConn(conn)
 
 
@@ -378,8 +418,18 @@ def execute_db(query, args=()):
 
 
 def table_columns(db, table_name):
-    # PRAGMA não existe no PostgreSQL; retorna set vazio (não usado em produção)
-    return set()
+    cur = db.cursor()
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        """,
+        (table_name,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    return {row[0] for row in rows}
 
 
 def add_column_if_missing(db, table_name, column_name, definition):
@@ -3465,8 +3515,7 @@ def dashboard():
         LEFT JOIN usuarios ug ON ug.id = p.responsavel_geral_id
         WHERE lower(COALESCE(p.status, '')) NOT IN ('concluido', 'cancelado')
         ORDER BY
-            CASE WHEN external_deadline IS NOT NULL THEN 0 ELSE 1 END,
-            external_deadline ASC,
+            external_deadline ASC NULLS LAST,
             COALESCE(p.ordem_prioridade, 99999),
             COALESCE(p.criado_em, ''),
             p.id
@@ -3687,8 +3736,7 @@ def projects():
         LEFT JOIN usuarios ur ON ur.id = pea.responsavel_id
         {where_clause}
         ORDER BY
-            CASE WHEN external_deadline IS NOT NULL THEN 0 ELSE 1 END,
-            external_deadline ASC,
+            external_deadline ASC NULLS LAST,
             COALESCE(p.ordem_prioridade, 99999),
             COALESCE(p.criado_em, ''),
             p.id

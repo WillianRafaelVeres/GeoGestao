@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: geogestao
+    runtime: python
+    plan: free
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 120
+    envVars:
+      - key: GEOGESTAO_DEBUG
+        value: "0"
+      - key: GEOGESTAO_SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false

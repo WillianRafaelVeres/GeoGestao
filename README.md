@@ -23,16 +23,55 @@ Prototipo funcional em Flask para validar a ideia do sistema de gestao de projet
    ```bash
    python -m pip install -r requirements.txt
    ```
-python app.py
-2. Execute:
+
+2. Configure o banco online no arquivo `.env`:
+   ```env
+   DATABASE_URL=postgresql://...
+   GEOGESTAO_SECRET_KEY=troque-esta-chave
+   ```
+
+   No Supabase, copie a connection string em **Project Settings > Database > Connection string**.
+   Se a URL direta `db.<projeto>.supabase.co` falhar no Windows com erro de DNS, use a URL do **Connection Pooler** do Supabase.
+
+3. Execute:
    ```bash
    python app.py
    ```
 
-3. Acesse:
+4. Acesse:
    ```text
    http://127.0.0.1:5000
    ```
+
+## Deploy online gratuito para desenvolvimento
+
+O caminho mais simples agora e:
+
+- Banco: Supabase Free, usando o Pooler IPv4 na `DATABASE_URL`.
+- Aplicacao Flask: Render Web Service Free.
+
+No Render:
+
+1. Conecte este repositorio GitHub.
+2. Crie um **Web Service**.
+3. Use:
+   ```bash
+   python -m pip install -r requirements.txt
+   ```
+   como build command.
+4. Use:
+   ```bash
+   gunicorn app:app --workers 1 --threads 4 --timeout 120
+   ```
+   como start command.
+5. Cadastre as variaveis de ambiente:
+   ```text
+   DATABASE_URL=postgresql://...
+   GEOGESTAO_SECRET_KEY=uma-chave-secreta-forte
+   GEOGESTAO_DEBUG=0
+   ```
+
+O arquivo `render.yaml` ja deixa essa configuracao preparada. Nao envie o arquivo `.env` para o GitHub; ele deve existir somente na maquina local.
 
 ## Credenciais de demonstracao
 
