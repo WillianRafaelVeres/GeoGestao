@@ -3,37 +3,84 @@
 <div class="page-heading">
     <div>
         <h1>Usuarios</h1>
-        <p>Perfis basicos para validar permissoes e fila de missoes.</p>
+        <p>Aprove cadastros pendentes e gerencie cargo, perfil e acesso dos usuarios ativos.</p>
     </div>
 </div>
 
-<div class="content-grid two-columns">
+<div class="content-grid">
     <section class="panel">
-        <div class="panel-header"><h2>Usuarios ativos</h2></div>
-        <div class="table-responsive">
-            <table class="table compact-table">
-                <thead><tr><th>Nome</th><th>E-mail</th><th>Cargo</th><th>Perfil</th><th>Status</th></tr></thead>
-                <tbody>
-                    {% for user in users %}
-                        <tr>
-                            <td><strong>{{ user.nome }}</strong></td>
-                            <td>{{ user.email }}</td>
-                            <td>{{ user.cargo or '-' }}</td>
-                            <td>{{ role_labels.get(user.perfil_acesso, user.perfil_acesso) }}</td>
-                            <td>{{ 'Ativo' if user.ativo else 'Inativo' }}</td>
-                        </tr>
-                    {% else %}
-                        <tr><td colspan="5">Nenhum usuario.</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div class="panel-header">
+            <h2>Aguardando aprovacao</h2>
+            <small>{{ pending_users|length }} pendente{{ 's' if pending_users|length != 1 }}</small>
+        </div>
+        <div class="user-admin-list">
+            {% for user in pending_users %}
+                <form method="post" class="user-admin-row">
+                    <input type="hidden" name="action" value="approve" />
+                    <input type="hidden" name="user_id" value="{{ user.id }}" />
+                    <label>Nome completo<input class="form-control form-control-sm" name="nome" value="{{ user.nome }}" required /></label>
+                    <label>E-mail<input class="form-control form-control-sm" type="email" name="email" value="{{ user.email }}" required /></label>
+                    <label>Cargo<input class="form-control form-control-sm" name="cargo" value="{{ user.cargo or '' }}" placeholder="Ex.: Tecnico de campo" /></label>
+                    <label>Perfil
+                        <select class="form-select form-select-sm" name="perfil_acesso">
+                            <option value="tecnico" {% if user.perfil_acesso == 'tecnico' %}selected{% endif %}>Tecnico</option>
+                            <option value="coordenador" {% if user.perfil_acesso == 'coordenador' %}selected{% endif %}>Coordenador</option>
+                            <option value="consulta" {% if user.perfil_acesso == 'consulta' %}selected{% endif %}>Consulta</option>
+                            <option value="admin" {% if user.perfil_acesso == 'admin' %}selected{% endif %}>Administrador</option>
+                        </select>
+                    </label>
+                    <div class="user-admin-actions">
+                        <button class="btn btn-primary btn-sm" type="submit">Aprovar</button>
+                        <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete">Excluir</button>
+                    </div>
+                </form>
+            {% else %}
+                <div class="empty-state">Nenhum cadastro aguardando aprovacao.</div>
+            {% endfor %}
         </div>
     </section>
 
     <section class="panel">
-        <div class="panel-header"><h2>Novo usuario</h2></div>
+        <div class="panel-header">
+            <h2>Usuarios ativos</h2>
+            <small>{{ active_users|length }} ativo{{ 's' if active_users|length != 1 }}</small>
+        </div>
+        <div class="user-admin-list">
+            {% for user in active_users %}
+                <form method="post" class="user-admin-row user-admin-row--active">
+                    <input type="hidden" name="action" value="update" />
+                    <input type="hidden" name="user_id" value="{{ user.id }}" />
+                    <input type="hidden" name="ativo" value="1" />
+                    <label>Nome completo<input class="form-control form-control-sm" name="nome" value="{{ user.nome }}" required /></label>
+                    <label>E-mail<input class="form-control form-control-sm" type="email" name="email" value="{{ user.email }}" required /></label>
+                    <label>Cargo<input class="form-control form-control-sm" name="cargo" value="{{ user.cargo or '' }}" /></label>
+                    <label>Perfil
+                        <select class="form-select form-select-sm" name="perfil_acesso">
+                            <option value="tecnico" {% if user.perfil_acesso == 'tecnico' %}selected{% endif %}>Tecnico</option>
+                            <option value="coordenador" {% if user.perfil_acesso == 'coordenador' %}selected{% endif %}>Coordenador</option>
+                            <option value="consulta" {% if user.perfil_acesso == 'consulta' %}selected{% endif %}>Consulta</option>
+                            <option value="admin" {% if user.perfil_acesso == 'admin' %}selected{% endif %}>Administrador</option>
+                        </select>
+                    </label>
+                    <label>Nova senha<input class="form-control form-control-sm" name="senha" type="password" placeholder="Manter atual" /></label>
+                    <div class="user-admin-actions">
+                        <button class="btn btn-primary btn-sm" type="submit">Salvar</button>
+                        {% if user.id != g.user.id %}
+                            <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete">Excluir</button>
+                        {% endif %}
+                    </div>
+                </form>
+            {% else %}
+                <div class="empty-state">Nenhum usuario ativo.</div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><h2>Criar usuario ja aprovado</h2></div>
         <form method="post" class="vstack gap-3">
-            <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
+            <input type="hidden" name="action" value="create" />
+            <div><label class="form-label">Nome completo</label><input class="form-control" name="nome" required /></div>
             <div><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" required /></div>
             <div><label class="form-label">Cargo</label><input class="form-control" name="cargo" /></div>
             <div>

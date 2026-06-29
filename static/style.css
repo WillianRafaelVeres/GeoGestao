@@ -554,6 +554,32 @@ a:hover { color: #1d4ed8; }
 .login-brand h1 { font-size: 15px; font-weight: 600; }
 .login-brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
 .demo-credentials { display: grid; gap: 3px; margin-top: 12px; padding: 9px; border-radius: 4px; background: var(--surface-2); color: var(--muted); font-size: 11px; }
+.auth-link { display: flex; justify-content: center; gap: 5px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.auth-link a { font-weight: 600; }
+
+/* ===== USERS ADMIN ===== */
+.user-admin-list { display: grid; gap: 8px; }
+.user-admin-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 1.2fr) minmax(180px, 1.2fr) minmax(130px, .8fr) minmax(130px, .8fr) auto;
+    gap: 8px;
+    align-items: end;
+    padding: 10px;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    background: #fbfcfe;
+}
+.user-admin-row--active { grid-template-columns: minmax(150px, 1.1fr) minmax(180px, 1.15fr) minmax(120px, .8fr) minmax(120px, .75fr) minmax(120px, .75fr) auto; }
+.user-admin-row label {
+    display: grid;
+    gap: 3px;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+.user-admin-actions { display: flex; gap: 5px; justify-content: flex-end; align-items: center; white-space: nowrap; }
 
 /* ===== REPORTS ===== */
 .reports-heading { margin-bottom: 10px; }

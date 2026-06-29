@@ -531,22 +531,27 @@ def invalidate_runtime_caches():
 def execute_db(query, args=()):
     db = get_db()
     cur = db.cursor()
-    q = query.strip().rstrip(';')
-    is_insert = q.upper().lstrip().startswith('INSERT')
-    if is_insert and 'RETURNING' not in q.upper():
-        q += ' RETURNING id'
-    _execute_cursor(cur, q, args if args else ())
-    db.commit()
-    invalidate_runtime_caches()
-    last_id = None
-    if is_insert:
-        try:
-            row = cur.fetchone()
-            last_id = row[0] if row else None
-        except Exception:
-            pass
-    cur.close()
-    return last_id
+    try:
+        q = query.strip().rstrip(';')
+        is_insert = q.upper().lstrip().startswith('INSERT')
+        if is_insert and 'RETURNING' not in q.upper():
+            q += ' RETURNING id'
+        _execute_cursor(cur, q, args if args else ())
+        db.commit()
+        invalidate_runtime_caches()
+        last_id = None
+        if is_insert:
+            try:
+                row = cur.fetchone()
+                last_id = row[0] if row else None
+            except Exception:
+                pass
+        return last_id
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
 
 
 def table_columns(db, table_name):
@@ -3814,13 +3819,51 @@ def login():
     if request.method == "POST":
         email = request.form["email"].strip().lower()
         senha = request.form["senha"]
-        usuario = query_db("SELECT * FROM usuarios WHERE lower(email) = %s AND ativo = 1", [email], one=True)
-        if usuario and check_password_hash(usuario["senha_hash"], senha):
+        usuario = query_db("SELECT * FROM usuarios WHERE lower(email) = %s", [email], one=True)
+        if usuario and check_password_hash(usuario["senha_hash"], senha) and usuario["ativo"]:
             session.clear()
             session["user_id"] = usuario["id"]
             return redirect(url_for("dashboard"))
+        if usuario and check_password_hash(usuario["senha_hash"], senha) and not usuario["ativo"]:
+            flash("Seu cadastro ainda aguarda aprovacao de um administrador.", "warning")
+            return render_template("login.html")
         flash("E-mail ou senha invalidos.", "danger")
     return render_template("login.html")
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        name = request.form.get("nome", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("senha", "")
+        password_confirm = request.form.get("senha_confirmacao", "")
+        if not name or not email or not password:
+            flash("Informe nome completo, e-mail e senha.", "danger")
+            return render_template("register.html")
+        if password != password_confirm:
+            flash("As senhas nao conferem.", "danger")
+            return render_template("register.html")
+        if len(password) < 6:
+            flash("A senha deve ter pelo menos 6 caracteres.", "danger")
+            return render_template("register.html")
+        existing = query_db("SELECT id, ativo FROM usuarios WHERE lower(email) = %s", (email,), one=True)
+        if existing:
+            if existing["ativo"]:
+                flash("Ja existe um usuario ativo com este e-mail.", "danger")
+            else:
+                flash("Este e-mail ja possui cadastro aguardando aprovacao.", "warning")
+            return render_template("register.html")
+        execute_db(
+            """
+            INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo, ativo)
+            VALUES (%s, %s, %s, 'consulta', '', 0)
+            """,
+            (name, email, generate_password_hash(password)),
+        )
+        flash("Cadastro enviado. Aguarde a aprovacao de um administrador para entrar.", "success")
+        return redirect(url_for("login"))
+    return render_template("register.html")
 
 
 @app.route("/logout")
@@ -6281,26 +6324,72 @@ def users():
         flash("Somente administrador pode gerenciar usuarios.", "danger")
         return redirect(url_for("dashboard"))
     if request.method == "POST":
+        action = request.form.get("action", "create")
+        user_id = request.form.get("user_id")
         name = request.form.get("nome", "").strip()
         email = request.form.get("email", "").strip().lower()
-        password = request.form.get("senha", "").strip() or "tecnico123"
-        if name and email:
-            try:
-                execute_db(
-                    "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo, ativo) VALUES (%s, %s, %s, %s, %s, 1)",
-                    (
-                        name,
-                        email,
-                        generate_password_hash(password),
-                        request.form.get("perfil_acesso", "tecnico"),
-                        request.form.get("cargo", "").strip(),
-                    ),
-                )
-                flash("Usuario cadastrado.", "success")
-            except psycopg2.errors.UniqueViolation:
-                flash("Ja existe usuario com este e-mail.", "danger")
+        role = request.form.get("perfil_acesso", "tecnico")
+        cargo = request.form.get("cargo", "").strip()
+        password = request.form.get("senha", "").strip()
+
+        if role not in ROLE_LABELS:
+            role = "tecnico"
+
+        if action == "create":
+            password = password or "tecnico123"
+            if name and email:
+                existing = query_db("SELECT id FROM usuarios WHERE lower(email) = %s", (email,), one=True)
+                if existing:
+                    flash("Ja existe usuario com este e-mail.", "danger")
+                else:
+                    execute_db(
+                        "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo, ativo) VALUES (%s, %s, %s, %s, %s, 1)",
+                        (name, email, generate_password_hash(password), role, cargo),
+                    )
+                    flash("Usuario cadastrado e ativo.", "success")
+        elif action in ("approve", "update") and user_id:
+            target = query_db("SELECT * FROM usuarios WHERE id = %s", (user_id,), one=True)
+            if not target:
+                flash("Usuario nao encontrado.", "danger")
+            elif not name or not email:
+                flash("Nome e e-mail sao obrigatorios.", "danger")
+            else:
+                existing = query_db("SELECT id FROM usuarios WHERE lower(email) = %s AND id != %s", (email, user_id), one=True)
+                if existing:
+                    flash("Ja existe outro usuario com este e-mail.", "danger")
+                else:
+                    active_value = 1 if action == "approve" else int(request.form.get("ativo", target["ativo"]) or 0)
+                    if int(user_id) == g.user["id"]:
+                        active_value = 1
+                    execute_db(
+                        "UPDATE usuarios SET nome = %s, email = %s, perfil_acesso = %s, cargo = %s, ativo = %s WHERE id = %s",
+                        (name, email, role, cargo, active_value, user_id),
+                    )
+                    if password:
+                        execute_db("UPDATE usuarios SET senha_hash = %s WHERE id = %s", (generate_password_hash(password), user_id))
+                    flash("Usuario aprovado." if action == "approve" else "Usuario atualizado.", "success")
+        elif action == "delete" and user_id:
+            if int(user_id) == g.user["id"]:
+                flash("Voce nao pode excluir o proprio usuario.", "danger")
+            else:
+                target = query_db("SELECT id, ativo FROM usuarios WHERE id = %s", (user_id,), one=True)
+                if not target:
+                    flash("Usuario nao encontrado.", "danger")
+                elif target["ativo"]:
+                    execute_db("UPDATE usuarios SET ativo = 0, cargo = COALESCE(NULLIF(cargo, ''), 'Excluido') WHERE id = %s", (user_id,))
+                    flash("Usuario removido do acesso ativo.", "success")
+                else:
+                    try:
+                        execute_db("DELETE FROM usuarios WHERE id = %s", (user_id,))
+                        flash("Usuario excluido.", "success")
+                    except psycopg2.errors.ForeignKeyViolation:
+                        execute_db("UPDATE usuarios SET ativo = 0, cargo = COALESCE(NULLIF(cargo, ''), 'Excluido') WHERE id = %s", (user_id,))
+                        flash("Usuario possui historico vinculado e foi mantido inativo.", "warning")
         return redirect(url_for("users"))
-    return render_template("users.html", users=query_db("SELECT * FROM usuarios ORDER BY ativo DESC, nome"))
+    rows = query_db("SELECT * FROM usuarios ORDER BY ativo DESC, lower(nome)")
+    pending_users = [row for row in rows if not row["ativo"] and row["perfil_acesso"] == "consulta" and not (row["cargo"] or "").strip()]
+    active_users = [row for row in rows if row["ativo"]]
+    return render_template("users.html", users=rows, pending_users=pending_users, active_users=active_users)
 
 
 @app.route("/cartorio")
