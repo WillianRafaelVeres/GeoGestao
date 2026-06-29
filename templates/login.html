@@ -27,22 +27,17 @@
     <form method="post" class="vstack gap-3">
         <div>
             <label class="form-label">E-mail</label>
-            <input class="form-control" type="email" name="email" value="admin@geogestao.local" required />
+            <input class="form-control" type="email" name="email" autocomplete="username" required />
         </div>
         <div>
             <label class="form-label">Senha</label>
-            <input class="form-control" type="password" name="senha" value="admin123" required />
+            <input class="form-control" type="password" name="senha" autocomplete="current-password" required />
         </div>
         <button class="btn btn-primary w-100" type="submit">Entrar</button>
     </form>
     <div class="auth-link">
         <span>Ainda nao tem acesso?</span>
         <a href="{{ url_for('register') }}">Solicitar cadastro</a>
-    </div>
-    <div class="demo-credentials">
-        <strong>Acessos de demonstracao</strong>
-        <span>Gestor: admin@geogestao.local / admin123</span>
-        <span>Tecnico: rafael@geogestao.local / tecnico123</span>
     </div>
 </main>
 </body>

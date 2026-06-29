@@ -78,25 +78,5 @@
         </div>
     </section>
 
-    <section class="panel">
-        <div class="panel-header"><h2>Criar usuario ja aprovado</h2></div>
-        <form method="post" class="vstack gap-3">
-            <input type="hidden" name="action" value="create" />
-            <div><label class="form-label">Nome completo</label><input class="form-control" name="nome" required /></div>
-            <div><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" required /></div>
-            <div><label class="form-label">Cargo</label><input class="form-control" name="cargo" /></div>
-            <div>
-                <label class="form-label">Perfil</label>
-                <select class="form-select" name="perfil_acesso">
-                    <option value="tecnico">Tecnico</option>
-                    <option value="coordenador">Coordenador</option>
-                    <option value="consulta">Consulta</option>
-                    <option value="admin">Administrador</option>
-                </select>
-            </div>
-            <div><label class="form-label">Senha inicial</label><input class="form-control" name="senha" value="tecnico123" /></div>
-            <button class="btn btn-primary" type="submit">Cadastrar usuario</button>
-        </form>
-    </section>
 </div>
 {% endblock %}

@@ -80,11 +80,9 @@ No Render:
 
 O arquivo `render.yaml` ja deixa essa configuracao preparada. Nao envie o arquivo `.env` para o GitHub; ele deve existir somente na maquina local.
 
-## Credenciais de demonstracao
+## Primeiro acesso
 
-- Gestor: `admin@geogestao.local` / `admin123`
-- Coordenador: `marcos@geogestao.local` / `coord123`
-- Tecnico: `rafael@geogestao.local` / `tecnico123`
+Nao ha usuarios de demonstracao no login. Para criar o primeiro administrador em uma instalacao nova, cadastre-o diretamente no Supabase ou defina `GEOGESTAO_ADMIN_NAME`, `GEOGESTAO_ADMIN_EMAIL` e `GEOGESTAO_ADMIN_PASSWORD` antes da inicializacao do banco.
 
 ## Estrutura
 

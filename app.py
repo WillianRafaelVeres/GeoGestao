@@ -1536,41 +1536,18 @@ def legacy_regime_casamento(value):
 
 
 def seed_initial_data(db):
-    now = datetime.now().isoformat(timespec="seconds")
     if scalar(db, "SELECT COUNT(*) FROM usuarios") == 0:
-        # Conta Administrador para login + 3 colaboradores da equipe.
-        users = [
-            ("Administrador", "admin@geogestao.local", "admin123", "admin", "Gestor"),
-            ("Carlos Mendes", "carlos@geogestao.local", "coord123", "coordenador", "Coordenador"),
-            ("Rafael Souza", "rafael@geogestao.local", "tecnico123", "tecnico", "Topografia"),
-            ("Ana Paula", "ana@geogestao.local", "tecnico123", "tecnico", "Documentacao"),
-        ]
-        db.executemany(
-            "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo) VALUES (%s, %s, %s, %s, %s)",
-            [(name, email, generate_password_hash(password), role, cargo) for name, email, password, role, cargo in users],
-        )
-
-    if scalar(db, "SELECT COUNT(*) FROM clientes") == 0:
-        db.executemany(
-            "INSERT INTO clientes (nome, cpf_cnpj, telefone, email, endereco, observacoes) VALUES (%s, %s, %s, %s, %s, %s)",
-            [
-                ("Joao da Silva", "123.456.789-00", "(11) 99999-0001", "joao.silva@email.com", "Rua das Flores, 100 - Campinas/SP", ""),
-                ("Maria Oliveira", "234.567.890-11", "(11) 99999-0002", "maria.oliveira@email.com", "Av. Brasil, 250 - Jundiai/SP", ""),
-                ("Fazenda Santa Rita", "12.345.678/0001-90", "(19) 3333-0003", "contato@santarita.com.br", "Estrada Rural, km 8 - Sao Pedro/SP", ""),
-                ("Construtora Horizonte Ltda", "23.456.789/0001-80", "(11) 4444-0004", "obras@horizonte.com.br", "Rua Industrial, 500 - Sao Paulo/SP", ""),
-                ("Pedro Almeida", "345.678.901-22", "(19) 99999-0005", "pedro.almeida@email.com", "Rua do Lago, 32 - Valinhos/SP", ""),
-            ],
-        )
-
-    if scalar(db, "SELECT COUNT(*) FROM cartorios") == 0:
-        db.executemany(
-            "INSERT INTO cartorios (nome, cidade, uf, contato, observacoes) VALUES (%s, %s, %s, %s, %s)",
-            [
-                ("Cartorio Central", "Sao Paulo", "SP", "central@cartorio.com", ""),
-                ("Cartorio Norte", "Campinas", "SP", "norte@cartorio.com", ""),
-                ("Prefeitura Municipal", "Jundiai", "SP", "obras@jundiai.sp.gov.br", "Orgao externo"),
-            ],
-        )
+        admin_email = os.environ.get("GEOGESTAO_ADMIN_EMAIL", "").strip().lower()
+        admin_password = os.environ.get("GEOGESTAO_ADMIN_PASSWORD", "").strip()
+        admin_name = os.environ.get("GEOGESTAO_ADMIN_NAME", "Administrador").strip() or "Administrador"
+        if admin_email and admin_password:
+            db.execute(
+                """
+                INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo, ativo)
+                VALUES (%s, %s, %s, 'admin', 'Administrador', 1)
+                """,
+                (admin_name, admin_email, generate_password_hash(admin_password)),
+            )
 
     if scalar(db, "SELECT COUNT(*) FROM etapas_modelo") == 0:
         db.executemany(
@@ -1585,49 +1562,6 @@ def seed_initial_data(db):
                     "INSERT INTO etapas_modelo (nome, ordem, cor_padrao, ativa) VALUES (%s, %s, %s, 1)",
                     (stage["nome"], stage["ordem"], stage["cor"]),
                 )
-
-    if scalar(db, "SELECT COUNT(*) FROM projetos") == 0:
-        # Um projeto para cada tipo de servico, todos comecando na primeira etapa (sequencial).
-        user_rows = db.execute("SELECT id, nome, perfil_acesso FROM usuarios ORDER BY id").fetchall()
-        colaboradores = [u for u in user_rows if u["perfil_acesso"] != "admin"] or list(user_rows)
-        admin_id = next((u["id"] for u in user_rows if u["perfil_acesso"] == "admin"), user_rows[0]["id"])
-        client_rows = db.execute("SELECT id, nome FROM clientes ORDER BY id").fetchall()
-        registry_rows = db.execute("SELECT id, nome FROM cartorios ORDER BY id").fetchall()
-        cidades = [("Campinas", "SP"), ("Jundiai", "SP"), ("Sao Paulo", "SP"), ("Valinhos", "SP"), ("Sao Pedro", "SP")]
-        active_types = [pt for pt in PROCESS_TYPES if pt.get("ativo")]
-        for index, ptype in enumerate(active_types, start=1):
-            codigo = f"GG-{index:03d}"
-            cliente = client_rows[(index - 1) % len(client_rows)]
-            responsavel = colaboradores[(index - 1) % len(colaboradores)]
-            cartorio = registry_rows[(index - 1) % len(registry_rows)]
-            cidade, uf = cidades[(index - 1) % len(cidades)]
-            nome = f"{ptype['nome']} - {cliente['nome']}"
-            project_id = db.execute(
-                """
-                INSERT INTO projetos
-                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, prioridade, status, responsavel_geral_id, caminho_pasta, criado_em, atualizado_em, ordem_prioridade)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    codigo,
-                    nome,
-                    cliente["nome"],
-                    cliente["id"],
-                    cidade,
-                    uf,
-                    cartorio["id"],
-                    normalize_project_process_type(ptype["key"]),
-                    "Media",
-                    "Em andamento",
-                    responsavel["id"],
-                    rf"C:\Projetos\{codigo}",
-                    now,
-                    now,
-                    index,
-                ),
-            ).fetchone()["id"]
-            initialize_project_workflow(db, project_id, ptype["key"], user_id=admin_id)
 
 
 def initialize_project_order(db):
@@ -6339,17 +6273,7 @@ def users():
             role = "tecnico"
 
         if action == "create":
-            password = password or "tecnico123"
-            if name and email:
-                existing = query_db("SELECT id FROM usuarios WHERE lower(email) = %s", (email,), one=True)
-                if existing:
-                    flash("Ja existe usuario com este e-mail.", "danger")
-                else:
-                    execute_db(
-                        "INSERT INTO usuarios (nome, email, senha_hash, perfil_acesso, cargo, ativo) VALUES (%s, %s, %s, %s, %s, 1)",
-                        (name, email, generate_password_hash(password), role, cargo),
-                    )
-                    flash("Usuario cadastrado e ativo.", "success")
+            flash("Novos usuarios devem solicitar cadastro pela tela de login para passar pela aprovacao.", "warning")
         elif action in ("approve", "update") and user_id:
             target = query_db("SELECT * FROM usuarios WHERE id = %s", (user_id,), one=True)
             if not target:
