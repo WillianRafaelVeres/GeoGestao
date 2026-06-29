@@ -357,6 +357,9 @@ class PgConn:
     def commit(self):
         self._conn.commit()
 
+    def rollback(self):
+        self._conn.rollback()
+
     def close(self):
         if self._closed:
             return
@@ -565,6 +568,40 @@ def table_columns(db, table_name):
 def add_column_if_missing(db, table_name, column_name, definition):
     if column_name not in table_columns(db, table_name):
         db.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def ensure_performance_indexes(db):
+    statements = [
+        "CREATE INDEX IF NOT EXISTS idx_projetos_etapa_atual ON projetos (etapa_atual_id)",
+        "CREATE INDEX IF NOT EXISTS idx_projetos_cliente ON projetos (cliente_id)",
+        "CREATE INDEX IF NOT EXISTS idx_projetos_cartorio ON projetos (cartorio_id)",
+        "CREATE INDEX IF NOT EXISTS idx_projetos_responsavel ON projetos (responsavel_geral_id)",
+        "CREATE INDEX IF NOT EXISTS idx_projetos_tipo_servico ON projetos (tipo_servico)",
+        "CREATE INDEX IF NOT EXISTS idx_projetos_ordem ON projetos (ordem_prioridade, criado_em, id)",
+        "CREATE INDEX IF NOT EXISTS idx_projeto_etapas_projeto_modelo ON projeto_etapas (projeto_id, etapa_modelo_id)",
+        "CREATE INDEX IF NOT EXISTS idx_projeto_etapas_projeto_visivel ON projeto_etapas (projeto_id, show_in_project)",
+        "CREATE INDEX IF NOT EXISTS idx_projeto_etapas_prazo_status ON projeto_etapas (prazo, status)",
+        "CREATE INDEX IF NOT EXISTS idx_project_checklist_stage_active_status ON project_checklist_items (project_stage_id, active, status, order_index, id)",
+        "CREATE INDEX IF NOT EXISTS idx_checklist_itens_etapa_concluido ON checklist_itens (projeto_etapa_id, concluido, id)",
+        "CREATE INDEX IF NOT EXISTS idx_tarefas_etapa_status_prazo ON tarefas (projeto_etapa_id, status, prazo)",
+        "CREATE INDEX IF NOT EXISTS idx_pendencias_etapa_status_prazo ON pendencias (etapa_id, status, prazo, id)",
+        "CREATE INDEX IF NOT EXISTS idx_pendencias_projeto_status ON pendencias (projeto_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_eventos_projeto_tipo_criado ON eventos_historico (projeto_id, tipo_evento, criado_em DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_exigencias_projeto_status_prazo ON exigencias_cartorio (projeto_id, status, prazo_resposta)",
+        "CREATE INDEX IF NOT EXISTS idx_exigencias_status_prazo ON exigencias_cartorio (status, prazo_resposta)",
+    ]
+    cur = db.cursor()
+    try:
+        for statement in statements:
+            try:
+                cur.execute(statement)
+            except psycopg2.errors.InsufficientPrivilege:
+                db.rollback()
+                app.logger.warning("Sem permissao para criar indices de performance; pulei esta etapa.")
+                return False
+    finally:
+        cur.close()
+    return True
 
 
 def first_row(db, query, args=()):
@@ -1178,6 +1215,8 @@ def init_db():
     ensure_project_checklists(db)
     ensure_project_stage_history(db)
     initialize_project_order(db)
+    db.commit()
+    ensure_performance_indexes(db)
     db.commit()
     db.close()
 
@@ -3009,26 +3048,94 @@ def load_matrix_stage_rows(project_id):
     return matrix_rows
 
 
-def load_matrix_stage_rows_bulk(projects):
+def load_matrix_stage_rows_bulk(projects, global_stages=None):
     project_ids = [project["id"] for project in projects]
     if not project_ids:
         return {}
 
-    global_stages = [dict(row) for row in query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")]
+    if global_stages is None:
+        global_stages = [dict(row) for row in query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")]
+    else:
+        global_stages = [dict(row) for row in global_stages]
     placeholders = ",".join("%s" for _ in project_ids)
-    params = [
+    stage_stats_params = [
         CHECKLIST_STATUS_NOT_APPLICABLE,
         CHECKLIST_STATUS_DONE,
-        CHECKLIST_STATUS_DONE,
-        CHECKLIST_STATUS_NOT_APPLICABLE,
         REQUIREMENT_REQUIRED,
         CHECKLIST_STATUS_DONE,
         CHECKLIST_STATUS_NOT_APPLICABLE,
-    ] + project_ids
+        CHECKLIST_STATUS_DONE,
+        CHECKLIST_STATUS_NOT_APPLICABLE,
+    ]
+    params = project_ids + stage_stats_params + project_ids
     project_stages = [
         dict(row)
         for row in query_db(
             f"""
+            WITH selected_stages AS (
+                SELECT pe.id
+                FROM projeto_etapas pe
+                JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                WHERE pe.projeto_id IN ({placeholders})
+                  AND em.ativa = 1
+                  AND COALESCE(pe.show_in_project, 1) = 1
+            ),
+            pci_stats AS (
+                SELECT
+                    pci.project_stage_id,
+                    COUNT(*) AS active_count,
+                    COUNT(*) FILTER (WHERE pci.status != %s) AS total,
+                    COUNT(*) FILTER (WHERE pci.status = %s) AS done,
+                    COUNT(*) FILTER (
+                        WHERE pci.requirement_level = %s
+                          AND pci.blocks_stage_completion = 1
+                          AND pci.status NOT IN (%s, %s)
+                    ) AS required_pending
+                FROM project_checklist_items pci
+                JOIN selected_stages ss ON ss.id = pci.project_stage_id
+                WHERE pci.active = 1
+                GROUP BY pci.project_stage_id
+            ),
+            pci_next AS (
+                SELECT DISTINCT ON (pci.project_stage_id)
+                    pci.project_stage_id,
+                    pci.title
+                FROM project_checklist_items pci
+                JOIN selected_stages ss ON ss.id = pci.project_stage_id
+                WHERE pci.active = 1
+                  AND pci.status NOT IN (%s, %s)
+                ORDER BY pci.project_stage_id, pci.order_index, pci.id
+            ),
+            ci_stats AS (
+                SELECT
+                    ci.projeto_etapa_id,
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE ci.concluido = 1) AS done
+                FROM checklist_itens ci
+                JOIN selected_stages ss ON ss.id = ci.projeto_etapa_id
+                GROUP BY ci.projeto_etapa_id
+            ),
+            ci_next AS (
+                SELECT DISTINCT ON (ci.projeto_etapa_id)
+                    ci.projeto_etapa_id,
+                    ci.titulo
+                FROM checklist_itens ci
+                JOIN selected_stages ss ON ss.id = ci.projeto_etapa_id
+                WHERE ci.concluido = 0
+                ORDER BY ci.projeto_etapa_id, ci.id
+            ),
+            task_next AS (
+                SELECT DISTINCT ON (t.projeto_etapa_id)
+                    t.projeto_etapa_id,
+                    t.titulo
+                FROM tarefas t
+                JOIN selected_stages ss ON ss.id = t.projeto_etapa_id
+                WHERE lower(COALESCE(t.status, '')) != 'concluido'
+                ORDER BY
+                    t.projeto_etapa_id,
+                    CASE t.prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
+                    COALESCE(t.prazo, '9999-12-31')
+            )
             SELECT
                 pe.*,
                 COALESCE(pe.stage_name, em.nome) AS etapa_nome,
@@ -3037,40 +3144,24 @@ def load_matrix_stage_rows_bulk(projects):
                 em.ordem AS legacy_etapa_ordem,
                 u.nome AS responsavel_nome,
                 CASE
-                    WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
-                    THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status != %s)
-                    ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id)
+                    WHEN COALESCE(pci_stats.active_count, 0) > 0 THEN COALESCE(pci_stats.total, 0)
+                    ELSE COALESCE(ci_stats.total, 0)
                 END AS checklist_total,
                 CASE
-                    WHEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1) > 0
-                    THEN (SELECT COUNT(*) FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status = %s)
-                    ELSE (SELECT COUNT(*) FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 1)
+                    WHEN COALESCE(pci_stats.active_count, 0) > 0 THEN COALESCE(pci_stats.done, 0)
+                    ELSE COALESCE(ci_stats.done, 0)
                 END AS checklist_done,
-                COALESCE(
-                    (SELECT pci.title FROM project_checklist_items pci WHERE pci.project_stage_id = pe.id AND pci.active = 1 AND pci.status NOT IN (%s, %s) ORDER BY pci.order_index, pci.id LIMIT 1),
-                    (SELECT ci.titulo FROM checklist_itens ci WHERE ci.projeto_etapa_id = pe.id AND ci.concluido = 0 ORDER BY ci.id LIMIT 1)
-                ) AS proximo_checklist,
-                (
-                    SELECT COUNT(*)
-                    FROM project_checklist_items pci
-                    WHERE pci.project_stage_id = pe.id
-                      AND pci.active = 1
-                      AND pci.requirement_level = %s
-                      AND pci.blocks_stage_completion = 1
-                      AND pci.status NOT IN (%s, %s)
-                ) AS required_pending,
-                (
-                    SELECT t.titulo
-                    FROM tarefas t
-                    WHERE t.projeto_etapa_id = pe.id AND lower(COALESCE(t.status, '')) != 'concluido'
-                    ORDER BY
-                        CASE t.prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
-                        COALESCE(t.prazo, '9999-12-31')
-                    LIMIT 1
-                ) AS tarefa_ativa
+                COALESCE(pci_next.title, ci_next.titulo) AS proximo_checklist,
+                COALESCE(pci_stats.required_pending, 0) AS required_pending,
+                task_next.titulo AS tarefa_ativa
             FROM projeto_etapas pe
             JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
             LEFT JOIN usuarios u ON u.id = pe.responsavel_id
+            LEFT JOIN pci_stats ON pci_stats.project_stage_id = pe.id
+            LEFT JOIN pci_next ON pci_next.project_stage_id = pe.id
+            LEFT JOIN ci_stats ON ci_stats.projeto_etapa_id = pe.id
+            LEFT JOIN ci_next ON ci_next.projeto_etapa_id = pe.id
+            LEFT JOIN task_next ON task_next.projeto_etapa_id = pe.id
             WHERE pe.projeto_id IN ({placeholders})
               AND em.ativa = 1
               AND COALESCE(pe.show_in_project, 1) = 1
@@ -3277,8 +3368,7 @@ def login_required(view):
     def wrapped_view(**kwargs):
         if "user_id" not in session:
             return redirect(url_for("login"))
-        g.user = query_db("SELECT * FROM usuarios WHERE id = %s AND ativo = 1", [session["user_id"]], one=True)
-        if g.user is None:
+        if getattr(g, "user", None) is None:
             session.clear()
             return redirect(url_for("login"))
         return view(**kwargs)
@@ -3875,6 +3965,8 @@ def dashboard():
 def projects():
     refresh_due_statuses()
 
+    today_iso = date.today().isoformat()
+    in_7 = (date.today() + timedelta(days=7)).isoformat()
     filters = request.args.to_dict()
     sql_filters = []
     params = []
@@ -3954,7 +4046,7 @@ def projects():
             )
             """
         )
-        params.extend([date.today().isoformat(), date.today().isoformat()])
+        params.extend([today_iso, today_iso])
     if filters.get("sem_responsavel") == "1":
         sql_filters.append(
             """
@@ -3969,12 +4061,12 @@ def projects():
         sql_filters.append(
             "EXISTS (SELECT 1 FROM projeto_etapas pe5 WHERE pe5.id = p.etapa_atual_id AND pe5.prazo < %s AND lower(pe5.status) NOT IN ('concluido', 'cancelado', 'aguardando externo'))"
         )
-        params.append(date.today().isoformat())
+        params.append(today_iso)
     elif prazo_filter == "7dias":
         sql_filters.append(
             "EXISTS (SELECT 1 FROM projeto_etapas pe6 WHERE pe6.id = p.etapa_atual_id AND pe6.prazo BETWEEN %s AND %s AND lower(pe6.status) NOT IN ('concluido', 'cancelado'))"
         )
-        params.extend([date.today().isoformat(), (date.today() + timedelta(days=7)).isoformat()])
+        params.extend([today_iso, in_7])
     elif prazo_filter == "sem_prazo":
         sql_filters.append("(p.prazo_critico IS NULL OR p.prazo_critico = '')")
 
@@ -4025,7 +4117,8 @@ def projects():
         """,
         params,
     )
-    matrix_rows_by_project = load_matrix_stage_rows_bulk(projetos)
+    etapas = query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")
+    matrix_rows_by_project = load_matrix_stage_rows_bulk(projetos, etapas)
     matrix = [(project, matrix_rows_by_project.get(project["id"], [])) for project in projetos]
     stage_ids = [stage["id"] for _, project_stages in matrix for stage in project_stages if stage.get("id")]
     matrix_checklists = {}
@@ -4073,39 +4166,46 @@ def projects():
             project_ids,
         ):
             notes_by_project.setdefault(note["projeto_id"], []).append(note)
+    summary_counts = query_db(
+        """
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM projeto_etapas pe
+                JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                WHERE em.ativa = 1
+                  AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+                  AND pe.prazo BETWEEN %s AND %s
+                  AND lower(pe.status) NOT IN ('concluido', 'cancelado')
+            ) AS sete_dias,
+            (
+                SELECT COUNT(*)
+                FROM projeto_etapas
+                WHERE lower(status) = 'atrasado'
+                  AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+            ) AS atrasados,
+            (
+                SELECT COUNT(*)
+                FROM projetos p
+                JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+                JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                WHERE lower(em.nome) = 'cartorio'
+            ) AS cartorio,
+            (
+                SELECT COUNT(*)
+                FROM pendencias
+                WHERE lower(status) NOT IN ('resolvida', 'cancelada')
+            ) AS pendencias
+        """,
+        (today_iso, in_7),
+        one=True,
+    )
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
-        "sete_dias": query_db(
-            """
-            SELECT COUNT(*) AS total
-            FROM projeto_etapas pe
-            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-            WHERE em.ativa = 1
-              AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-              AND pe.prazo BETWEEN %s AND %s
-              AND lower(pe.status) NOT IN ('concluido', 'cancelado')
-            """,
-            (date.today().isoformat(), (date.today() + timedelta(days=7)).isoformat()),
-            one=True,
-        )["total"],
-        "atrasados": query_db(
-            "SELECT COUNT(*) AS total FROM projeto_etapas WHERE lower(status) = 'atrasado' AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)",
-            one=True,
-        )["total"],
-        "cartorio": query_db(
-            """
-            SELECT COUNT(*) AS total
-            FROM projetos p
-            JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
-            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-            WHERE lower(em.nome) = 'cartorio'
-            """,
-            one=True,
-        )["total"],
-        "pendencias": query_db(
-            "SELECT COUNT(*) AS total FROM pendencias WHERE lower(status) NOT IN ('resolvida', 'cancelada')",
-            one=True,
-        )["total"],
+        "sete_dias": summary_counts["sete_dias"],
+        "atrasados": summary_counts["atrasados"],
+        "cartorio": summary_counts["cartorio"],
+        "pendencias": summary_counts["pendencias"],
     }
     return render_template(
         "projects.html",
@@ -4115,9 +4215,8 @@ def projects():
         pending_by_project=pending_by_project,
         notes_by_project=notes_by_project,
         summary=summary,
-        etapas=query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem"),
+        etapas=etapas,
         usuarios=query_db("SELECT * FROM usuarios WHERE ativo = 1 ORDER BY nome"),
-        clientes=query_db("SELECT * FROM clientes ORDER BY nome"),
         cartorios=query_db("SELECT * FROM cartorios ORDER BY nome"),
         process_types=get_process_type_options(),
         filters=filters,
