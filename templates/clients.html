@@ -265,7 +265,7 @@
 
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Salvar cadastro</button>
+                    <button class="btn btn-primary" type="submit">Salvar cadastro</button>
                 </div>
             </form>
         </div>
@@ -346,7 +346,7 @@
         <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar por nome, CPF, CNPJ, cidade..." autocomplete="off" data-client-search-input>
         <button type="button" class="search-clear" data-client-search-clear aria-label="Limpar busca">Limpar</button>
     </form>
-    <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#modal-client-new" {% if not can_manage() %}disabled{% endif %}>Novo cliente</button>
+    <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#modal-client-new">Novo cliente</button>
 </div>
 
 <section class="client-filter-bar">

@@ -177,9 +177,6 @@
                             {% if etapa.prazo %}<small class="{{ 'text-danger fw-semibold' if is_overdue(etapa.prazo, etapa.status) else '' }}">Prazo: {{ format_date(etapa.prazo) }}</small>{% endif %}
                         </div>
                     </div>
-                    <div class="progress slim-progress" role="progressbar" aria-valuenow="{{ etapa.progresso or 0 }}" aria-valuemin="0" aria-valuemax="100">
-                        <div class="progress-bar" style="width: {{ etapa.progresso or 0 }}%"></div>
-                    </div>
                     <div class="stage-detail-collapse">
                         <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="row g-2 mt-3">
                             <input type="hidden" name="action" value="update_stage" />
@@ -200,10 +197,6 @@
                                         <option value="{{ usuario.id }}" {% if etapa.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
                                     {% endfor %}
                                 </select>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label">Progresso %</label>
-                                <input class="form-control" type="number" min="0" max="100" name="progresso" value="{{ etapa.progresso or 0 }}" />
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">Subetapa ativa</label>

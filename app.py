@@ -4704,7 +4704,9 @@ def project_action(project_id):
             flash("Etapa nao encontrada.", "danger")
             return redirect(url_for("project_detail", project_id=project_id))
         status = request.form.get("status", "nao iniciado")
-        progress = int(request.form.get("progresso") or 0)
+        progress = old_stage["progresso"] or 0
+        if "progresso" in request.form:
+            progress = int(request.form.get("progresso") or 0)
         data_inicio = old_stage["data_inicio"]
         data_fim = old_stage["data_fim"]
         if status == "em andamento" and not data_inicio:
@@ -6166,9 +6168,6 @@ def my_missions():
 @login_required
 def clients():
     if request.method == "POST":
-        if not can_manage():
-            flash("Permissao negada.", "danger")
-            return redirect(url_for("clients"))
         cliente_id = save_cliente_documental()
         if cliente_id:
             return redirect(url_for("clients"))
