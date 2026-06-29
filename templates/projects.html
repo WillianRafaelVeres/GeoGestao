@@ -1,29 +1,31 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="workspace-header">
-    <div>
-        <span class="module-label">Operacao</span>
-        <h1>Matriz de projetos</h1>
+<section class="matrix-command-center">
+    <div class="workspace-header">
+        <div class="workspace-title">
+            <span class="module-label">Operacao</span>
+            <h1>Matriz de projetos</h1>
+        </div>
+        <form class="global-search" method="get">
+            <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar projeto, cliente, processo, cartorio, cidade..." />
+            <button type="submit">Buscar</button>
+        </form>
+        <div class="matrix-actions">
+            <a class="btn btn-primary btn-sm" href="{{ url_for('project_create') }}">Novo projeto</a>
+            <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('projects_export') }}">Exportar</a>
+            <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Kanban</button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Calendario</button>
+            <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('dashboard') }}">Dashboard</a>
+        </div>
     </div>
-    <form class="global-search" method="get">
-        <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar projeto, cliente, processo, cartorio, cidade..." />
-        <button type="submit">Buscar</button>
-    </form>
-    <div class="matrix-actions">
-        <a class="btn btn-primary btn-sm" href="{{ url_for('project_create') }}">Novo projeto</a>
-        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('projects_export') }}">Exportar</a>
-        <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Kanban</button>
-        <button class="btn btn-outline-secondary btn-sm" type="button" disabled>Calendario</button>
-        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('dashboard') }}">Dashboard</a>
-    </div>
-</div>
 
-<section class="matrix-summary">
-    <a href="{{ url_for('projects') }}"><span>Projetos ativos</span><strong>{{ summary.ativos }}</strong></a>
-    <a href="{{ url_for('projects', prazo='7dias') }}"><span>Vencendo em 7 dias</span><strong>{{ summary.sete_dias }}</strong></a>
-    <a href="{{ url_for('projects', atrasados='1') }}"><span>Atrasados</span><strong>{{ summary.atrasados }}</strong></a>
-    <a href="{{ url_for('projects', q='Cartorio') }}"><span>Em cartorio</span><strong>{{ summary.cartorio }}</strong></a>
-    <a href="{{ url_for('projects', pendencia='aberta') }}"><span>Com pendencia</span><strong>{{ summary.pendencias }}</strong></a>
+    <div class="matrix-summary">
+        <a href="{{ url_for('projects') }}"><span>Projetos ativos</span><strong>{{ summary.ativos }}</strong></a>
+        <a href="{{ url_for('projects', prazo='7dias') }}"><span>Vencendo em 7 dias</span><strong>{{ summary.sete_dias }}</strong></a>
+        <a href="{{ url_for('projects', atrasados='1') }}"><span>Atrasados</span><strong>{{ summary.atrasados }}</strong></a>
+        <a href="{{ url_for('projects', q='Cartorio') }}"><span>Em cartorio</span><strong>{{ summary.cartorio }}</strong></a>
+        <a href="{{ url_for('projects', pendencia='aberta') }}"><span>Com pendencia</span><strong>{{ summary.pendencias }}</strong></a>
+    </div>
 </section>
 
 {% set active_filters = [] %}
@@ -41,6 +43,15 @@
 <section class="filter-bar">
     <form method="get" id="filter-form">
         <input type="hidden" name="q" value="{{ filters.q or '' }}" />
+        <div class="filter-panel-head">
+            <div>
+                <strong>Filtros</strong>
+                <span>Refine a matriz por responsavel, prazo e status operacional.</span>
+            </div>
+            {% if active_filters|length > 0 %}
+            <a class="filter-reset-link" href="{{ url_for('projects') }}">Limpar {{ active_filters|length }} filtro{{ 's' if active_filters|length > 1 }}</a>
+            {% endif %}
+        </div>
         <div class="filter-row">
             <div class="filter-field">
                 <label class="filter-label">Responsavel</label>
@@ -100,6 +111,8 @@
                 <label class="filter-label">Cidade</label>
                 <input name="cidade" value="{{ filters.cidade or '' }}" placeholder="Todas" class="filter-input {{ 'is-active' if filters.cidade }}" />
             </div>
+        </div>
+        <div class="filter-footer-row">
             <div class="filter-checks">
                 <label class="filter-check-item {{ 'is-active' if filters.pendencia == 'aberta' }}">
                     <input type="checkbox" name="pendencia" value="aberta" {% if filters.pendencia == 'aberta' %}checked{% endif %}>
@@ -124,9 +137,12 @@
             </div>
         </div>
     </form>
-    <div class="density-toggle">
-        <button type="button" data-density="comfortable" class="active">Normal</button>
-        <button type="button" data-density="compact">Compacta</button>
+    <div class="density-group">
+        <span>Densidade</span>
+        <div class="density-toggle">
+            <button type="button" data-density="comfortable" class="active">Normal</button>
+            <button type="button" data-density="compact">Compacta</button>
+        </div>
     </div>
 </section>
 
