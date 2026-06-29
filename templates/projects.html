@@ -29,6 +29,7 @@
 </section>
 
 {% set active_filters = [] %}
+{% if filters.q %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.responsavel_id %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.cidade %}{% set active_filters = active_filters + [1] %}{% endif %}
 {% if filters.cartorio_id %}{% set active_filters = active_filters + [1] %}{% endif %}
@@ -42,7 +43,6 @@
 
 <section class="filter-bar">
     <form method="get" id="filter-form">
-        <input type="hidden" name="q" value="{{ filters.q or '' }}" />
         <div class="filter-panel-head">
             <div>
                 <strong>Filtros</strong>
@@ -53,6 +53,10 @@
             {% endif %}
         </div>
         <div class="filter-row">
+            <div class="filter-field filter-field-search">
+                <label class="filter-label">Pesquisar</label>
+                <input name="q" value="{{ filters.q or '' }}" placeholder="Projeto, proprietario, matricula..." class="filter-input {{ 'is-active' if filters.q }}" data-live-filter-input />
+            </div>
             <div class="filter-field">
                 <label class="filter-label">Responsavel</label>
                 <select name="responsavel_id" class="filter-select {{ 'is-active' if filters.responsavel_id }}">
@@ -436,6 +440,7 @@
                             <div class="pmodal-section">
                                 <div class="pmodal-folder-row">
                                     <code class="pmodal-folder-path" title="{{ project.caminho_pasta }}">{{ project.caminho_pasta }}</code>
+                                    <button class="pmodal-btn-ghost" type="button" data-open-folder="{{ project.caminho_pasta }}">Abrir</button>
                                     <button class="pmodal-btn-ghost pmodal-btn-ghost--copy" type="button" data-copy="{{ project.caminho_pasta }}">Copiar</button>
                                 </div>
                             </div>

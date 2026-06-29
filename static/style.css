@@ -1041,7 +1041,7 @@ a:hover { color: #1d4ed8; }
 
 .filter-row {
     display: grid;
-    grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(170px, 1.1fr) minmax(220px, 1.4fr) minmax(120px, .75fr) minmax(120px, .75fr) minmax(150px, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     align-items: end;
     gap: 8px;
 }
@@ -1051,6 +1051,9 @@ a:hover { color: #1d4ed8; }
     flex-direction: column;
     gap: 4px;
     min-width: 0;
+}
+.filter-field-search {
+    grid-column: span 2;
 }
 
 .filter-label {

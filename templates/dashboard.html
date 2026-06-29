@@ -53,8 +53,8 @@
                         <strong>{{ p.nome }}</strong>
                         <small>{{ p.etapa_nome or 'Sem etapa' }}{% if p.responsavel_nome %} · {{ p.responsavel_nome }}{% endif %}</small>
                     </span>
-                    {% if p.external_deadline %}
-                    <span class="dash-rank-prazo {{ 'is-late' if p.external_deadline < today_iso else '' }}" title="Prazo externo (cartorio/orgao)">{{ format_date(p.external_deadline) }}</span>
+                    {% if p.operational_deadline %}
+                    <span class="dash-rank-prazo {{ 'is-late' if p.operational_deadline < today_iso else '' }}" title="Prazo operacional mais proximo">{{ format_date(p.operational_deadline) }}</span>
                     {% endif %}
                 </a>
             </li>

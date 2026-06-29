@@ -1635,7 +1635,7 @@ def create_stage_rows(db, project_id, responsavel_id, prazo_critico):
     current_stage_id = None
     for index, stage in enumerate(stages):
         status = "em andamento" if index == 0 else "nao iniciado"
-        prazo = prazo_critico or (app_today() + timedelta(days=7 + index * 2)).isoformat()
+        prazo = prazo_critico or None
         stage_id = db.execute(
             """
             INSERT INTO projeto_etapas
@@ -1862,7 +1862,6 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
     first_active_stage_id = None
     created_stages = 0
     updated_stages = 0
-    today = app_today()
     active_required_index = 0
 
     for template in stage_templates:
@@ -1875,10 +1874,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
             active_required_index += 1
         status = "em andamento" if workflow_active and first_active_stage_id is None else "nao iniciado"
         data_inicio = now if status == "em andamento" else None
-        deadline_days = template["default_deadline_days"]
         prazo = None
-        if workflow_active and deadline_days:
-            prazo = (today + timedelta(days=deadline_days + max(active_required_index - 1, 0) * 2)).isoformat()
         etapa_modelo_id = get_stage_model_id_for_process_stage(db, template["stage_key"])
         if not etapa_modelo_id:
             continue
@@ -2190,7 +2186,7 @@ def ensure_project_structure(db):
                     (project["id"], stage["id"]),
                 )
                 if existing_stage is None:
-                    due = project["prazo_critico"] or (app_today() + timedelta(days=stage["ordem"] * 2)).isoformat()
+                    due = project["prazo_critico"] or None
                     stage_id = db.execute(
                         """
                         INSERT INTO projeto_etapas
@@ -4044,13 +4040,10 @@ def dashboard():
         SELECT p.id, p.codigo, p.nome,
                COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(c.nome, ''), p.proprietario) AS cliente_nome,
                em.nome AS etapa_nome, pe.status AS etapa_status,
-               (
-                   SELECT MIN(e.prazo_resposta)
-                   FROM exigencias_cartorio e
-                   WHERE e.projeto_id = p.id
-                     AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
-                     AND COALESCE(e.prazo_resposta, '') != ''
-               ) AS external_deadline,
+               deadline.external_deadline,
+               deadline.operational_deadline,
+               stale.stale_days,
+               stale.stale_rank,
                COALESCE(u.nome, ug.nome) AS responsavel_nome
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
@@ -4058,14 +4051,62 @@ def dashboard():
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         LEFT JOIN usuarios u ON u.id = pe.responsavel_id
         LEFT JOIN usuarios ug ON ug.id = p.responsavel_geral_id
+        LEFT JOIN LATERAL (
+            SELECT
+                (
+                    SELECT MIN(e.prazo_resposta)
+                    FROM exigencias_cartorio e
+                    WHERE e.projeto_id = p.id
+                      AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
+                      AND COALESCE(e.prazo_resposta, '') != ''
+                ) AS external_deadline,
+                LEAST(
+                    NULLIF(pe.prazo, ''),
+                    (
+                        SELECT MIN(pd.prazo)
+                        FROM pendencias pd
+                        WHERE pd.projeto_id = p.id
+                          AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
+                          AND COALESCE(pd.prazo, '') != ''
+                    ),
+                    (
+                        SELECT MIN(e.prazo_resposta)
+                        FROM exigencias_cartorio e
+                        WHERE e.projeto_id = p.id
+                          AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
+                          AND COALESCE(e.prazo_resposta, '') != ''
+                    )
+                ) AS operational_deadline
+        ) deadline ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT
+                GREATEST(
+                    0,
+                    %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date
+                ) AS stale_days,
+                CASE
+                    WHEN GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) >= 30
+                        THEN 2 + FLOOR((GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) - 30) / 30)
+                    WHEN GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) >= 15
+                        THEN 1
+                    ELSE 0
+                END AS stale_rank
+        ) stale ON TRUE
         WHERE lower(COALESCE(p.status, '')) NOT IN ('concluido', 'cancelado')
         ORDER BY
-            external_deadline ASC NULLS LAST,
+            CASE
+                WHEN deadline.operational_deadline < %s THEN 0
+                WHEN deadline.operational_deadline IS NOT NULL THEN 1
+                ELSE 2
+            END,
+            deadline.operational_deadline ASC NULLS LAST,
+            CASE WHEN deadline.operational_deadline IS NULL THEN stale.stale_rank ELSE 0 END DESC,
             COALESCE(p.ordem_prioridade, 99999),
             COALESCE(p.criado_em, ''),
             p.id
         LIMIT 5
-        """
+        """,
+        [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso],
     )
     # Quantos projetos em cada etapa (gargalo).
     bottlenecks = query_db(
@@ -4241,21 +4282,39 @@ def projects():
         )
         params.extend([today_iso, in_7])
     elif prazo_filter == "sem_prazo":
-        sql_filters.append("(p.prazo_critico IS NULL OR p.prazo_critico = '')")
+        sql_filters.append(
+            """
+            (
+                (pea.prazo IS NULL OR pea.prazo = '')
+                AND NOT EXISTS (
+                    SELECT 1 FROM pendencias pdp
+                    WHERE pdp.projeto_id = p.id
+                      AND COALESCE(pdp.prazo, '') != ''
+                      AND lower(COALESCE(pdp.status, '')) NOT IN ('resolvida', 'cancelada')
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM exigencias_cartorio epp
+                    WHERE epp.projeto_id = p.id
+                      AND COALESCE(epp.prazo_resposta, '') != ''
+                      AND lower(COALESCE(epp.status, '')) NOT IN ('concluido', 'cancelado')
+                )
+            )
+            """
+        )
 
     where_clause = "WHERE " + " AND ".join(sql_filters) if sql_filters else ""
     order_clause = """
+            CASE
+                WHEN deadline.operational_deadline < %s THEN 0
+                WHEN deadline.operational_deadline IS NOT NULL THEN 1
+                ELSE 2
+            END,
+            deadline.operational_deadline ASC NULLS LAST,
+            CASE WHEN deadline.operational_deadline IS NULL THEN stale.stale_rank ELSE 0 END DESC,
             sort_ordem_prioridade,
             sort_criado_em,
             p.id
     """
-    if prazo_filter in ("vencido", "7dias"):
-        order_clause = """
-            external_deadline ASC NULLS LAST,
-            sort_ordem_prioridade,
-            sort_criado_em,
-            p.id
-        """
     projetos = query_db(
         f"""
         SELECT
@@ -4276,13 +4335,10 @@ def projects():
             ur.nome AS responsavel_etapa_nome,
             COALESCE(p.ordem_prioridade, 99999) AS sort_ordem_prioridade,
             COALESCE(p.criado_em, '') AS sort_criado_em,
-            (
-                SELECT MIN(e.prazo_resposta)
-                FROM exigencias_cartorio e
-                WHERE e.projeto_id = p.id
-                  AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
-                  AND COALESCE(e.prazo_resposta, '') != ''
-            ) AS external_deadline
+            deadline.external_deadline,
+            deadline.operational_deadline,
+            stale.stale_days,
+            stale.stale_rank
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
@@ -4293,11 +4349,52 @@ def projects():
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
         LEFT JOIN projeto_etapas pea ON pea.id = p.etapa_atual_id
         LEFT JOIN usuarios ur ON ur.id = pea.responsavel_id
+        LEFT JOIN LATERAL (
+            SELECT
+                (
+                    SELECT MIN(e.prazo_resposta)
+                    FROM exigencias_cartorio e
+                    WHERE e.projeto_id = p.id
+                      AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
+                      AND COALESCE(e.prazo_resposta, '') != ''
+                ) AS external_deadline,
+                LEAST(
+                    NULLIF(pea.prazo, ''),
+                    (
+                        SELECT MIN(pd.prazo)
+                        FROM pendencias pd
+                        WHERE pd.projeto_id = p.id
+                          AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
+                          AND COALESCE(pd.prazo, '') != ''
+                    ),
+                    (
+                        SELECT MIN(e.prazo_resposta)
+                        FROM exigencias_cartorio e
+                        WHERE e.projeto_id = p.id
+                          AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
+                          AND COALESCE(e.prazo_resposta, '') != ''
+                    )
+                ) AS operational_deadline
+        ) deadline ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT
+                GREATEST(
+                    0,
+                    %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date
+                ) AS stale_days,
+                CASE
+                    WHEN GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) >= 30
+                        THEN 2 + FLOOR((GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) - 30) / 30)
+                    WHEN GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) >= 15
+                        THEN 1
+                    ELSE 0
+                END AS stale_rank
+        ) stale ON TRUE
         {where_clause}
         ORDER BY
             {order_clause}
         """,
-        params,
+        [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso] + params + [today_iso],
     )
     etapas = query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")
     matrix_rows_by_project = load_matrix_stage_rows_bulk(projetos, etapas)

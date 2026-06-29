@@ -124,6 +124,7 @@ window.addEventListener("DOMContentLoaded", () => {
     initClientLiveSearch();
     initProjectClientAutocompletes();
     initSingleSubmitForms();
+    initMatrixLiveFilters();
 });
 
 function initSingleSubmitForms() {
@@ -142,6 +143,18 @@ function initSingleSubmitForms() {
                 }
             });
         });
+    });
+}
+
+function initMatrixLiveFilters() {
+    const input = document.querySelector("[data-live-filter-input]");
+    if (!input || !input.form) return;
+    let timer = null;
+    input.addEventListener("input", () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            input.form.requestSubmit();
+        }, 450);
     });
 }
 
