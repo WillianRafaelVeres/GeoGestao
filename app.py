@@ -6121,7 +6121,10 @@ def my_missions():
         FROM projeto_etapas pe
         JOIN projetos p ON p.id = pe.projeto_id
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE pe.responsavel_id = %s AND lower(pe.status) NOT IN ('concluido', 'cancelado') AND em.ativa = 1
+        WHERE pe.responsavel_id = %s
+          AND pe.id = p.etapa_atual_id
+          AND lower(pe.status) NOT IN ('concluido', 'cancelado')
+          AND em.ativa = 1
         """,
         (g.user["id"],),
     )
