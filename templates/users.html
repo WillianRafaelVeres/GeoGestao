@@ -16,7 +16,6 @@
         <div class="user-admin-list">
             {% for user in pending_users %}
                 <form method="post" class="user-admin-row">
-                    <input type="hidden" name="action" value="approve" />
                     <input type="hidden" name="user_id" value="{{ user.id }}" />
                     <label>Nome completo<input class="form-control form-control-sm" name="nome" value="{{ user.nome }}" required /></label>
                     <label>E-mail<input class="form-control form-control-sm" type="email" name="email" value="{{ user.email }}" required /></label>
@@ -30,7 +29,7 @@
                         </select>
                     </label>
                     <div class="user-admin-actions">
-                        <button class="btn btn-primary btn-sm" type="submit">Aprovar</button>
+                        <button class="btn btn-primary btn-sm" type="submit" name="action" value="approve">Aprovar</button>
                         <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete">Excluir</button>
                     </div>
                 </form>
@@ -48,7 +47,6 @@
         <div class="user-admin-list">
             {% for user in active_users %}
                 <form method="post" class="user-admin-row user-admin-row--active">
-                    <input type="hidden" name="action" value="update" />
                     <input type="hidden" name="user_id" value="{{ user.id }}" />
                     <input type="hidden" name="ativo" value="1" />
                     <label>Nome completo<input class="form-control form-control-sm" name="nome" value="{{ user.nome }}" required /></label>
@@ -62,9 +60,13 @@
                             <option value="admin" {% if user.perfil_acesso == 'admin' %}selected{% endif %}>Administrador</option>
                         </select>
                     </label>
-                    <label>Nova senha<input class="form-control form-control-sm" name="senha" type="password" placeholder="Manter atual" /></label>
+                    {% if user.id == g.user.id %}
+                        <label>Nova senha<input class="form-control form-control-sm" name="senha" type="password" placeholder="Manter atual" /></label>
+                    {% else %}
+                        <label>Senha<input class="form-control form-control-sm" type="text" value="Somente o proprio usuario" disabled /></label>
+                    {% endif %}
                     <div class="user-admin-actions">
-                        <button class="btn btn-primary btn-sm" type="submit">Salvar</button>
+                        <button class="btn btn-primary btn-sm" type="submit" name="action" value="update">Salvar</button>
                         {% if user.id != g.user.id %}
                             <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete">Excluir</button>
                         {% endif %}

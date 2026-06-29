@@ -6365,8 +6365,10 @@ def users():
                         "UPDATE usuarios SET nome = %s, email = %s, perfil_acesso = %s, cargo = %s, ativo = %s WHERE id = %s",
                         (name, email, role, cargo, active_value, user_id),
                     )
-                    if password:
+                    if password and int(user_id) == g.user["id"]:
                         execute_db("UPDATE usuarios SET senha_hash = %s WHERE id = %s", (generate_password_hash(password), user_id))
+                    elif password:
+                        flash("Por seguranca, voce so pode alterar a sua propria senha.", "warning")
                     flash("Usuario aprovado." if action == "approve" else "Usuario atualizado.", "success")
         elif action == "delete" and user_id:
             if int(user_id) == g.user["id"]:
