@@ -151,6 +151,16 @@
                     <div class="col-12 text-end"><button class="btn btn-primary btn-lg-action" type="submit">Salvar projeto</button></div>
                 {% endif %}
             </form>
+            {% if can_admin() %}
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="danger-zone-form" onsubmit="return confirm('Excluir este projeto e todo o historico dele? Esta acao nao pode ser desfeita.');">
+                    <input type="hidden" name="action" value="delete_project" />
+                    <div>
+                        <strong>Excluir projeto</strong>
+                        <span>Remove etapas, checklist, pendencias, comentarios e historico deste projeto.</span>
+                    </div>
+                    <button class="btn btn-outline-danger" type="submit">Excluir projeto</button>
+                </form>
+            {% endif %}
         </section>
     </div>
 

@@ -12,9 +12,10 @@ import psycopg2.extras
 import psycopg2.errors
 import psycopg2.pool
 import unicodedata
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import quote, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, Response, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -89,6 +90,10 @@ from process_checklist_templates import (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 SECRET_KEY = os.environ.get("GEOGESTAO_SECRET_KEY", "dev-change-this-secret-key")
+try:
+    APP_TIMEZONE = ZoneInfo(os.environ.get("GEOGESTAO_TIMEZONE", "America/Sao_Paulo"))
+except ZoneInfoNotFoundError:
+    APP_TIMEZONE = timezone(timedelta(hours=-3), "America/Sao_Paulo")
 
 STATUS_META = {
     "nao iniciado": {"label": "Nao iniciado", "color": "secondary", "tone": "muted"},
@@ -1243,7 +1248,7 @@ def seed_document_requirements(db):
 
 
 def seed_process_types(db):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     for item in PROCESS_TYPES:
         existing = first_row(db, "SELECT id FROM tipos_processo WHERE chave = %s", (item["key"],))
         values = (
@@ -1282,7 +1287,7 @@ def seed_process_types(db):
 
 
 def seed_process_stage_templates(db):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     for process_type_key, stage_templates in PROCESS_STAGE_TEMPLATES.items():
         for template in stage_templates:
             existing = first_row(
@@ -1338,7 +1343,7 @@ def seed_process_stage_templates(db):
 
 
 def seed_process_checklist_templates(db):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     for process_type_key, checklist_templates in PROCESS_CHECKLIST_TEMPLATES.items():
         for template in checklist_templates:
             existing = first_row(
@@ -1423,7 +1428,7 @@ def normalize_legacy_project_process_types(db):
 
 
 def migrate_legacy_clients(db):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     rows = db.execute("SELECT * FROM clientes").fetchall()
     for client in rows:
         tipo_cliente = client["tipo_cliente"] or ("PESSOA_JURIDICA" if client["tipo_pessoa"] == "juridica" else "PESSOA_FISICA")
@@ -1575,7 +1580,7 @@ def initialize_project_order(db):
         """
     ).fetchall()
     if unordered:
-        max_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) FROM projetos").fetchone()[0]
+        max_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) AS max_order FROM projetos").fetchone()["max_order"]
         for i, row in enumerate(unordered, max_order + 1):
             db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (i, row["id"]))
 
@@ -1630,7 +1635,7 @@ def create_stage_rows(db, project_id, responsavel_id, prazo_critico):
     current_stage_id = None
     for index, stage in enumerate(stages):
         status = "em andamento" if index == 0 else "nao iniciado"
-        prazo = prazo_critico or (date.today() + timedelta(days=7 + index * 2)).isoformat()
+        prazo = prazo_critico or (app_today() + timedelta(days=7 + index * 2)).isoformat()
         stage_id = db.execute(
             """
             INSERT INTO projeto_etapas
@@ -1645,7 +1650,7 @@ def create_stage_rows(db, project_id, responsavel_id, prazo_critico):
         if index == 0:
             current_stage_id = stage_id
     if current_stage_id:
-        db.execute("UPDATE projetos SET etapa_atual_id = %s, atualizado_em = %s WHERE id = %s", (current_stage_id, datetime.now().isoformat(timespec="seconds"), project_id))
+        db.execute("UPDATE projetos SET etapa_atual_id = %s, atualizado_em = %s WHERE id = %s", (current_stage_id, app_now_iso(), project_id))
 
 
 def get_stage_model_id_for_process_stage(db, template_stage_key):
@@ -1721,21 +1726,28 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
         templates,
         key=lambda row: (PROCESS_CHECKLIST_STAGE_ORDER.get(row["stage_key"], 999), row["order_index"], row["id"]),
     )
-    now = datetime.now().isoformat(timespec="seconds")
-    created = 0
+    now = app_now_iso()
+    stages = db.execute(
+        """
+        SELECT pe.id, pe.stage_key, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        """,
+        (project_id,),
+    ).fetchall()
+    stage_by_key = {stage["stage_key"]: stage["id"] for stage in stages if stage["stage_key"]}
+    stage_by_legacy = {stage_key(stage["etapa_nome"]): stage["id"] for stage in stages}
+    first_stage_id = stages[0]["id"] if stages else None
+    values = []
     for template in templates:
-        project_stage_id = find_project_stage_id_for_template_stage(db, project_id, template["stage_key"])
-        cursor = db.execute(
-            """
-            INSERT INTO project_checklist_items
-                (project_id, project_stage_id, template_id, process_type_key, stage_key, stage_name, title,
-                 description, status, requirement_level, criticality, responsible_name, due_date, completed_at,
-                 completed_by, observation, attachment_path, blocks_stage_completion, blocks_process_completion,
-                 requires_attachment, allows_observation, condition_text, help_text, order_index, active,
-                 created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, NULL, NULL, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
+        project_stage_id = stage_by_key.get(template["stage_key"])
+        if not project_stage_id:
+            legacy_key = PROCESS_STAGE_TO_LEGACY_STAGE.get(template["stage_key"], template["stage_key"].lower())
+            project_stage_id = stage_by_legacy.get(legacy_key) or first_stage_id
+        values.append(
             (
                 project_id,
                 project_stage_id,
@@ -1749,6 +1761,11 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
                 template["requirement_level"],
                 template["criticality"],
                 template["default_responsible_role"],
+                None,
+                None,
+                None,
+                None,
+                None,
                 template["blocks_stage_completion"],
                 template["blocks_process_completion"],
                 template["requires_attachment"],
@@ -1756,13 +1773,29 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
                 template["condition_text"],
                 template["help_text"],
                 template["order_index"],
+                1,
                 now,
                 now,
             ),
         )
-        if cursor.rowcount:
-            created += 1
-    return created
+    if not values:
+        return 0
+    cursor = db.cursor()
+    psycopg2.extras.execute_values(
+        cursor,
+        """
+        INSERT INTO project_checklist_items
+            (project_id, project_stage_id, template_id, process_type_key, stage_key, stage_name, title,
+             description, status, requirement_level, criticality, responsible_name, due_date, completed_at,
+             completed_by, observation, attachment_path, blocks_stage_completion, blocks_process_completion,
+             requires_attachment, allows_observation, condition_text, help_text, order_index, active,
+             created_at, updated_at)
+        VALUES %s
+        ON CONFLICT DO NOTHING
+        """,
+        values,
+    )
+    return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
 
 
 def sync_project_checklist_stage_links(db, project_id):
@@ -1780,7 +1813,7 @@ def sync_project_checklist_stage_links(db, project_id):
         if stage_id:
             cursor = db.execute(
                 "UPDATE project_checklist_items SET project_stage_id = %s, updated_at = %s WHERE id = %s AND COALESCE(project_stage_id, 0) != %s",
-                (stage_id, datetime.now().isoformat(timespec="seconds"), item["id"], stage_id),
+                (stage_id, app_now_iso(), item["id"], stage_id),
             )
             updated += cursor.rowcount
     return updated
@@ -1802,7 +1835,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
             "warnings": ["Fluxo do projeto ja estava inicializado."],
         }
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     if force:
         db.execute(
             """
@@ -1829,7 +1862,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
     first_active_stage_id = None
     created_stages = 0
     updated_stages = 0
-    today = date.today()
+    today = app_today()
     active_required_index = 0
 
     for template in stage_templates:
@@ -2019,7 +2052,7 @@ def set_project_initial_stage(db, project_id, stage_key_value):
     if not selected:
         return None
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     stages = db.execute(
         """
         SELECT pe.*, COALESCE(pe.stage_order, em.ordem) AS effective_order
@@ -2157,7 +2190,7 @@ def ensure_project_structure(db):
                     (project["id"], stage["id"]),
                 )
                 if existing_stage is None:
-                    due = project["prazo_critico"] or (date.today() + timedelta(days=stage["ordem"] * 2)).isoformat()
+                    due = project["prazo_critico"] or (app_today() + timedelta(days=stage["ordem"] * 2)).isoformat()
                     stage_id = db.execute(
                         """
                         INSERT INTO projeto_etapas
@@ -2200,7 +2233,7 @@ def ensure_project_structure(db):
                 ((client["nome"] if client else project["nome"]), project["id"]),
             )
         if not project["atualizado_em"]:
-            db.execute("UPDATE projetos SET atualizado_em = COALESCE(criado_em, %s) WHERE id = %s", (datetime.now().isoformat(timespec="seconds"), project["id"]))
+            db.execute("UPDATE projetos SET atualizado_em = COALESCE(criado_em, %s) WHERE id = %s", (app_now_iso(), project["id"]))
 
         if scalar(db, "SELECT COUNT(*) FROM tarefas WHERE projeto_id = %s", (project["id"],)) == 0:
             active_stage = first_row(
@@ -2235,14 +2268,14 @@ def ensure_project_structure(db):
                         project["prioridade"] or "Media",
                         "em andamento",
                         active_stage["prazo"],
-                        datetime.now().isoformat(timespec="seconds"),
+                        app_now_iso(),
                     ),
                 )
 
         if scalar(db, "SELECT COUNT(*) FROM eventos_historico WHERE projeto_id = %s", (project["id"],)) == 0:
             db.execute(
                 "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (%s, NULL, %s, %s, %s)",
-                (project["id"], "importacao", "Projeto importado para o prototipo.", datetime.now().isoformat(timespec="seconds")),
+                (project["id"], "importacao", "Projeto importado para o prototipo.", app_now_iso()),
             )
 
     if scalar(db, "SELECT COUNT(*) FROM exigencias_cartorio") == 0:
@@ -2257,13 +2290,13 @@ def ensure_project_structure(db):
                 (
                     project["id"],
                     project["cartorio_id"],
-                    date.today().isoformat(),
-                    (date.today() + timedelta(days=5)).isoformat(),
+                    app_today().isoformat(),
+                    (app_today() + timedelta(days=5)).isoformat(),
                     "Conferir memorial e anexar declaracao complementar.",
                     "em andamento",
                     project["responsavel_geral_id"],
-                    datetime.now().isoformat(timespec="seconds"),
-                    datetime.now().isoformat(timespec="seconds"),
+                    app_now_iso(),
+                    app_now_iso(),
                 ),
             )
 
@@ -2276,7 +2309,7 @@ def ensure_project_structure(db):
                     (projeto_id, etapa_id, usuario_id, duracao_minutos, tipo_tempo, observacoes, criado_em)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (stage["projeto_id"], stage["id"], stage["responsavel_id"], 95, "execucao", "Apontamento de exemplo.", datetime.now().isoformat(timespec="seconds")),
+                (stage["projeto_id"], stage["id"], stage["responsavel_id"], 95, "execucao", "Apontamento de exemplo.", app_now_iso()),
             )
 
 
@@ -2297,7 +2330,7 @@ def calculate_days_between(start_date, end_date=None):
     end = parse_report_datetime(end_date) if end_date and not isinstance(end_date, datetime) else end_date
     if not start:
         return 0
-    end = end or datetime.now()
+    end = end or app_now()
     seconds = max((end - start).total_seconds(), 0)
     return seconds / 86400
 
@@ -2323,7 +2356,7 @@ def format_days(value):
 
 def ensure_project_stage_history(db):
     projects = db.execute("SELECT * FROM projetos ORDER BY id").fetchall()
-    now = datetime.now().replace(microsecond=0)
+    now = app_now()
     for project in projects:
         stages = db.execute(
             """
@@ -2882,7 +2915,7 @@ def refresh_due_statuses(force=False):
     if not force and now_monotonic < _due_statuses_next_refresh:
         return
     _refreshing_due_statuses = True
-    today = date.today().isoformat()
+    today = app_today().isoformat()
     try:
         execute_db(
             """
@@ -2916,7 +2949,7 @@ def refresh_due_statuses(force=False):
               AND prazo_resposta < %s
               AND lower(status) NOT IN ('concluido', 'cancelado')
             """,
-            (datetime.now().isoformat(timespec="seconds"), today),
+            (app_now_iso(), today),
         )
         _due_statuses_next_refresh = time.monotonic() + DUE_STATUS_REFRESH_TTL_SECONDS
     finally:
@@ -2929,8 +2962,45 @@ def record_event(project_id, event_type, description, user_id=None):
         user_id = user["id"] if user else None
     execute_db(
         "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (%s, %s, %s, %s, %s)",
-        (project_id, user_id, event_type, description, datetime.now().isoformat(timespec="seconds")),
+        (project_id, user_id, event_type, description, app_now_iso()),
     )
+
+
+def delete_project_records(db, project_id):
+    db.execute("DELETE FROM apontamentos_tempo WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM eventos_historico WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM movimentacoes_etapa WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM notificacoes WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM pendencias WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM exigencias_cartorio WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM tarefas WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM project_checklist_items WHERE project_id = %s", (project_id,))
+    db.execute("DELETE FROM project_stage_history WHERE project_id = %s", (project_id,))
+    db.execute("DELETE FROM checklist_itens WHERE projeto_etapa_id IN (SELECT id FROM projeto_etapas WHERE projeto_id = %s)", (project_id,))
+    db.execute("DELETE FROM projeto_etapas WHERE projeto_id = %s", (project_id,))
+    db.execute("DELETE FROM projetos WHERE id = %s", (project_id,))
+
+
+def delete_client_records(db, cliente_id):
+    linked_projects = scalar(db, "SELECT COUNT(*) FROM projetos WHERE cliente_id = %s", (cliente_id,))
+    if linked_projects:
+        return False
+    pf_rows = db.execute("SELECT id FROM pessoas_fisicas WHERE cliente_id = %s", (cliente_id,)).fetchall()
+    for pf in pf_rows:
+        db.execute("DELETE FROM conjuges WHERE pessoa_fisica_id = %s", (pf["id"],))
+        db.execute("DELETE FROM enderecos_proprietario WHERE pessoa_fisica_id = %s", (pf["id"],))
+    imovel_rows = db.execute("SELECT imovel_id FROM clientes_imoveis WHERE cliente_id = %s", (cliente_id,)).fetchall()
+    db.execute("DELETE FROM clientes_imoveis WHERE cliente_id = %s", (cliente_id,))
+    for row in imovel_rows:
+        still_linked = scalar(db, "SELECT COUNT(*) FROM clientes_imoveis WHERE imovel_id = %s", (row["imovel_id"],))
+        if not still_linked:
+            db.execute("DELETE FROM vertices_imovel WHERE imovel_id = %s", (row["imovel_id"],))
+            db.execute("DELETE FROM imoveis WHERE id = %s", (row["imovel_id"],))
+    db.execute("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
+    db.execute("DELETE FROM pessoas_juridicas WHERE cliente_id = %s", (cliente_id,))
+    db.execute("DELETE FROM pessoas_fisicas WHERE cliente_id = %s", (cliente_id,))
+    db.execute("DELETE FROM clientes WHERE id = %s", (cliente_id,))
+    return True
 
 
 def update_stage_progress(stage_id):
@@ -3340,7 +3410,7 @@ def advance_project_after_stage_completion(project_id, completed_stage, responsi
     if not project or not completed_stage or project["etapa_atual_id"] != completed_stage["id"]:
         return None
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     next_stage = get_next_applicable_stage(project_id, completed_stage)
     if next_stage:
         execute_db(
@@ -3433,11 +3503,26 @@ def format_date(value):
         return value
 
 
+def app_now():
+    return datetime.now(APP_TIMEZONE).replace(tzinfo=None, microsecond=0)
+
+
+def app_now_iso():
+    return app_now().isoformat(timespec="seconds")
+
+
+def app_today():
+    return app_now().date()
+
+
 def format_datetime(value):
     if not value:
         return "-"
     try:
-        return datetime.fromisoformat(value).strftime("%d/%m/%Y %H:%M")
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo:
+            parsed = parsed.astimezone(APP_TIMEZONE).replace(tzinfo=None)
+        return parsed.strftime("%d/%m/%Y %H:%M")
     except ValueError:
         return value
 
@@ -3446,7 +3531,7 @@ def is_overdue(value, status=None):
     if not value or str(status or "").lower() in ("concluido", "cancelado", "aguardando externo"):
         return False
     try:
-        return datetime.fromisoformat(value).date() < date.today()
+        return datetime.fromisoformat(value).date() < app_today()
     except ValueError:
         return False
 
@@ -3631,7 +3716,7 @@ def create_draft_cliente(nome, origem="criado_no_projeto", duplicate_note=""):
     clean_name = (nome or "").strip()
     if not clean_name:
         return None
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     observacoes = f"Cliente rascunho. Origem: {origem}."
     if duplicate_note:
         observacoes = f"{observacoes} Diferenciador: {duplicate_note.strip()}"
@@ -3855,7 +3940,7 @@ def utility_processor():
         "checklist_requirement_conditional": REQUIREMENT_CONDITIONAL,
         "can_manage": can_manage,
         "can_admin": can_admin,
-        "today_iso": date.today().isoformat(),
+        "today_iso": app_today().isoformat(),
     }
 
 
@@ -3921,7 +4006,7 @@ def logout():
 @login_required
 def dashboard():
     refresh_due_statuses()
-    today = date.today()
+    today = app_today()
     in_7 = (today + timedelta(days=7)).isoformat()
     today_iso = today.isoformat()
 
@@ -4053,8 +4138,8 @@ def dashboard():
 def projects():
     refresh_due_statuses()
 
-    today_iso = date.today().isoformat()
-    in_7 = (date.today() + timedelta(days=7)).isoformat()
+    today_iso = app_today().isoformat()
+    in_7 = (app_today() + timedelta(days=7)).isoformat()
     filters = request.args.to_dict()
     sql_filters = []
     params = []
@@ -4159,6 +4244,18 @@ def projects():
         sql_filters.append("(p.prazo_critico IS NULL OR p.prazo_critico = '')")
 
     where_clause = "WHERE " + " AND ".join(sql_filters) if sql_filters else ""
+    order_clause = """
+            sort_ordem_prioridade,
+            sort_criado_em,
+            p.id
+    """
+    if prazo_filter in ("vencido", "7dias"):
+        order_clause = """
+            external_deadline ASC NULLS LAST,
+            sort_ordem_prioridade,
+            sort_criado_em,
+            p.id
+        """
     projetos = query_db(
         f"""
         SELECT
@@ -4198,10 +4295,7 @@ def projects():
         LEFT JOIN usuarios ur ON ur.id = pea.responsavel_id
         {where_clause}
         ORDER BY
-            external_deadline ASC NULLS LAST,
-            sort_ordem_prioridade,
-            sort_criado_em,
-            p.id
+            {order_clause}
         """,
         params,
     )
@@ -4379,7 +4473,7 @@ def project_create():
         process_key = normalize_project_process_type(request.form.get("tipo_servico"))
         valor = parse_currency_value(request.form.get("valor", "").strip())
 
-        created = datetime.now().isoformat(timespec="seconds")
+        created = app_now_iso()
         project_id = execute_db(
             """
             INSERT INTO projetos
@@ -4404,12 +4498,9 @@ def project_create():
         )
         db = get_db()
         initialize_project_workflow(db, project_id, process_key, user_id=g.user["id"])
-        initial_stage = set_project_initial_stage(db, project_id, request.form.get("initial_stage_key"))
-        next_order = db.execute(
-            "SELECT COALESCE(MAX(ordem_prioridade), 0) + 1 AS next_order FROM projetos WHERE id != %s",
-            (project_id,),
-        ).fetchone()["next_order"]
-        db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (next_order, project_id))
+        initial_stage_key = request.form.get("initial_stage_key") or "ORCAMENTO"
+        initial_stage = set_project_initial_stage(db, project_id, initial_stage_key)
+        initialize_project_order(db)
         db.commit()
         record_event(project_id, "projeto_criado", f"Projeto {codigo} criado.")
         if initial_stage:
@@ -4749,6 +4840,18 @@ def project_action(project_id):
         return redirect(url_for("projects"))
 
     action = request.form.get("action")
+    if action == "delete_project":
+        if not can_admin():
+            flash("Somente administrador pode excluir projetos.", "danger")
+            return redirect(url_for("project_detail", project_id=project_id))
+        project_name = project["nome"]
+        db = get_db()
+        delete_project_records(db, project_id)
+        initialize_project_order(db)
+        db.commit()
+        flash(f"Projeto {project_name} excluido.", "success")
+        return redirect(url_for("projects"))
+
     if action == "update_project":
         if not can_manage():
             flash("Permissao negada.", "danger")
@@ -4783,7 +4886,7 @@ def project_action(project_id):
                 request.form.get("caminho_pasta", "").strip(),
                 request.form.get("observacoes", "").strip(),
                 valor,
-                datetime.now().isoformat(timespec="seconds"),
+                app_now_iso(),
                 project_id,
             ),
         )
@@ -4796,6 +4899,37 @@ def project_action(project_id):
                 db.commit()
         record_event(project_id, "projeto_atualizado", "Dados principais do projeto atualizados.")
         flash("Projeto atualizado.", "success")
+
+    elif action == "update_responsible":
+        if not can_manage():
+            flash("Permissao negada.", "danger")
+            return redirect(url_for("project_detail", project_id=project_id))
+        responsible_id = request.form.get("responsavel_id") or None
+        now = app_now_iso()
+        db = get_db()
+        db.execute(
+            "UPDATE projetos SET responsavel_geral_id = %s, atualizado_em = %s WHERE id = %s",
+            (responsible_id, now, project_id),
+        )
+        current_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project_id)
+        if current_stage_id:
+            db.execute(
+                "UPDATE projeto_etapas SET responsavel_id = %s WHERE id = %s",
+                (responsible_id, current_stage_id),
+            )
+            db.execute(
+                """
+                UPDATE project_stage_history
+                SET responsible_id = %s,
+                    responsible_name = (SELECT nome FROM usuarios WHERE id = %s)
+                WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL
+                """,
+                (responsible_id, responsible_id, project_id, current_stage_id),
+            )
+        db.commit()
+        label = query_db("SELECT nome FROM usuarios WHERE id = %s", (responsible_id,), one=True) if responsible_id else None
+        record_event(project_id, "responsavel_atualizado", f"Responsavel definido como {label['nome'] if label else 'sem responsavel'}.")
+        flash("Responsavel atualizado.", "success")
 
     elif action == "apply_process_model":
         if not can_manage():
@@ -4825,9 +4959,9 @@ def project_action(project_id):
         data_inicio = old_stage["data_inicio"]
         data_fim = old_stage["data_fim"]
         if status == "em andamento" and not data_inicio:
-            data_inicio = datetime.now().isoformat(timespec="seconds")
+            data_inicio = app_now_iso()
         if status == "concluido":
-            data_fim = datetime.now().isoformat(timespec="seconds")
+            data_fim = app_now_iso()
             progress = 100
         execute_db(
             """
@@ -4919,7 +5053,7 @@ def project_action(project_id):
             motivo = motivo_form
         observacao = request.form.get("observacao", "").strip()
         is_rework = motivo in ("retorno", "exigencia_cartorio", "retrabalho", "pendencia_externa") or is_return_move
-        now = datetime.now().isoformat(timespec="seconds")
+        now = app_now_iso()
 
         if old_stage and old_stage["id"] != new_stage["id"]:
             old_status = "atencao" if is_rework else "concluido"
@@ -4995,7 +5129,7 @@ def project_action(project_id):
                     "cartorio" if motivo == "exigencia_cartorio" else "interna",
                     request.form.get("responsavel_id") or new_stage["responsavel_id"],
                     request.form.get("prazo") or None,
-                    date.today().isoformat(),
+                    app_today().isoformat(),
                     now,
                     now,
                 ),
@@ -5014,7 +5148,7 @@ def project_action(project_id):
                     new_stage["id"],
                     observacao,
                     request.form.get("responsavel_id") or new_stage["responsavel_id"],
-                    date.today().isoformat(),
+                    app_today().isoformat(),
                     now,
                     now,
                 ),
@@ -5040,7 +5174,7 @@ def project_action(project_id):
                     request.form.get("prioridade", "Media"),
                     request.form.get("status", "nao iniciado"),
                     request.form.get("prazo") or None,
-                    datetime.now().isoformat(timespec="seconds"),
+                    app_now_iso(),
                 ),
             )
             record_event(project_id, "tarefa_criada", f"Tarefa criada: {title}.")
@@ -5065,7 +5199,7 @@ def project_action(project_id):
                 (
                     new_value,
                     g.user["id"] if new_value else None,
-                    datetime.now().isoformat(timespec="seconds") if new_value else None,
+                    app_now_iso() if new_value else None,
                     item_id,
                 ),
             )
@@ -5090,9 +5224,9 @@ def project_action(project_id):
                 """,
                 (
                     new_status,
-                    datetime.now().isoformat(timespec="seconds") if new_status == CHECKLIST_STATUS_DONE else None,
+                    app_now_iso() if new_status == CHECKLIST_STATUS_DONE else None,
                     g.user["id"] if new_status == CHECKLIST_STATUS_DONE else None,
-                    datetime.now().isoformat(timespec="seconds"),
+                    app_now_iso(),
                     item_id,
                 ),
             )
@@ -5107,7 +5241,7 @@ def project_action(project_id):
             one=True,
         )
         if item:
-            now = datetime.now().isoformat(timespec="seconds")
+            now = app_now_iso()
             execute_db(
                 """
                 UPDATE project_checklist_items
@@ -5129,7 +5263,7 @@ def project_action(project_id):
     elif action == "add_pending":
         description = request.form.get("descricao", "").strip()
         if description:
-            now = datetime.now().isoformat(timespec="seconds")
+            now = app_now_iso()
             pending_id = execute_db(
                 """
                 INSERT INTO pendencias
@@ -5144,7 +5278,7 @@ def project_action(project_id):
                     request.form.get("responsavel_id") or None,
                     request.form.get("prazo") or None,
                     request.form.get("status", "aberta"),
-                    date.today().isoformat(),
+                    app_today().isoformat(),
                     now,
                     now,
                 ),
@@ -5160,7 +5294,7 @@ def project_action(project_id):
         pending_id = request.form.get("pendencia_id")
         execute_db(
             "UPDATE pendencias SET status = 'resolvida', data_resolucao = %s, atualizado_em = %s WHERE id = %s AND projeto_id = %s",
-            (date.today().isoformat(), datetime.now().isoformat(timespec="seconds"), pending_id, project_id),
+            (app_today().isoformat(), app_now_iso(), pending_id, project_id),
         )
         record_event(project_id, "pendencia_resolvida", f"Pendencia #{pending_id} resolvida.")
         flash("Pendencia resolvida.", "success")
@@ -5177,13 +5311,13 @@ def project_action(project_id):
                 (
                     project_id,
                     request.form.get("cartorio_id") or project["cartorio_id"],
-                    request.form.get("data_recebimento") or date.today().isoformat(),
+                    request.form.get("data_recebimento") or app_today().isoformat(),
                     request.form.get("prazo_resposta") or None,
                     description,
                     request.form.get("status", "em andamento"),
                     request.form.get("responsavel_id") or None,
-                    datetime.now().isoformat(timespec="seconds"),
-                    datetime.now().isoformat(timespec="seconds"),
+                    app_now_iso(),
+                    app_now_iso(),
                 ),
             )
             cartorio_stage = query_db(
@@ -5211,9 +5345,9 @@ def project_action(project_id):
                     description,
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                     request.form.get("prazo_resposta") or None,
-                    date.today().isoformat(),
-                    datetime.now().isoformat(timespec="seconds"),
-                    datetime.now().isoformat(timespec="seconds"),
+                    app_today().isoformat(),
+                    app_now_iso(),
+                    app_now_iso(),
                 ),
             )
             execute_db(
@@ -5231,7 +5365,7 @@ def project_action(project_id):
                     "Alta",
                     "em andamento",
                     request.form.get("prazo_resposta") or None,
-                    datetime.now().isoformat(timespec="seconds"),
+                    app_now_iso(),
                 ),
             )
             record_event(project_id, "exigencia_criada", f"Exigencia #{exigencia_id} registrada.")
@@ -5249,7 +5383,7 @@ def project_action(project_id):
                 request.form.get("status", "em andamento"),
                 request.form.get("responsavel_id") or None,
                 request.form.get("prazo_resposta") or None,
-                datetime.now().isoformat(timespec="seconds"),
+                app_now_iso(),
                 exigencia_id,
                 project_id,
             ),
@@ -5276,7 +5410,7 @@ def project_action(project_id):
                     minutes,
                     request.form.get("tipo_tempo", "execucao"),
                     request.form.get("observacoes", "").strip(),
-                    datetime.now().isoformat(timespec="seconds"),
+                    app_now_iso(),
                 ),
             )
             record_event(project_id, "tempo_registrado", f"Tempo registrado: {minutes_to_hours(minutes)}.")
@@ -5318,7 +5452,7 @@ def api_toggle_checklist(item_id):
     if not item:
         return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     new_value = 0 if item["concluido"] else 1
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     execute_db(
         "UPDATE checklist_itens SET concluido = %s, concluido_por = %s, concluido_em = %s WHERE id = %s",
         (new_value, g.user["id"] if new_value else None, now if new_value else None, item_id),
@@ -5339,7 +5473,7 @@ def api_add_project_note(project_id):
         return jsonify({"ok": False, "error": "Escreva a anotacao."}), 400
     if not query_db("SELECT id FROM projetos WHERE id = %s", (project_id,), one=True):
         return jsonify({"ok": False, "error": "Projeto nao encontrado"}), 404
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     note_id = execute_db(
         "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (%s, %s, 'anotacao', %s, %s)",
         (project_id, g.user["id"], texto, now),
@@ -5355,7 +5489,7 @@ def api_toggle_project_checklist(item_id):
     if not item:
         return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     new_status = CHECKLIST_STATUS_NOT_STARTED if item["status"] == CHECKLIST_STATUS_DONE else CHECKLIST_STATUS_DONE
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     execute_db(
         "UPDATE project_checklist_items SET status = %s, completed_at = %s, completed_by = %s, updated_at = %s WHERE id = %s",
         (
@@ -5385,7 +5519,7 @@ def api_add_project_checklist_item():
     stage = query_db("SELECT * FROM projeto_etapas WHERE id = %s", (stage_id,), one=True)
     if not stage:
         return jsonify({"ok": False, "error": "Etapa nao encontrada"}), 404
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     order_index = query_db(
         "SELECT COALESCE(MAX(order_index), 0) + 1 AS n FROM project_checklist_items WHERE project_stage_id = %s",
         (stage_id,),
@@ -5437,13 +5571,13 @@ def stage_quick(stage_id):
     if action == "start":
         status = "em andamento"
         progress = max(progress, 10)
-        data_inicio = data_inicio or datetime.now().isoformat(timespec="seconds")
+        data_inicio = data_inicio or app_now_iso()
     elif action == "pause":
         status = "atencao"
     elif action == "finish":
         status = "concluido"
         progress = 100
-        data_fim = datetime.now().isoformat(timespec="seconds")
+        data_fim = app_now_iso()
     execute_db(
         "UPDATE projeto_etapas SET status = %s, progresso = %s, data_inicio = %s, data_fim = %s WHERE id = %s",
         (status, progress, data_inicio, data_fim, stage_id),
@@ -5473,12 +5607,12 @@ def task_quick(task_id):
     concluido_em = task["concluido_em"]
     if action == "start":
         status = "em andamento"
-        data_inicio = data_inicio or datetime.now().isoformat(timespec="seconds")
+        data_inicio = data_inicio or app_now_iso()
     elif action == "pause":
         status = "atencao"
     elif action == "finish":
         status = "concluido"
-        concluido_em = datetime.now().isoformat(timespec="seconds")
+        concluido_em = app_now_iso()
     execute_db(
         "UPDATE tarefas SET status = %s, data_inicio = %s, concluido_em = %s WHERE id = %s",
         (status, data_inicio, concluido_em, task_id),
@@ -5502,13 +5636,13 @@ def pending_quick(pending_id):
         status = "em andamento"
     elif action == "finish":
         status = "resolvida"
-        resolved_at = date.today().isoformat()
+        resolved_at = app_today().isoformat()
     elif action == "cancel":
         status = "cancelada"
-        resolved_at = date.today().isoformat()
+        resolved_at = app_today().isoformat()
     execute_db(
         "UPDATE pendencias SET status = %s, data_resolucao = %s, atualizado_em = %s WHERE id = %s",
-        (status, resolved_at, datetime.now().isoformat(timespec="seconds"), pending_id),
+        (status, resolved_at, app_now_iso(), pending_id),
     )
     record_event(pending["projeto_id"], "pendencia_atualizada", f"Pendencia #{pending_id} atualizada para {status}.")
     flash("Pendencia atualizada.", "success")
@@ -5675,7 +5809,7 @@ def save_cliente_documental():
             flash(error, "danger")
         return None
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now_iso()
     cliente_id = form.get("cliente_id") or None
     tipo_cliente = form.get("tipo_cliente") or "PESSOA_FISICA"
     quem_assina = "PROCURADOR" if tipo_cliente == "PESSOA_JURIDICA" else (form.get("quem_assina") or "PROPRIETARIO")
@@ -6153,7 +6287,7 @@ def refresh_cliente_status(cliente_id):
     status = pendencias["statusCadastro"]
     execute_db(
         "UPDATE clientes SET status_cadastro = %s, atualizado_em = %s WHERE id = %s",
-        (status, datetime.now().isoformat(timespec="seconds"), cliente_id),
+        (status, app_now_iso(), cliente_id),
     )
 
 
@@ -6286,6 +6420,23 @@ def my_missions():
 @login_required
 def clients():
     if request.method == "POST":
+        if request.form.get("action") == "delete_client":
+            if not can_admin():
+                flash("Somente administrador pode excluir clientes.", "danger")
+                return redirect(url_for("clients"))
+            cliente_id = request.form.get("cliente_id")
+            cliente = query_db("SELECT nome, nome_exibicao FROM clientes WHERE id = %s", (cliente_id,), one=True)
+            if not cliente:
+                flash("Cliente nao encontrado.", "danger")
+                return redirect(url_for("clients"))
+            db = get_db()
+            if delete_client_records(db, cliente_id):
+                db.commit()
+                flash(f"Cliente {cliente['nome_exibicao'] or cliente['nome']} excluido.", "success")
+            else:
+                db.rollback()
+                flash("Nao foi possivel excluir: este cliente possui projeto vinculado.", "warning")
+            return redirect(url_for("clients"))
         cliente_id = save_cliente_documental()
         if cliente_id:
             return redirect(url_for("clients"))
@@ -6495,3 +6646,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     debug = os.environ.get("GEOGESTAO_DEBUG", "1") == "1"
     app.run(debug=debug, use_reloader=debug, host="127.0.0.1", port=port)
+

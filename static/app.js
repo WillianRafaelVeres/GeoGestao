@@ -297,7 +297,24 @@ function initProjectClientAutocompletes() {
             if (!query) {
                 hidden.value = "";
                 selectedLabel = "";
-                setListOpen(false);
+                getSource().slice(0, 4).forEach((client) => {
+                    const item = document.createElement("div");
+                    item.className = "ac-item";
+                    item.setAttribute("role", "option");
+                    item.innerHTML = `<span><strong>${escapeHtml(client.nome || "")}</strong>${client.cidade ? `<span class="ac-item-meta">${escapeHtml([client.cidade, client.uf].filter(Boolean).join(" - "))}</span>` : ""}</span>`;
+                    item.addEventListener("mousedown", (event) => {
+                        event.preventDefault();
+                        pick(client);
+                    });
+                    list.appendChild(item);
+                });
+                if (!list.children.length) {
+                    const empty = document.createElement("div");
+                    empty.className = "ac-empty";
+                    empty.textContent = "Nenhum cliente cadastrado";
+                    list.appendChild(empty);
+                }
+                setListOpen(true);
                 return;
             }
 

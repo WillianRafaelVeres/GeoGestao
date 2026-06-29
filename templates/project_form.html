@@ -143,7 +143,7 @@ function initAC(inputId, listId, hiddenId, source, apiUrl) {
     function render(q) {
         list.innerHTML = '';
         const lq = q.toLowerCase();
-        const hits = source.filter(x => x.nome.toLowerCase().includes(lq));
+        const hits = (q ? source.filter(x => x.nome.toLowerCase().includes(lq)) : source).slice(0, q ? 8 : 4);
         const exact = source.find(x => x.nome.toLowerCase() === lq);
 
         hits.forEach(x => {
@@ -154,7 +154,7 @@ function initAC(inputId, listId, hiddenId, source, apiUrl) {
             list.appendChild(d);
         });
 
-        if (!exact) {
+        if (q && !exact) {
             const d = document.createElement('div');
             d.className = 'ac-item ac-new';
             d.textContent = ' Adicionar "' + q + '"';
@@ -197,7 +197,7 @@ function initAC(inputId, listId, hiddenId, source, apiUrl) {
     });
 
     input.addEventListener('focus', () => {
-        if (input.value.trim().length > 0) render(input.value.trim());
+        render(input.value.trim());
     });
 
     input.addEventListener('blur', () => {

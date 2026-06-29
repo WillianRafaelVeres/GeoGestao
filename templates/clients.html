@@ -421,6 +421,13 @@
                         <td class="table-actions-cell">
                             <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-client-{{ row.id }}">Ver/Editar</button>
                             <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-pendencias-{{ row.id }}">Pendencias</button>
+                            {% if can_admin() %}
+                                <form method="post" class="d-inline" onsubmit="return confirm('Excluir este cliente? Esta acao nao pode ser desfeita.');">
+                                    <input type="hidden" name="action" value="delete_client">
+                                    <input type="hidden" name="cliente_id" value="{{ row.id }}">
+                                    <button class="btn btn-outline-danger btn-sm" type="submit" {% if row.projetos %}disabled title="Cliente com projeto vinculado"{% endif %}>Excluir</button>
+                                </form>
+                            {% endif %}
                         </td>
                     </tr>
                 {% else %}

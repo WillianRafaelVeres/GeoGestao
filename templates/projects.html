@@ -300,6 +300,20 @@
                     </div>
 
                     {# Ações rápidas #}
+                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-responsible-form">
+                        <input type="hidden" name="action" value="update_responsible">
+                        <input type="hidden" name="next" value="{{ request.full_path }}">
+                        <label for="responsavel-modal-{{ project.id }}">Delegar responsavel</label>
+                        <select id="responsavel-modal-{{ project.id }}" name="responsavel_id">
+                            <option value="">Sem responsavel</option>
+                            {% set selected_responsible = active_stage.responsavel_id or project.responsavel_geral_id %}
+                            {% for usuario in usuarios %}
+                                <option value="{{ usuario.id }}" {% if selected_responsible == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit">Salvar</button>
+                    </form>
+
                     <div class="pmodal-actions">
                         {% if project_pendings %}
                         <span class="pmodal-advance-blocked" title="Resolva as pendencias abertas para liberar o avanco">
@@ -768,6 +782,42 @@
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
+}
+
+.pmodal-responsible-form {
+    display: grid;
+    grid-template-columns: 150px minmax(180px, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #f9fafb;
+}
+.pmodal-responsible-form label {
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+.pmodal-responsible-form select {
+    min-height: 34px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 5px 9px;
+    background: #fff;
+    color: #111827;
+}
+.pmodal-responsible-form button {
+    min-height: 34px;
+    border: 1px solid #2563eb;
+    border-radius: 6px;
+    padding: 5px 12px;
+    background: #2563eb;
+    color: #fff;
+    font-weight: 700;
 }
 
 .pmodal-btn-advance {

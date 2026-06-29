@@ -1976,6 +1976,28 @@ a:hover { color: #1d4ed8; }
     color: var(--muted);
     font-size: 12px;
 }
+.danger-zone-form {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    align-items: center;
+    margin-top: 18px;
+    padding: 12px 14px;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    background: #fff7f7;
+}
+.danger-zone-form div {
+    display: grid;
+    gap: 2px;
+}
+.danger-zone-form strong {
+    color: #991b1b;
+}
+.danger-zone-form span {
+    color: #7f1d1d;
+    font-size: 12px;
+}
 
 @media (max-width: 1180px) {
     .report-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
