@@ -1977,6 +1977,107 @@ def ensure_project_checklists(db):
         sync_project_checklist_stage_links(db, project["id"])
 
 
+def get_process_initial_stage_options():
+    rows = query_db(
+        """
+        SELECT process_type_key, stage_key, stage_name, stage_order
+        FROM process_stage_templates
+        WHERE active = 1
+          AND applicability != %s
+          AND show_in_project = 1
+        ORDER BY process_type_key, stage_order, id
+        """,
+        (APPLICABILITY_NOT_APPLICABLE,),
+    )
+    options = {}
+    for row in rows:
+        options.setdefault(row["process_type_key"], []).append(
+            {"key": row["stage_key"], "name": row["stage_name"], "order": row["stage_order"]}
+        )
+    return options
+
+
+def set_project_initial_stage(db, project_id, stage_key_value):
+    stage_key_value = (stage_key_value or "").strip()
+    if not stage_key_value:
+        return None
+
+    selected = first_row(
+        db,
+        """
+        SELECT pe.*, COALESCE(pe.stage_order, em.ordem) AS effective_order, COALESCE(pe.stage_name, em.nome) AS display_name
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s
+          AND pe.stage_key = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+          AND COALESCE(pe.workflow_active, 1) = 1
+        LIMIT 1
+        """,
+        (project_id, stage_key_value),
+    )
+    if not selected:
+        return None
+
+    now = datetime.now().isoformat(timespec="seconds")
+    stages = db.execute(
+        """
+        SELECT pe.*, COALESCE(pe.stage_order, em.ordem) AS effective_order
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+          AND COALESCE(pe.workflow_active, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        """,
+        (project_id,),
+    ).fetchall()
+    for stage in stages:
+        if stage["id"] == selected["id"]:
+            status = "em andamento"
+            progresso = max(stage["progresso"] or 0, 10)
+            data_inicio = stage["data_inicio"] or now
+            data_fim = None
+        elif stage["effective_order"] < selected["effective_order"]:
+            status = "concluido"
+            progresso = 100
+            data_inicio = stage["data_inicio"] or now
+            data_fim = stage["data_fim"] or now
+        else:
+            status = "nao iniciado"
+            progresso = 0
+            data_inicio = None
+            data_fim = None
+        db.execute(
+            "UPDATE projeto_etapas SET status = %s, progresso = %s, data_inicio = %s, data_fim = %s WHERE id = %s",
+            (status, progresso, data_inicio, data_fim, stage["id"]),
+        )
+
+    db.execute(
+        "UPDATE project_stage_history SET exited_at = %s, reason = COALESCE(reason, 'ajuste_etapa_inicial') WHERE project_id = %s AND exited_at IS NULL",
+        (now, project_id),
+    )
+    db.execute(
+        """
+        INSERT INTO project_stage_history
+            (project_id, stage_id, stage_key, stage_name, entered_at, exited_at, responsible_id, responsible_name, reason, created_at)
+        VALUES (%s, %s, %s, %s, %s, NULL, %s, NULL, %s, %s)
+        """,
+        (
+            project_id,
+            selected["id"],
+            selected["stage_key"],
+            selected["display_name"],
+            now,
+            selected["responsavel_id"],
+            "etapa_inicial_escolhida",
+            now,
+        ),
+    )
+    db.execute("UPDATE projetos SET etapa_atual_id = %s, atualizado_em = %s WHERE id = %s", (selected["id"], now, project_id))
+    return selected
+
+
 def infer_current_stage_id_db(db, project_id):
     row = first_row(
         db,
@@ -3519,11 +3620,21 @@ def find_cliente_option_by_name(nome):
     return None
 
 
-def create_draft_cliente(nome, origem="criado_no_projeto"):
+def find_cliente_options_by_name(nome):
+    wanted = normalize_lookup(nome)
+    if not wanted:
+        return []
+    return [option for option in fetch_cliente_autocomplete_options() if normalize_lookup(option["nome"]) == wanted]
+
+
+def create_draft_cliente(nome, origem="criado_no_projeto", duplicate_note=""):
     clean_name = (nome or "").strip()
     if not clean_name:
         return None
     now = datetime.now().isoformat(timespec="seconds")
+    observacoes = f"Cliente rascunho. Origem: {origem}."
+    if duplicate_note:
+        observacoes = f"{observacoes} Diferenciador: {duplicate_note.strip()}"
     db = get_db()
     cursor = db.execute(
         """
@@ -3535,7 +3646,7 @@ def create_draft_cliente(nome, origem="criado_no_projeto"):
         (
             clean_name,
             clean_name,
-            f"Cliente rascunho. Origem: {origem}.",
+            observacoes,
             now,
             now,
         ),
@@ -4293,10 +4404,16 @@ def project_create():
         )
         db = get_db()
         initialize_project_workflow(db, project_id, process_key, user_id=g.user["id"])
-        next_order = db.execute("SELECT COALESCE(MAX(ordem_prioridade), 0) + 1 FROM projetos WHERE id != %s", (project_id,)).fetchone()[0]
+        initial_stage = set_project_initial_stage(db, project_id, request.form.get("initial_stage_key"))
+        next_order = db.execute(
+            "SELECT COALESCE(MAX(ordem_prioridade), 0) + 1 AS next_order FROM projetos WHERE id != %s",
+            (project_id,),
+        ).fetchone()["next_order"]
         db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (next_order, project_id))
         db.commit()
         record_event(project_id, "projeto_criado", f"Projeto {codigo} criado.")
+        if initial_stage:
+            record_event(project_id, "etapa_inicial_definida", f"Projeto iniciado na etapa {initial_stage['display_name']}.")
         flash("Projeto criado com sucesso.", "success")
         return redirect(url_for("project_detail", project_id=project_id))
 
@@ -4305,6 +4422,7 @@ def project_create():
         clientes_json=clientes_json,
         cartorios=cartorios,
         process_types=get_process_type_options(),
+        initial_stage_options=get_process_initial_stage_options(),
     )
 
 
@@ -4410,11 +4528,31 @@ def api_add_cliente():
 
     data = request.get_json() or {}
     nome = (data.get("nome") or "").strip()
+    duplicate_confirmed = bool(data.get("confirm_duplicate"))
+    duplicate_note = (data.get("duplicate_note") or "").strip()
     if not nome:
         return {"error": "Nome obrigatorio"}, 400
 
     try:
-        cliente_id = create_draft_cliente(nome)
+        db = get_db()
+        lookup_key = normalize_lookup(nome)
+        db.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lookup_key,))
+        matches = find_cliente_options_by_name(nome)
+        if matches and not duplicate_confirmed:
+            db.rollback()
+            return {
+                "error": "Ja existe cliente com este nome.",
+                "requires_confirmation": True,
+                "matches": matches[:5],
+            }, 409
+        if matches and not duplicate_note:
+            db.rollback()
+            return {
+                "error": "Informe um CPF/CNPJ, telefone ou observacao para diferenciar este cadastro.",
+                "requires_detail": True,
+                "matches": matches[:5],
+            }, 422
+        cliente_id = create_draft_cliente(nome, duplicate_note=duplicate_note)
         return {"id": cliente_id, "nome": nome, "search": nome}, 201
     except Exception as e:
         return {"error": str(e)}, 500

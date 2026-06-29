@@ -123,7 +123,27 @@ window.addEventListener("DOMContentLoaded", () => {
     initDocumentalClientForm();
     initClientLiveSearch();
     initProjectClientAutocompletes();
+    initSingleSubmitForms();
 });
+
+function initSingleSubmitForms() {
+    document.querySelectorAll("form[data-single-submit]").forEach((form) => {
+        form.addEventListener("submit", (event) => {
+            if (form.dataset.submitting === "1") {
+                event.preventDefault();
+                return;
+            }
+            form.dataset.submitting = "1";
+            form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach((button) => {
+                button.disabled = true;
+                if (button.tagName === "BUTTON" && !button.dataset.originalText) {
+                    button.dataset.originalText = button.textContent;
+                    button.textContent = "Salvando...";
+                }
+            });
+        });
+    });
+}
 
 function initClientLiveSearch() {
     const form = document.querySelector("[data-client-search-form]");
@@ -199,6 +219,7 @@ function initProjectClientAutocompletes() {
         const getSource = () => Array.isArray(window[sourceName]) ? window[sourceName] : [];
         let selectedLabel = input.value.trim();
         let activeIndex = -1;
+        let creatingClient = false;
 
         function normalize(value) {
             if (window.SearchUtils) return window.SearchUtils.normalizeSearchText(value);
@@ -229,23 +250,42 @@ function initProjectClientAutocompletes() {
             return getSource().find((client) => normalize(client.nome) === normalizedQuery);
         }
 
-        async function createDraftClient(name, item) {
+        async function createDraftClient(name, item, extra = {}) {
             const cleanName = String(name || "").trim();
-            if (!cleanName) return;
+            if (!cleanName || creatingClient) return;
+            creatingClient = true;
             if (item) item.textContent = `Adicionando "${cleanName}"...`;
             try {
                 const response = await fetch("/api/add-cliente", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ nome: cleanName }),
+                    body: JSON.stringify({ nome: cleanName, ...extra }),
                 });
                 const data = await response.json();
+                if (response.status === 409 && data.requires_confirmation) {
+                    const names = (data.matches || []).map((client) => `- ${client.nome}`).join("\n");
+                    const proceed = confirm(`Ja existe cliente com este nome:\n${names}\n\nDeseja criar outro cadastro mesmo assim?`);
+                    if (!proceed) {
+                        if (data.matches && data.matches[0]) pick(data.matches[0]);
+                        return;
+                    }
+                    const note = prompt("Informe um dado para diferenciar este cadastro (CPF/CNPJ, telefone ou observacao):");
+                    if (!note || !note.trim()) {
+                        alert("Cadastro cancelado. Para duplicar um nome, informe um dado diferente.");
+                        return;
+                    }
+                    creatingClient = false;
+                    await createDraftClient(cleanName, item, { confirm_duplicate: true, duplicate_note: note.trim() });
+                    return;
+                }
                 if (!response.ok || !data.id) throw new Error(data.error || "Falha ao criar cliente");
                 const client = { id: data.id, nome: data.nome || cleanName, search: data.search || cleanName };
                 window[sourceName] = [...getSource(), client];
                 pick(client);
-            } catch {
-                if (item) item.textContent = "Nao foi possivel adicionar. Tente novamente.";
+            } catch (error) {
+                if (item) item.textContent = error.message || "Nao foi possivel adicionar. Tente novamente.";
+            } finally {
+                creatingClient = false;
             }
         }
 

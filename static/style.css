@@ -1918,6 +1918,65 @@ a:hover { color: #1d4ed8; }
     font-size: 12px;
 }
 
+.activity-panel {
+    max-width: 920px;
+}
+.activity-comment-form {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 18px;
+}
+.activity-feed {
+    display: grid;
+    gap: 12px;
+}
+.activity-item {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+}
+.activity-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: #eef2ff;
+    color: #1e40af;
+    font-size: 12px;
+    font-weight: 700;
+}
+.activity-item.is-comment .activity-avatar {
+    background: #dcfce7;
+    color: #166534;
+}
+.activity-body {
+    min-width: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #eef2f6;
+}
+.activity-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: baseline;
+    color: var(--muted);
+    font-size: 13px;
+}
+.activity-line strong {
+    color: var(--text);
+}
+.activity-body p {
+    margin: 4px 0;
+    color: var(--text);
+    white-space: pre-wrap;
+}
+.activity-body time {
+    color: var(--muted);
+    font-size: 12px;
+}
+
 @media (max-width: 1180px) {
     .report-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .bottleneck-item { grid-template-columns: 1fr; }

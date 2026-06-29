@@ -11,7 +11,7 @@
 </div>
 
 <section class="panel form-panel">
-    <form method="post" class="row g-3" id="projectForm">
+    <form method="post" class="row g-3" id="projectForm" data-single-submit>
         <div class="col-md-12">
             <label class="form-label">Nome do projeto</label>
             <input class="form-control" name="nome" required />
@@ -45,11 +45,17 @@
         </div>
         <div class="col-md-6">
             <label class="form-label">Tipo de processo</label>
-            <select class="form-select" name="tipo_servico" required>
+            <select class="form-select" name="tipo_servico" id="tipoServicoInput" required>
                 <option value="">Selecione um tipo</option>
                 {% for process_type in process_types %}
                     <option value="{{ process_type.chave }}">{{ process_type.nome }}</option>
                 {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Etapa inicial</label>
+            <select class="form-select" name="initial_stage_key" id="initialStageInput" disabled>
+                <option value="">Selecione primeiro o tipo de processo</option>
             </select>
         </div>
         <div class="col-md-6">
@@ -126,6 +132,7 @@
 
 <script>
 window.projectClientes = {{ clientes_json|tojson }};
+window.projectStageOptions = {{ initial_stage_options|tojson }};
 const cartorios = [{% for c in cartorios %}{ id: {{ c.id }}, nome: {{ c.nome | tojson }} },{% endfor %}];
 
 function initAC(inputId, listId, hiddenId, source, apiUrl) {
@@ -198,30 +205,72 @@ function initAC(inputId, listId, hiddenId, source, apiUrl) {
     });
 }
 
-function selecionarPasta() {
+async function selecionarPasta() {
     const btn = document.getElementById('btnProcurar');
+    const input = document.getElementById('caminhoInput');
+    const fb = document.getElementById('pastaFeedback');
+    if (!btn || !input) return;
+    const original = btn.textContent;
     btn.disabled = true;
-    btn.textContent = 'Aguarde...';
-
-    fetch('/api/select-folder', { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-            if (data.path) {
-                document.getElementById('caminhoInput').value = data.path;
-                const fb = document.getElementById('pastaFeedback');
+    btn.textContent = 'Selecionando...';
+    try {
+        if (window.showDirectoryPicker) {
+            const handle = await window.showDirectoryPicker();
+            input.value = handle.name;
+            if (fb) {
+                fb.textContent = 'Pasta selecionada. Por seguranca, o navegador pode informar apenas o nome; cole o caminho completo se necessario.';
                 fb.style.display = 'block';
-                setTimeout(() => fb.style.display = 'none', 3000);
             }
-        })
-        .catch(() => {})
-        .finally(() => {
-            btn.disabled = false;
-            btn.textContent = 'Procurar';
-        });
+            return;
+        }
+        const picker = document.createElement('input');
+        picker.type = 'file';
+        picker.webkitdirectory = true;
+        picker.style.display = 'none';
+        picker.addEventListener('change', () => {
+            const file = picker.files && picker.files[0];
+            if (file && file.webkitRelativePath) {
+                input.value = file.webkitRelativePath.split('/')[0];
+                if (fb) {
+                    fb.textContent = 'Pasta selecionada. Cole o caminho completo se precisar abrir pelo servidor/local.';
+                    fb.style.display = 'block';
+                }
+            }
+            picker.remove();
+        }, { once: true });
+        document.body.appendChild(picker);
+        picker.click();
+    } catch (error) {
+        if (error && error.name !== 'AbortError') alert('Nao foi possivel abrir o seletor de pastas.');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+        if (fb) setTimeout(() => fb.style.display = 'none', 5000);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', function() {
     initAC('cartorioInput', 'cartorioList', 'cartorioIdInput', cartorios, '/api/add-cartorio');
+
+    const tipo = document.getElementById('tipoServicoInput');
+    const etapa = document.getElementById('initialStageInput');
+    function updateInitialStages() {
+        const options = (window.projectStageOptions && window.projectStageOptions[tipo.value]) || [];
+        etapa.innerHTML = '';
+        if (!options.length) {
+            etapa.disabled = true;
+            etapa.appendChild(new Option('Selecione primeiro o tipo de processo', ''));
+            return;
+        }
+        etapa.disabled = false;
+        options.forEach((item, index) => {
+            etapa.appendChild(new Option(item.name, item.key, index === 0, index === 0));
+        });
+    }
+    if (tipo && etapa) {
+        tipo.addEventListener('change', updateInitialStages);
+        updateInitialStages();
+    }
 
     const v = document.querySelector('input[name="valor"]');
     if (v) {

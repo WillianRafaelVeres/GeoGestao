@@ -45,6 +45,7 @@
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pendencias" type="button">Pendencias</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cartorio" type="button">Cartorio</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tempo" type="button">Tempo por etapa</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#atividade" type="button">Comentarios e atividade</button></li>
 </ul>
 
 <div class="tab-content">
@@ -342,6 +343,39 @@
             </div>
         </section>
     </div>
+
+    <div class="tab-pane fade" id="atividade">
+        <section class="panel activity-panel">
+            <div class="panel-header">
+                <h2>Comentarios e atividade</h2>
+                <small>{{ historico|length }} registros</small>
+            </div>
+            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="activity-comment-form" data-single-submit>
+                <input type="hidden" name="action" value="add_comment" />
+                <input type="hidden" name="next" value="{{ url_for('project_detail', project_id=project.id) }}#atividade" />
+                <textarea class="form-control" name="comentario" rows="2" placeholder="Escrever um comentario..." required></textarea>
+                <div class="text-end"><button class="btn btn-primary btn-sm" type="submit">Comentar</button></div>
+            </form>
+            <div class="activity-feed">
+                {% for item in historico %}
+                    {% set is_comment = item.tipo_evento in ['comentario', 'anotacao'] %}
+                    <article class="activity-item {{ 'is-comment' if is_comment else '' }}">
+                        <div class="activity-avatar">{{ (item.usuario_nome or 'GG')[:2]|upper }}</div>
+                        <div class="activity-body">
+                            <div class="activity-line">
+                                <strong>{{ item.usuario_nome or 'Sistema' }}</strong>
+                                <span>{{ 'comentou' if is_comment else item.tipo_evento|replace('_', ' ') }}</span>
+                            </div>
+                            <p>{{ item.descricao }}</p>
+                            <time>{{ format_datetime(item.criado_em) }}</time>
+                        </div>
+                    </article>
+                {% else %}
+                    <div class="empty-state">Nenhuma atividade registrada neste projeto.</div>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
 </div>
 
 <script>
@@ -359,28 +393,41 @@ if (projectValueInput) projectValueInput.addEventListener('blur', function() {
     }
 });
 
-// Abre o seletor nativo de pastas do Windows e preenche o campo.
-function selecionarPasta() {
+// Abre o seletor de pastas do navegador e preenche o campo quando o browser permitir.
+async function selecionarPasta() {
     const btn = document.getElementById('btnProcurar');
-    if (!btn) return;
+    const input = document.getElementById('caminhoInput');
+    if (!btn || !input) return;
     const original = btn.textContent;
     btn.disabled = true;
-    btn.textContent = 'Aguarde...';
-    fetch('/api/select-folder', { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-            if (data.path) {
-                const input = document.getElementById('caminhoInput');
-                if (input) input.value = data.path;
-            } else if (data.error) {
-                alert(data.error);
+    btn.textContent = 'Selecionando...';
+    try {
+        if (window.showDirectoryPicker) {
+            const handle = await window.showDirectoryPicker();
+            input.value = handle.name;
+            alert('Pasta selecionada. Por seguranca, o navegador pode informar apenas o nome; cole o caminho completo se necessario.');
+            return;
+        }
+        const picker = document.createElement('input');
+        picker.type = 'file';
+        picker.webkitdirectory = true;
+        picker.style.display = 'none';
+        picker.addEventListener('change', () => {
+            const file = picker.files && picker.files[0];
+            if (file && file.webkitRelativePath) {
+                input.value = file.webkitRelativePath.split('/')[0];
+                alert('Pasta selecionada. Cole o caminho completo se precisar abrir pelo servidor/local.');
             }
-        })
-        .catch(() => alert('Nao foi possivel abrir o seletor de pastas.'))
-        .finally(() => {
-            btn.disabled = false;
-            btn.textContent = original;
-        });
+            picker.remove();
+        }, { once: true });
+        document.body.appendChild(picker);
+        picker.click();
+    } catch (error) {
+        if (error && error.name !== 'AbortError') alert('Nao foi possivel abrir o seletor de pastas.');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+    }
 }
 
 // Abre a pasta cadastrada no Windows Explorer.
