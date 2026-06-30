@@ -29,6 +29,7 @@ Prototipo funcional em Flask para validar a ideia do sistema de gestao de projet
    DATABASE_URL=postgresql://...
    GEOGESTAO_SECRET_KEY=troque-esta-chave
    GEOGESTAO_AUTO_INIT_DB=0
+   GEOGESTAO_PUBLIC_URL=http://127.0.0.1:5000
    ```
 
    No Supabase, copie a connection string em **Project Settings > Database > Connection string**.
@@ -76,6 +77,18 @@ No Render:
    GEOGESTAO_SECRET_KEY=uma-chave-secreta-forte
    GEOGESTAO_DEBUG=0
    GEOGESTAO_AUTO_INIT_DB=0
+   GEOGESTAO_PUBLIC_URL=https://seu-app.onrender.com
+   ```
+
+   Para envio automatico de recuperacao de senha, cadastre tambem:
+   ```text
+   GEOGESTAO_SMTP_HOST=smtp.seuprovedor.com
+   GEOGESTAO_SMTP_PORT=587
+   GEOGESTAO_SMTP_USER=usuario-smtp
+   GEOGESTAO_SMTP_PASSWORD=senha-smtp
+   GEOGESTAO_SMTP_FROM=nao-responder@seudominio.com
+   GEOGESTAO_SMTP_USE_TLS=1
+   GEOGESTAO_PASSWORD_RESET_MINUTES=30
    ```
 
 O arquivo `render.yaml` ja deixa essa configuracao preparada. Nao envie o arquivo `.env` para o GitHub; ele deve existir somente na maquina local.

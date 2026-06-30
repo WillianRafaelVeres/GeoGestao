@@ -2,10 +2,14 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 import csv
+import hashlib
 import io
+import secrets
+import smtplib
 import socket
 import sys
 import time
+from email.message import EmailMessage
 import psycopg2
 import psycopg2.extensions
 import psycopg2.extras
@@ -90,6 +94,7 @@ from process_checklist_templates import (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 SECRET_KEY = os.environ.get("GEOGESTAO_SECRET_KEY", "dev-change-this-secret-key")
+APP_PUBLIC_URL = os.environ.get("GEOGESTAO_PUBLIC_URL", "").strip().rstrip("/")
 try:
     APP_TIMEZONE = ZoneInfo(os.environ.get("GEOGESTAO_TIMEZONE", "America/Sao_Paulo"))
 except ZoneInfoNotFoundError:
@@ -323,6 +328,13 @@ DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("GEOGESTAO_DB_STATEMENT_TIMEOUT_MS"
 PERF_LOG_ENABLED = os.environ.get("GEOGESTAO_PERF_LOG", "0") == "1"
 REPORTS_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_REPORTS_CACHE_TTL_SECONDS", "60"))
 DUE_STATUS_REFRESH_TTL_SECONDS = int(os.environ.get("GEOGESTAO_DUE_STATUS_REFRESH_TTL_SECONDS", "300"))
+PASSWORD_RESET_TOKEN_MINUTES = int(os.environ.get("GEOGESTAO_PASSWORD_RESET_MINUTES", "30"))
+SMTP_HOST = os.environ.get("GEOGESTAO_SMTP_HOST", "").strip()
+SMTP_PORT = int(os.environ.get("GEOGESTAO_SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("GEOGESTAO_SMTP_USER", "").strip()
+SMTP_PASSWORD = os.environ.get("GEOGESTAO_SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("GEOGESTAO_SMTP_FROM", SMTP_USER or "nao-responder@geogestao.local").strip()
+SMTP_USE_TLS = os.environ.get("GEOGESTAO_SMTP_USE_TLS", "1") == "1"
 
 _db_pool = None
 _reports_cache = {"expires_at": 0.0, "value": None}
@@ -599,6 +611,8 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_eventos_projeto_tipo_criado ON eventos_historico (projeto_id, tipo_evento, criado_em DESC)",
         "CREATE INDEX IF NOT EXISTS idx_exigencias_projeto_status_prazo ON exigencias_cartorio (projeto_id, status, prazo_resposta)",
         "CREATE INDEX IF NOT EXISTS idx_exigencias_status_prazo ON exigencias_cartorio (status, prazo_resposta)",
+        "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_usuario_criado ON senha_reset_tokens (usuario_id, criado_em DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_expires ON senha_reset_tokens (expires_at)",
     ]
     cur = db.cursor()
     try:
@@ -638,6 +652,18 @@ def init_db():
             senha_hash TEXT NOT NULL,
             perfil_acesso TEXT NOT NULL,
             ativo INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS senha_reset_tokens (
+            id SERIAL PRIMARY KEY,
+            usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            email TEXT,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            request_ip TEXT,
+            user_agent TEXT,
+            criado_em TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS clientes (
@@ -3940,6 +3966,139 @@ def utility_processor():
     }
 
 
+PASSWORD_RESET_REQUEST_MESSAGE = (
+    "Se o e-mail informado estiver cadastrado e ativo, enviaremos as instrucoes para redefinir a senha."
+)
+
+
+def password_reset_token_hash(token):
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def password_reset_expires_at():
+    minutes = max(5, PASSWORD_RESET_TOKEN_MINUTES)
+    return (app_now() + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+def request_ip_address():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or ""
+
+
+def build_password_reset_url(token):
+    path = url_for("reset_password", token=token)
+    if APP_PUBLIC_URL:
+        return f"{APP_PUBLIC_URL}{path}"
+    return url_for("reset_password", token=token, _external=True)
+
+
+def create_password_reset_token(usuario):
+    now = app_now_iso()
+    token = secrets.token_urlsafe(32)
+    execute_db(
+        """
+        DELETE FROM senha_reset_tokens
+        WHERE usuario_id = %s AND (used_at IS NOT NULL OR expires_at < %s)
+        """,
+        (usuario["id"], now),
+    )
+    execute_db(
+        """
+        UPDATE senha_reset_tokens
+        SET used_at = %s
+        WHERE usuario_id = %s AND used_at IS NULL
+        """,
+        (now, usuario["id"]),
+    )
+    execute_db(
+        """
+        INSERT INTO senha_reset_tokens
+            (usuario_id, token_hash, email, expires_at, request_ip, user_agent, criado_em)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            usuario["id"],
+            password_reset_token_hash(token),
+            usuario["email"],
+            password_reset_expires_at(),
+            request_ip_address(),
+            (request.headers.get("User-Agent") or "")[:300],
+            now,
+        ),
+    )
+    return token
+
+
+def send_password_reset_email(usuario, reset_url):
+    if not SMTP_HOST:
+        app.logger.warning(
+            "SMTP nao configurado. Link de recuperacao para %s nao foi enviado.",
+            usuario["email"],
+        )
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = "Recuperacao de senha - GeoGestao"
+    message["From"] = SMTP_FROM
+    message["To"] = usuario["email"]
+    message.set_content(
+        "\n".join(
+            [
+                f"Ola, {usuario['nome']}.",
+                "",
+                "Recebemos uma solicitacao para redefinir sua senha no GeoGestao.",
+                f"Acesse o link abaixo em ate {max(5, PASSWORD_RESET_TOKEN_MINUTES)} minutos:",
+                "",
+                reset_url,
+                "",
+                "Se voce nao solicitou essa alteracao, ignore este e-mail.",
+            ]
+        )
+    )
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+            if SMTP_USE_TLS:
+                smtp.starttls()
+            if SMTP_USER:
+                smtp.login(SMTP_USER, SMTP_PASSWORD)
+            smtp.send_message(message)
+        return True
+    except Exception:
+        app.logger.exception("Falha ao enviar e-mail de recuperacao para %s.", usuario["email"])
+        return False
+
+
+def get_valid_password_reset(token):
+    if not token:
+        return None
+    row = query_db(
+        """
+        SELECT
+            srt.*,
+            u.nome AS usuario_nome,
+            u.email AS usuario_email,
+            u.ativo AS usuario_ativo
+        FROM senha_reset_tokens srt
+        JOIN usuarios u ON u.id = srt.usuario_id
+        WHERE srt.token_hash = %s
+        """,
+        (password_reset_token_hash(token),),
+        one=True,
+    )
+    if not row or row["used_at"] or not row["usuario_ativo"]:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        return None
+    if expires_at < app_now():
+        return None
+    return row
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -3955,6 +4114,75 @@ def login():
             return render_template("login.html")
         flash("E-mail ou senha invalidos.", "danger")
     return render_template("login.html")
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+@app.route("/recuperar-senha", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        if not validate_email(email):
+            flash("Informe um e-mail valido.", "danger")
+            return render_template("forgot_password.html")
+
+        usuario = query_db(
+            "SELECT * FROM usuarios WHERE lower(email) = %s AND ativo = 1",
+            (email,),
+            one=True,
+        )
+        if usuario:
+            token = create_password_reset_token(usuario)
+            reset_url = build_password_reset_url(token)
+            email_sent = send_password_reset_email(usuario, reset_url)
+            if not email_sent:
+                app.logger.warning("Solicitacao de recuperacao registrada para %s.", email)
+
+        flash(PASSWORD_RESET_REQUEST_MESSAGE, "success")
+        if not SMTP_HOST:
+            flash(
+                "O envio automatico ainda precisa das variaveis SMTP configuradas no servidor.",
+                "warning",
+            )
+        return redirect(url_for("forgot_password"))
+    return render_template("forgot_password.html")
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+@app.route("/redefinir-senha/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    reset = get_valid_password_reset(token)
+    if not reset:
+        flash("Link de recuperacao invalido ou expirado.", "danger")
+        return redirect(url_for("forgot_password"))
+
+    if request.method == "POST":
+        password = request.form.get("senha", "")
+        password_confirm = request.form.get("senha_confirmacao", "")
+        if len(password) < 6:
+            flash("A senha deve ter pelo menos 6 caracteres.", "danger")
+            return render_template("reset_password.html", reset=reset, token=token)
+        if password != password_confirm:
+            flash("As senhas nao conferem.", "danger")
+            return render_template("reset_password.html", reset=reset, token=token)
+
+        now = app_now_iso()
+        execute_db(
+            "UPDATE usuarios SET senha_hash = %s WHERE id = %s",
+            (generate_password_hash(password), reset["usuario_id"]),
+        )
+        execute_db(
+            """
+            UPDATE senha_reset_tokens
+            SET used_at = COALESCE(used_at, %s)
+            WHERE usuario_id = %s AND used_at IS NULL
+            """,
+            (now, reset["usuario_id"]),
+        )
+        session.clear()
+        flash("Senha redefinida com sucesso. Entre com a nova senha.", "success")
+        return redirect(url_for("login"))
+
+    return render_template("reset_password.html", reset=reset, token=token)
 
 
 @app.route("/register", methods=["GET", "POST"])
