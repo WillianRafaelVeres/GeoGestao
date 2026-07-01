@@ -186,6 +186,10 @@
                         <div class="proj-process-cell">
                             {% set process_name = project.tipo_processo_nome or process_type_name(project.tipo_servico) %}
                             {% if process_name %}<span class="proc-type" title="{{ process_name }}">{{ process_name }}</span>{% else %}<span class="proc-type proc-type--empty">-</span>{% endif %}
+                            {% set additional_services = process_service_names(project.servicos_adicionais) %}
+                            {% if additional_services %}
+                                <span class="proc-services" title="{{ additional_services|join(' + ') }}">+ {{ additional_services|length }} serv.</span>
+                            {% endif %}
                             {% if false %}
                             {% if project.tipo_servico %}<span class="proc-type" title="{{ project.tipo_servico }}">{{ project.tipo_servico }}</span>{% else %}<span class="proc-type proc-type--empty">—</span>{% endif %}
                             {% endif %}
@@ -203,7 +207,7 @@
                             {% if active %}
                                 {% set s_tone = status_meta[status_key].tone if status_key in status_meta else 'muted' %}
                                 {% set s_label = status_meta[status_key].label if status_key in status_meta else etapa.status %}
-                                <button class="active-stage-cell tone-{{ s_tone }} {{ 'is-late' if is_overdue(etapa.prazo, etapa.status) else '' }}"
+                                <button class="active-stage-cell tone-{{ s_tone }} {{ 'is-late' if is_overdue(etapa.prazo, etapa.status) else '' }} {{ 'is-unassigned' if not etapa.responsavel_nome and not project.responsavel_nome else '' }}"
                                     type="button"
                                     data-bs-toggle="modal"
                                     data-bs-target="#project-modal-{{ project.id }}">

@@ -52,6 +52,18 @@
                 {% endfor %}
             </select>
         </div>
+        <div class="col-12">
+            <label class="form-label">Servicos complementares</label>
+            <div class="checkbox-grid">
+                {% for process_type in process_types %}
+                    <label class="inline-check service-check">
+                        <input type="checkbox" name="servicos_adicionais" value="{{ process_type.chave }}" />
+                        <span>{{ process_type.nome }}</span>
+                    </label>
+                {% endfor %}
+            </div>
+            <small class="form-text">Use quando o projeto combinar mais de um servico. O tipo principal continua definindo as etapas da matriz.</small>
+        </div>
         <div class="col-md-6">
             <label class="form-label">Etapa inicial</label>
             <select class="form-select" name="initial_stage_key" id="initialStageInput" disabled>

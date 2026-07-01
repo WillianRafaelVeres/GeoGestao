@@ -12,17 +12,25 @@
         <div class="panel-header"><h2>Cadastros</h2></div>
         <div class="table-responsive">
             <table class="table compact-table">
-                <thead><tr><th>Nome</th><th>Cidade/UF</th><th>Contato</th><th>Projetos</th></tr></thead>
+                <thead><tr><th>Nome</th><th>CNS</th><th>Cidade/UF</th><th>Contato</th><th>Oficial</th><th>Projetos</th><th>Acoes</th></tr></thead>
                 <tbody>
                     {% for item in cartorios %}
                         <tr>
                             <td><strong>{{ item.nome }}</strong><small>{{ item.observacoes or '' }}</small></td>
+                            <td>{{ item.cns or '-' }}</td>
                             <td>{{ item.cidade or '-' }} / {{ item.uf or '-' }}</td>
-                            <td>{{ item.contato or '-' }}</td>
+                            <td>
+                                <strong>{{ item.contato or item.telefone or '-' }}</strong>
+                                <small>{{ item.email or item.whatsapp or '' }}</small>
+                            </td>
+                            <td>{{ item.oficial or '-' }}</td>
                             <td>{{ item.projetos }}</td>
+                            <td>
+                                <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-cartorio-{{ item.id }}">Editar</button>
+                            </td>
                         </tr>
                     {% else %}
-                        <tr><td colspan="4">Nenhum cadastro encontrado.</td></tr>
+                        <tr><td colspan="7">Nenhum cadastro encontrado.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -32,15 +40,59 @@
     <section class="panel">
         <div class="panel-header"><h2>Novo cartorio/orgao</h2></div>
         <form method="post" class="vstack gap-3">
+            <input type="hidden" name="action" value="create" />
             <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
+            <div><label class="form-label">CNS</label><input class="form-control" name="cns" placeholder="Codigo Nacional de Serventia" /></div>
             <div class="row g-2">
                 <div class="col-8"><label class="form-label">Cidade</label><input class="form-control" name="cidade" /></div>
                 <div class="col-4"><label class="form-label">UF</label><input class="form-control" name="uf" maxlength="2" /></div>
             </div>
             <div><label class="form-label">Contato</label><input class="form-control" name="contato" /></div>
+            <div><label class="form-label">Oficial</label><input class="form-control" name="oficial" /></div>
+            <div class="row g-2">
+                <div class="col-md-6"><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" /></div>
+                <div class="col-md-6"><label class="form-label">Telefone</label><input class="form-control" name="telefone" /></div>
+            </div>
+            <div><label class="form-label">WhatsApp</label><input class="form-control" name="whatsapp" /></div>
             <div><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3"></textarea></div>
             <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Cadastrar</button>
         </form>
     </section>
 </div>
+
+{% for item in cartorios %}
+<div class="modal fade" id="modal-cartorio-{{ item.id }}" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <form method="post" class="modal-content">
+            <input type="hidden" name="action" value="update" />
+            <input type="hidden" name="cartorio_id" value="{{ item.id }}" />
+            <div class="modal-header">
+                <div>
+                    <span class="module-label">Cartorio / orgao</span>
+                    <h2 class="modal-title">{{ item.nome }}</h2>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-8"><label class="form-label">Nome</label><input class="form-control" name="nome" value="{{ item.nome }}" required /></div>
+                    <div class="col-md-4"><label class="form-label">CNS</label><input class="form-control" name="cns" value="{{ item.cns or '' }}" /></div>
+                    <div class="col-md-8"><label class="form-label">Cidade</label><input class="form-control" name="cidade" value="{{ item.cidade or '' }}" /></div>
+                    <div class="col-md-4"><label class="form-label">UF</label><input class="form-control" name="uf" maxlength="2" value="{{ item.uf or '' }}" /></div>
+                    <div class="col-md-6"><label class="form-label">Contato principal</label><input class="form-control" name="contato" value="{{ item.contato or '' }}" /></div>
+                    <div class="col-md-6"><label class="form-label">Oficial</label><input class="form-control" name="oficial" value="{{ item.oficial or '' }}" /></div>
+                    <div class="col-md-4"><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" value="{{ item.email or '' }}" /></div>
+                    <div class="col-md-4"><label class="form-label">Telefone</label><input class="form-control" name="telefone" value="{{ item.telefone or '' }}" /></div>
+                    <div class="col-md-4"><label class="form-label">WhatsApp</label><input class="form-control" name="whatsapp" value="{{ item.whatsapp or '' }}" /></div>
+                    <div class="col-12"><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3">{{ item.observacoes or '' }}</textarea></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Salvar</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endfor %}
 {% endblock %}

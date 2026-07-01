@@ -4,6 +4,7 @@ load_dotenv()
 import csv
 import hashlib
 import io
+import json
 import secrets
 import smtplib
 import socket
@@ -902,9 +903,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cartorios (
             id SERIAL PRIMARY KEY,
             nome TEXT NOT NULL,
+            cns TEXT,
             cidade TEXT,
             uf TEXT,
             contato TEXT,
+            email TEXT,
+            telefone TEXT,
+            whatsapp TEXT,
+            oficial TEXT,
             observacoes TEXT
         );
 
@@ -988,6 +994,7 @@ def init_db():
             uf TEXT,
             cartorio_id INTEGER,
             tipo_servico TEXT,
+            servicos_adicionais TEXT,
             prioridade TEXT,
             status TEXT,
             etapa_atual_id INTEGER,
@@ -1218,6 +1225,7 @@ def init_db():
     add_column_if_missing(db, "projetos", "observacoes", "TEXT")
     add_column_if_missing(db, "projetos", "atualizado_em", "TEXT")
     add_column_if_missing(db, "projetos", "tipo_servico_legado", "TEXT")
+    add_column_if_missing(db, "projetos", "servicos_adicionais", "TEXT")
     add_column_if_missing(db, "clientes", "tipo_pessoa", "TEXT DEFAULT 'fisica'")
     add_column_if_missing(db, "clientes", "tipo_cliente", "TEXT DEFAULT 'PESSOA_FISICA'")
     add_column_if_missing(db, "clientes", "nome_exibicao", "TEXT")
@@ -1238,6 +1246,11 @@ def init_db():
     add_column_if_missing(db, "clientes", "procurador_endereco", "TEXT")
     add_column_if_missing(db, "clientes", "criado_em", "TEXT")
     add_column_if_missing(db, "clientes", "atualizado_em", "TEXT")
+    add_column_if_missing(db, "cartorios", "cns", "TEXT")
+    add_column_if_missing(db, "cartorios", "email", "TEXT")
+    add_column_if_missing(db, "cartorios", "telefone", "TEXT")
+    add_column_if_missing(db, "cartorios", "whatsapp", "TEXT")
+    add_column_if_missing(db, "cartorios", "oficial", "TEXT")
     add_column_if_missing(db, "conjuges", "email", "TEXT")
     add_column_if_missing(db, "conjuges", "telefone", "TEXT")
     add_column_if_missing(db, "procuradores", "telefone", "TEXT")
@@ -4031,6 +4044,37 @@ def normalize_project_process_type(value):
     return resolve_process_type_key((value or "").strip())
 
 
+def normalize_additional_process_types(values, primary_key=None):
+    primary = normalize_project_process_type(primary_key) if primary_key else None
+    normalized = []
+    for value in values or []:
+        key = normalize_project_process_type(value)
+        if not key or key == "OUTRO" or key == primary or key in normalized:
+            continue
+        normalized.append(key)
+    return normalized
+
+
+def encode_process_list(values):
+    return json.dumps(values or [], ensure_ascii=False)
+
+
+def decode_process_list(value):
+    if not value:
+        return []
+    try:
+        data = json.loads(value)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, list):
+        return [str(item) for item in data if item]
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def process_service_names(value):
+    return [process_type_name(key) or key for key in decode_process_list(value)]
+
+
 def get_stage_template_for_process(process_type_key):
     return get_config_stage_template_for_process(normalize_project_process_type(process_type_key))
 
@@ -4177,6 +4221,7 @@ def utility_processor():
         "format_cep": format_cep,
         "format_phone": format_phone,
         "process_type_name": process_type_name,
+        "process_service_names": process_service_names,
         "checklist_status_done": CHECKLIST_STATUS_DONE,
         "checklist_status_not_started": CHECKLIST_STATUS_NOT_STARTED,
         "checklist_status_in_progress": CHECKLIST_STATUS_IN_PROGRESS,
@@ -4724,7 +4769,10 @@ def projects():
             """
             (
                 p.responsavel_geral_id IS NULL
-                OR EXISTS (SELECT 1 FROM projeto_etapas pe8 WHERE pe8.id = p.etapa_atual_id AND pe8.responsavel_id IS NULL)
+                AND (
+                    pea.id IS NULL
+                    OR pea.responsavel_id IS NULL
+                )
             )
             """
         )
@@ -4993,6 +5041,7 @@ def project_create():
             return redirect(url_for("project_create"))
 
         process_key = normalize_project_process_type(request.form.get("tipo_servico"))
+        additional_processes = normalize_additional_process_types(request.form.getlist("servicos_adicionais"), process_key)
         valor = parse_currency_value(request.form.get("valor", "").strip())
 
         db = get_db()
@@ -5001,8 +5050,8 @@ def project_create():
             project_id = db.execute(
                 """
                 INSERT INTO projetos
-                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, valor, caminho_pasta, observacoes, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, servicos_adicionais, valor, caminho_pasta, observacoes, criado_em, atualizado_em)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -5014,6 +5063,7 @@ def project_create():
                     request.form.get("uf", "").strip().upper(),
                     request.form.get("cartorio_id") or None,
                     process_key,
+                    encode_process_list(additional_processes),
                     valor,
                     request.form.get("caminho_pasta", "").strip(),
                     request.form.get("observacoes", "").strip(),
@@ -5106,6 +5156,7 @@ def api_add_cartorio():
 
     try:
         cartorio_id = execute_db("INSERT INTO cartorios (nome) VALUES (%s)", (nome,))
+        invalidate_runtime_caches()
         return {"id": cartorio_id, "nome": nome}, 201
     except Exception as e:
         return {"error": str(e)}, 500
@@ -5131,6 +5182,30 @@ def api_select_folder():
         return jsonify({"error": str(e)}), 500
 
 
+def folder_path_candidates(raw_path):
+    path = (raw_path or "").strip().strip('"')
+    if not path:
+        return []
+    normalized = path.replace("/", "\\")
+    candidates = [path]
+    if normalized != path:
+        candidates.append(normalized)
+    if len(normalized) >= 3 and normalized[1:3] == ":\\":
+        drive = normalized[0].upper()
+        rest = normalized[3:].lstrip("\\")
+        if drive in ("X", "Y") and rest:
+            candidates.extend([
+                f"\\\\wdserver\\{rest}",
+                f"\\\\wdserver\\{drive}\\{rest}",
+                f"\\\\wdserver\\{drive}$\\{rest}",
+            ])
+    unique = []
+    for candidate in candidates:
+        if candidate and candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
 @app.route("/api/open-folder", methods=["POST"])
 @login_required
 def api_open_folder():
@@ -5139,11 +5214,16 @@ def api_open_folder():
     path = (data.get("path") or "").strip()
     if not path:
         return jsonify({"error": "Caminho nao informado"}), 400
-    if not os.path.isdir(path):
-        return jsonify({"error": "Pasta nao encontrada. Verifique o caminho cadastrado."}), 404
+    candidates = folder_path_candidates(path)
+    resolved_path = next((candidate for candidate in candidates if os.path.isdir(candidate)), None)
+    if not resolved_path:
+        tried = "; ".join(candidates[:4])
+        return jsonify({
+            "error": f"Pasta nao encontrada. Verifique o caminho cadastrado. Tentativas: {tried}",
+        }), 404
     try:
-        os.startfile(path)  # type: ignore[attr-defined]  # disponivel apenas no Windows
-        return jsonify({"ok": True})
+        os.startfile(resolved_path)  # type: ignore[attr-defined]  # disponivel apenas no Windows
+        return jsonify({"ok": True, "path": resolved_path})
     except AttributeError:
         # Ambiente nao-Windows (ex.: servidor): nao ha explorer para abrir.
         return jsonify({"error": "Abrir pasta so funciona no aplicativo instalado no Windows."}), 400
@@ -5302,6 +5382,7 @@ def project_detail(project_id):
         clientes_json=fetch_cliente_autocomplete_options(),
         cartorios=get_cartorio_options(),
         process_types=get_process_type_options(),
+        servicos_adicionais=decode_process_list(project["servicos_adicionais"]),
     )
 
 
@@ -5334,13 +5415,14 @@ def project_action(project_id):
         project_name = request.form.get("nome", "").strip() or project["nome"]
         cliente_id, cliente_nome = resolve_project_cliente(request.form, project_name)
         new_process_key = normalize_project_process_type(request.form.get("tipo_servico"))
+        additional_processes = normalize_additional_process_types(request.form.getlist("servicos_adicionais"), new_process_key)
         old_process_key = normalize_project_process_type(project["tipo_servico"])
         workflow_initialized = project_has_workflow_initialized_db(get_db(), project_id)
 
         execute_db(
             """
             UPDATE projetos
-            SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s,
+            SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s, servicos_adicionais = %s,
                 prioridade = %s, status = %s, prazo_critico = %s, responsavel_geral_id = %s, caminho_pasta = %s,
                 observacoes = %s, valor = %s, atualizado_em = %s
             WHERE id = %s
@@ -5353,6 +5435,7 @@ def project_action(project_id):
                 request.form.get("uf", "").strip().upper(),
                 request.form.get("cartorio_id") or None,
                 new_process_key,
+                encode_process_list(additional_processes),
                 request.form.get("prioridade", "Media"),
                 request.form.get("status", "Em andamento"),
                 request.form.get("prazo_critico") or None,
@@ -5775,7 +5858,12 @@ def project_action(project_id):
 
     elif action == "add_exigencia":
         description = request.form.get("descricao", "").strip()
-        if description:
+        prazo_resposta = request.form.get("prazo_resposta") or None
+        if not description:
+            flash("Informe a descricao da exigencia.", "danger")
+        elif not prazo_resposta:
+            flash("Informe o prazo de resposta da exigencia.", "danger")
+        else:
             exigencia_id = execute_db(
                 """
                 INSERT INTO exigencias_cartorio
@@ -5786,7 +5874,7 @@ def project_action(project_id):
                     project_id,
                     request.form.get("cartorio_id") or project["cartorio_id"],
                     request.form.get("data_recebimento") or app_today().isoformat(),
-                    request.form.get("prazo_resposta") or None,
+                    prazo_resposta,
                     description,
                     request.form.get("status", "em andamento"),
                     request.form.get("responsavel_id") or None,
@@ -5818,7 +5906,7 @@ def project_action(project_id):
                     cartorio_stage["id"] if cartorio_stage else None,
                     description,
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
-                    request.form.get("prazo_resposta") or None,
+                    prazo_resposta,
                     app_today().isoformat(),
                     app_now_iso(),
                     app_now_iso(),
@@ -5838,7 +5926,7 @@ def project_action(project_id):
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                     "Alta",
                     "em andamento",
-                    request.form.get("prazo_resposta") or None,
+                    prazo_resposta,
                     app_now_iso(),
                 ),
             )
@@ -5847,23 +5935,27 @@ def project_action(project_id):
 
     elif action == "update_exigencia":
         exigencia_id = request.form.get("exigencia_id")
-        execute_db(
-            """
-            UPDATE exigencias_cartorio
-            SET status = %s, responsavel_id = %s, prazo_resposta = %s, atualizado_em = %s
-            WHERE id = %s AND projeto_id = %s
-            """,
-            (
-                request.form.get("status", "em andamento"),
-                request.form.get("responsavel_id") or None,
-                request.form.get("prazo_resposta") or None,
-                app_now_iso(),
-                exigencia_id,
-                project_id,
-            ),
-        )
-        record_event(project_id, "exigencia_atualizada", f"Exigencia #{exigencia_id} atualizada.")
-        flash("Exigencia atualizada.", "success")
+        prazo_resposta = request.form.get("prazo_resposta") or None
+        if not prazo_resposta:
+            flash("Informe o prazo de resposta da exigencia.", "danger")
+        else:
+            execute_db(
+                """
+                UPDATE exigencias_cartorio
+                SET status = %s, responsavel_id = %s, prazo_resposta = %s, atualizado_em = %s
+                WHERE id = %s AND projeto_id = %s
+                """,
+                (
+                    request.form.get("status", "em andamento"),
+                    request.form.get("responsavel_id") or None,
+                    prazo_resposta,
+                    app_now_iso(),
+                    exigencia_id,
+                    project_id,
+                ),
+            )
+            record_event(project_id, "exigencia_atualizada", f"Exigencia #{exigencia_id} atualizada.")
+            flash("Exigencia atualizada.", "success")
 
     elif action == "add_time":
         minutes = int(request.form.get("duracao_minutos") or 0)
@@ -7100,19 +7192,46 @@ def cartorios():
         if not can_manage():
             flash("Permissao negada.", "danger")
             return redirect(url_for("cartorios"))
+        action = request.form.get("action", "create")
+        cartorio_id = request.form.get("cartorio_id")
         name = request.form.get("nome", "").strip()
-        if name:
+        values = (
+            name,
+            request.form.get("cns", "").strip(),
+            request.form.get("cidade", "").strip(),
+            request.form.get("uf", "").strip().upper(),
+            request.form.get("contato", "").strip(),
+            request.form.get("email", "").strip(),
+            request.form.get("telefone", "").strip(),
+            request.form.get("whatsapp", "").strip(),
+            request.form.get("oficial", "").strip(),
+            request.form.get("observacoes", "").strip(),
+        )
+        if not name:
+            flash("Informe o nome do cartorio/orgao.", "danger")
+            return redirect(url_for("cartorios"))
+        if action == "update" and cartorio_id:
             execute_db(
-                "INSERT INTO cartorios (nome, cidade, uf, contato, observacoes) VALUES (%s, %s, %s, %s, %s)",
-                (
-                    name,
-                    request.form.get("cidade", "").strip(),
-                    request.form.get("uf", "").strip().upper(),
-                    request.form.get("contato", "").strip(),
-                    request.form.get("observacoes", "").strip(),
-                ),
+                """
+                UPDATE cartorios
+                SET nome = %s, cns = %s, cidade = %s, uf = %s, contato = %s,
+                    email = %s, telefone = %s, whatsapp = %s, oficial = %s, observacoes = %s
+                WHERE id = %s
+                """,
+                values + (cartorio_id,),
+            )
+            flash("Cartorio/orgao atualizado.", "success")
+        else:
+            execute_db(
+                """
+                INSERT INTO cartorios
+                    (nome, cns, cidade, uf, contato, email, telefone, whatsapp, oficial, observacoes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                values,
             )
             flash("Cartorio/orgao cadastrado.", "success")
+        invalidate_runtime_caches()
         return redirect(url_for("cartorios"))
     rows = query_db(
         """

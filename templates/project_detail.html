@@ -20,6 +20,9 @@
     <div>
         <span>Tipo</span>
         <strong>{{ project.tipo_processo_nome or process_type_name(project.tipo_servico) or '-' }}</strong>
+        {% if servicos_adicionais %}
+            <small>+ {{ servicos_adicionais|length }} complementar(es)</small>
+        {% endif %}
     </div>
     <div>
         <span>Valor</span>
@@ -120,6 +123,20 @@
                             <option value="{{ process_type.chave }}" {% if project.tipo_servico == process_type.chave %}selected{% endif %}>{{ process_type.nome }}</option>
                         {% endfor %}
                     </select>
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Servicos complementares</label>
+                    <div class="checkbox-grid">
+                        {% for process_type in process_types %}
+                            <label class="inline-check service-check">
+                                <input type="checkbox" name="servicos_adicionais" value="{{ process_type.chave }}"
+                                    {% if process_type.chave in servicos_adicionais %}checked{% endif %}
+                                    {% if not can_manage() %}disabled{% endif %} />
+                                <span>{{ process_type.nome }}</span>
+                            </label>
+                        {% endfor %}
+                    </div>
+                    <small class="form-text">Registre aqui servicos combinados. O tipo principal continua controlando o fluxo da matriz.</small>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Valor do projeto</label>
@@ -299,7 +316,7 @@
                                                 <option value="{{ usuario.id }}" {% if exigencia.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
                                             {% endfor %}
                                         </select>
-                                        <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ exigencia.prazo_resposta or '' }}" />
+                                        <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ exigencia.prazo_resposta or '' }}" required />
                                         <select class="form-select form-select-sm" name="status">
                                             {% for key, info in status_meta.items() %}
                                                 <option value="{{ key }}" {% if exigencia.status|lower == key %}selected{% endif %}>{{ info.label }}</option>
@@ -319,9 +336,10 @@
                 <div class="col-12"><h3 class="form-section-title">Registrar exigencia</h3></div>
                 <input type="hidden" name="action" value="add_exigencia" />
                 <div class="col-12"><label class="form-label">Descricao da exigencia</label><textarea class="form-control" name="descricao" rows="2" placeholder="O que o cartorio/orgao exigiu" required></textarea></div>
-                <div class="col-md-4"><label class="form-label">Cartorio / orgao</label><select class="form-select" name="cartorio_id"><option value="">Selecione</option>{% for cartorio in cartorios %}<option value="{{ cartorio.id }}" {% if project.cartorio_id == cartorio.id %}selected{% endif %}>{{ cartorio.nome }}</option>{% endfor %}</select></div>
+                <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}" />
+                <div class="col-md-4"><label class="form-label">Cartorio / orgao</label><input class="form-control" value="{{ project.cartorio_nome or 'Sem cartorio definido no projeto' }}" readonly /></div>
                 <div class="col-md-3"><label class="form-label">Responsavel</label><select class="form-select" name="responsavel_id"><option value="">Selecione</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.nome }}</option>{% endfor %}</select></div>
-                <div class="col-md-3"><label class="form-label">Prazo de resposta</label><input class="form-control" type="date" name="prazo_resposta" /></div>
+                <div class="col-md-3"><label class="form-label">Prazo de resposta</label><input class="form-control" type="date" name="prazo_resposta" required /></div>
                 <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Registrar</button></div>
             </form>
         </section>

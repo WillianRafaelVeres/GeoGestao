@@ -313,6 +313,7 @@ a:hover { color: #1d4ed8; }
 .project-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
 .project-strip > div { padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
 .project-strip strong { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; }
+.project-strip small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
 
 /* ===== TABS ===== */
 .detail-tabs { gap: 4px; margin-bottom: 12px; border-bottom: 2px solid var(--border-light); padding-bottom: 8px; flex-wrap: wrap; }
@@ -1365,6 +1366,22 @@ a:hover { color: #1d4ed8; }
 
 .proc-type--empty { font-weight: 400; color: var(--muted); }
 
+.proc-services {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    margin-top: 1px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: #eaf2ff;
+    color: #1d4ed8;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .proc-cartorio {
     display: block;
     font-size: 10.5px;
@@ -1409,6 +1426,8 @@ a:hover { color: #1d4ed8; }
 .active-stage-cell.tone-amber { border-color: #ead39a; border-left-color: var(--amber); background: #fff9ea; }
 .active-stage-cell.tone-red, .active-stage-cell.is-late { border-color: #fca5a5; border-left-color: var(--red); background: #fef2f2; }
 .active-stage-cell.tone-purple { border-color: #d8c8ee; border-left-color: var(--purple); background: #f5f3ff; }
+.active-stage-cell.is-unassigned { border-color: #93c5fd; border-left-color: #2563eb; background: #eff6ff; }
+.active-stage-cell.is-unassigned strong { color: #1d4ed8; }
 
 /* Past stages (concluido) — only dots, no interaction */
 .cell-past {
@@ -1581,6 +1600,9 @@ a:hover { color: #1d4ed8; }
 .form-grid input, .form-grid select, .form-grid textarea, .full-textarea { width: 100%; min-height: 34px; border: 1px solid #d0d5dd; border-radius: 6px; padding: 6px 8px; background: #fff; color: #182230; font-size: 13px; font-weight: 400; }
 .span-2 { grid-column: span 2; }
 .inline-check { display: inline-flex !important; grid-auto-flow: column; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 7px !important; margin-top: 10px; color: #344054 !important; }
+.checkbox-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 6px 12px; padding: 8px 10px; border: 1px solid #d0d5dd; border-radius: 6px; background: #f8fafc; }
+.checkbox-grid .inline-check { margin-top: 0; font-size: 13px; font-weight: 500; }
+.checkbox-grid input { width: 15px; height: 15px; }
 .is-hidden { display: none !important; }
 .conditional-section.is-hidden { display: none; }
 .vertices-table-wrap { overflow-x: auto; margin-bottom: 10px; border: 1px solid #e4e7ec; border-radius: 7px; }

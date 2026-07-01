@@ -164,7 +164,6 @@
                     <tr>
                         <th>Etapa</th>
                         <th>Projetos ativos</th>
-                        <th>Concluidos</th>
                         <th>Tempo medio</th>
                         <th>Maior parado</th>
                         <th>Status</th>
@@ -172,7 +171,7 @@
                 </thead>
                 <tbody>
                     {% for item in stage_metrics %}
-                    {% if item.active_count > 0 or item.completed_count > 0 %}
+                    {% if item.active_count > 0 %}
                     <tr class="{{ 'stage-row-bottleneck' if item.status == 'Gargalo' else 'stage-row-attention' if item.status == 'Atencao' else '' }}">
                         <td><strong>{{ item.stage_name }}</strong></td>
                         <td>
@@ -182,7 +181,6 @@
                                 <span class="text-muted">0</span>
                             {% endif %}
                         </td>
-                        <td>{{ item.completed_count }}</td>
                         <td>
                             {% if item.avg_days %}
                                 {{ format_days(item.avg_days) }}
@@ -203,7 +201,7 @@
                     </tr>
                     {% endif %}
                     {% else %}
-                    <tr><td colspan="6" class="text-center text-muted">Nenhuma etapa com dados disponiveis.</td></tr>
+                    <tr><td colspan="5" class="text-center text-muted">Nenhuma etapa com projetos ativos.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -215,7 +213,7 @@
             <span class="legend-dot tone-muted"></span> Sem historico suficiente (projetos ativos, historico em formacao)
         </div>
         <div class="report-note">
-            Etapas sem projetos ativos ou concluidos estao ocultas para nao poluir a visao.
+            Etapas sem projetos ativos estao ocultas para nao poluir a visao.
         </div>
     </div>
 </section>
@@ -298,7 +296,7 @@
                     <tr>
                         <th>Responsavel</th>
                         <th>Projetos ativos</th>
-                        <th>Concluidos</th>
+                        <th>Etapas concluidas</th>
                         <th>Tempo medio</th>
                         <th>Maior parado</th>
                         <th>Status</th>
