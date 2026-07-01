@@ -80,10 +80,10 @@ Server-Timing: app;dur=376.1, db;dur=265.6;desc="10 queries"
 
 ## Proximas oportunidades seguras
 
-- Reduzir a rota `/project/<id>` juntando consultas de detalhe que sempre andam
-  juntas, com cuidado para nao perder dados de historico/checklist.
+- Evoluir `/project/<id>` para carregar abas secundarias sob demanda quando o
+  volume de historico, pendencias e exigencias crescer.
 - Otimizar `/clients` quando a base crescer, possivelmente separando listagem
-  leve de detalhes documentais.
+  leve de modais/documentos carregados sob demanda.
 - Criar paginacao/limites explicitos para listas que hoje renderizam todos os
   registros.
 - Avaliar planos de execucao de queries lentas quando houver volume real.
@@ -99,3 +99,34 @@ Server-Timing: app;dur=376.1, db;dur=265.6;desc="10 queries"
 3. Substituir ou adicionar uma nova tabela com data, ambiente e commit.
 4. Registrar tambem se houve mudanca no volume de dados, pois isso altera a
    comparacao.
+
+## Atualizacao - 2026-07-01 - reducao de queries
+
+Mudancas aplicadas:
+
+- `/project/<id>` deixou de consultar blocos legados que nao sao renderizados no
+  template atual.
+- `/clients` passou a carregar cadastro documental em lote, evitando uma sequencia
+  de consultas por cliente.
+
+Comparacao medida no mesmo ambiente local + Supabase remoto:
+
+| Rota | Antes total ms | Antes queries | Depois total ms | Depois queries |
+| --- | ---: | ---: | ---: | ---: |
+| `/project/1` | 409.8 | 16 | 292.1 | 10 |
+| `/clients` | 406.7 | 16 | 241.7 | 8 |
+
+Resultado de validacao final:
+
+| Rota | Status | Mediana total ms | Mediana DB ms | Mediana queries | Bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `/` | 200 | 202.7 | 131.2 | 6 | 13725 |
+| `/projects` | 200 | 267.6 | 183.6 | 8 | 134576 |
+| `/project/create` | 200 | 103.3 | 34.3 | 1 | 24404 |
+| `/project/1` | 200 | 292.1 | 207.9 | 10 | 35025 |
+| `/my-missions` | 200 | 169.9 | 93.8 | 4 | 6464 |
+| `/clients` | 200 | 241.7 | 162.4 | 8 | 132722 |
+| `/cartorios` | 200 | 134.4 | 51.6 | 2 | 4644 |
+| `/users` | 200 | 123.7 | 53.2 | 2 | 6633 |
+| `/cartorio` | 200 | 128.7 | 55.2 | 2 | 3907 |
+| `/reports` | 200 | 109.2 | 35.8 | 1 | 22618 |

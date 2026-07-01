@@ -5166,38 +5166,6 @@ def project_detail(project_id):
             invalidate_runtime_caches()
 
     etapas = load_stage_rows(project_id)
-    project_checklist_items = load_project_checklist_items(project_id)
-    project_checklist_by_stage = group_project_checklist_by_stage(project_checklist_items)
-    project_checklist_by_stage_key = {group["stage_key"]: group for group in project_checklist_by_stage}
-    project_checklist_progress = get_checklist_progress(project_checklist_items)
-    tarefas = query_db(
-        """
-        SELECT t.*, u.nome AS responsavel_nome, em.nome AS etapa_nome
-        FROM tarefas t
-        LEFT JOIN usuarios u ON u.id = t.responsavel_id
-        LEFT JOIN projeto_etapas pe ON pe.id = t.projeto_etapa_id
-        LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE t.projeto_id = %s
-        ORDER BY
-            CASE t.prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
-            COALESCE(t.prazo, '9999-12-31')
-        """,
-        (project_id,),
-    )
-    checklist = query_db(
-        """
-        SELECT ci.*, u.nome AS concluido_por_nome
-        FROM checklist_itens ci
-        LEFT JOIN usuarios u ON u.id = ci.concluido_por
-        WHERE ci.projeto_etapa_id IN (SELECT id FROM projeto_etapas WHERE projeto_id = %s)
-        ORDER BY ci.projeto_etapa_id, ci.id
-        """,
-        (project_id,),
-    )
-    checklist_by_stage = {}
-    for item in checklist:
-        checklist_by_stage.setdefault(item["projeto_etapa_id"], []).append(item)
-
     exigencias = query_db(
         """
         SELECT e.*, c.nome AS cartorio_nome, u.nome AS responsavel_nome
@@ -5223,35 +5191,6 @@ def project_detail(project_id):
         """,
         (project_id,),
     )
-    movimentacoes = query_db(
-        """
-        SELECT m.*, u.nome AS usuario_nome, r.nome AS responsavel_nome
-        FROM movimentacoes_etapa m
-        LEFT JOIN usuarios u ON u.id = m.usuario_id
-        LEFT JOIN usuarios r ON r.id = m.responsavel_id
-        WHERE m.projeto_id = %s
-        ORDER BY m.criado_em DESC
-        """,
-        (project_id,),
-    )
-    time_entries = query_db(
-        """
-        SELECT a.*, u.nome AS usuario_nome, em.nome AS etapa_nome, t.titulo AS tarefa_titulo
-        FROM apontamentos_tempo a
-        LEFT JOIN usuarios u ON u.id = a.usuario_id
-        LEFT JOIN projeto_etapas pe ON pe.id = a.etapa_id
-        LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        LEFT JOIN tarefas t ON t.id = a.tarefa_id
-        WHERE a.projeto_id = %s
-        ORDER BY a.criado_em DESC
-        """,
-        (project_id,),
-    )
-    total_minutes = query_db(
-        "SELECT COALESCE(SUM(duracao_minutos), 0) AS total FROM apontamentos_tempo WHERE projeto_id = %s",
-        (project_id,),
-        one=True,
-    )["total"]
     historico = query_db(
         """
         SELECT e.*, u.nome AS usuario_nome
@@ -5283,17 +5222,9 @@ def project_detail(project_id):
         "project_detail.html",
         project=project,
         etapas=etapas,
-        tarefas=tarefas,
-        checklist_by_stage=checklist_by_stage,
-        project_checklist_by_stage=project_checklist_by_stage,
-        project_checklist_by_stage_key=project_checklist_by_stage_key,
-        project_checklist_progress=project_checklist_progress,
         workflow_initialized=workflow_initialized,
         exigencias=exigencias,
         pendencias=pendencias,
-        movimentacoes=movimentacoes,
-        time_entries=time_entries,
-        total_minutes=total_minutes,
         historico=historico,
         stage_timeline=stage_timeline,
         project_open_days=project_open_days,
@@ -6186,6 +6117,118 @@ def load_cliente_documental(cliente_id):
     return context
 
 
+def load_clientes_documental_batch(client_rows):
+    client_ids = [row["id"] for row in client_rows]
+    if not client_ids:
+        return {}
+
+    def placeholders(values):
+        return ",".join("%s" for _ in values)
+
+    def first_by(rows, key):
+        indexed = {}
+        for row in rows:
+            indexed.setdefault(row[key], row)
+        return indexed
+
+    def group_by(rows, key):
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(row[key], []).append(row)
+        return grouped
+
+    client_placeholders = placeholders(client_ids)
+    pf_rows = query_db(
+        f"SELECT * FROM pessoas_fisicas WHERE cliente_id IN ({client_placeholders}) ORDER BY cliente_id, id",
+        client_ids,
+    )
+    pj_rows = query_db(
+        f"SELECT * FROM pessoas_juridicas WHERE cliente_id IN ({client_placeholders}) ORDER BY cliente_id, id",
+        client_ids,
+    )
+    procurador_rows = query_db(
+        f"SELECT * FROM procuradores WHERE cliente_id IN ({client_placeholders}) ORDER BY cliente_id, id",
+        client_ids,
+    )
+    imovel_rows = query_db(
+        f"""
+        SELECT i.*, ci.id AS vinculo_id, ci.cliente_id, ci.papel, ci.percentual_participacao, ci.principal
+        FROM clientes_imoveis ci
+        JOIN imoveis i ON i.id = ci.imovel_id
+        WHERE ci.cliente_id IN ({client_placeholders})
+        ORDER BY ci.cliente_id, ci.principal DESC, i.nome_imovel
+        """,
+        client_ids,
+    )
+
+    pfs_by_client = first_by(pf_rows, "cliente_id")
+    pjs_by_client = first_by(pj_rows, "cliente_id")
+    procuradores_by_client = first_by(procurador_rows, "cliente_id")
+    imoveis_by_client = group_by(imovel_rows, "cliente_id")
+
+    pf_ids = [row["id"] for row in pf_rows]
+    conjuges_by_pf = {}
+    enderecos_by_pf = {}
+    if pf_ids:
+        pf_placeholders = placeholders(pf_ids)
+        conjuges_by_pf = first_by(
+            query_db(
+                f"SELECT * FROM conjuges WHERE pessoa_fisica_id IN ({pf_placeholders}) ORDER BY pessoa_fisica_id, id",
+                pf_ids,
+            ),
+            "pessoa_fisica_id",
+        )
+        enderecos_by_pf = first_by(
+            query_db(
+                f"SELECT * FROM enderecos_proprietario WHERE pessoa_fisica_id IN ({pf_placeholders}) ORDER BY pessoa_fisica_id, id",
+                pf_ids,
+            ),
+            "pessoa_fisica_id",
+        )
+
+    imovel_ids = [row["id"] for row in imovel_rows]
+    vertices_by_imovel = {}
+    if imovel_ids:
+        imovel_placeholders = placeholders(imovel_ids)
+        vertices_by_imovel = group_by(
+            query_db(
+                f"SELECT * FROM vertices_imovel WHERE imovel_id IN ({imovel_placeholders}) ORDER BY imovel_id, ordem, id",
+                imovel_ids,
+            ),
+            "imovel_id",
+        )
+
+    contexts = {}
+    for client in client_rows:
+        client_id = client["id"]
+        pf = pfs_by_client.get(client_id)
+        pf_id = pf["id"] if pf else None
+        imoveis = imoveis_by_client.get(client_id, [])
+        context = {
+            "cliente": row_to_plain_dict(client),
+            "pessoa_fisica": row_to_plain_dict(pf),
+            "conjuge": row_to_plain_dict(conjuges_by_pf.get(pf_id)),
+            "pessoa_juridica": row_to_plain_dict(pjs_by_client.get(client_id)),
+            "endereco": row_to_plain_dict(enderecos_by_pf.get(pf_id)),
+            "procurador": row_to_plain_dict(procuradores_by_client.get(client_id)),
+            "imoveis": [row_to_plain_dict(row) for row in imoveis],
+            "vertices_by_imovel": {
+                imovel["id"]: [row_to_plain_dict(row) for row in vertices_by_imovel.get(imovel["id"], [])]
+                for imovel in imoveis
+            },
+        }
+        context["completeness"] = get_cadastro_completeness(context)
+        context["cliente_pendencias"] = get_cliente_pendencias(context)
+        context["document_readiness"] = get_document_readiness(context)
+        context["document_context"] = build_documento_context(
+            context,
+            context["imoveis"][0] if context["imoveis"] else {},
+            context["vertices_by_imovel"].get(context["imoveis"][0]["id"], []) if context["imoveis"] else [],
+        )
+        contexts[client_id] = context
+    return contexts
+
+
 def row_to_plain_dict(row):
     if row is None:
         return {}
@@ -6958,14 +7001,11 @@ def clients():
         """,
         params,
     )
-    client_contexts = {}
-    client_meta = {}
-    for row in rows:
-        context = load_cliente_documental(row["id"])
-        if not context:
-            continue
-        client_contexts[row["id"]] = context
-        client_meta[row["id"]] = context["cliente_pendencias"]
+    client_contexts = load_clientes_documental_batch(rows)
+    client_meta = {
+        client_id: context["cliente_pendencias"]
+        for client_id, context in client_contexts.items()
+    }
     return render_template(
         "clients.html",
         clients=rows,
