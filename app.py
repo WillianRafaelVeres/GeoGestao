@@ -3289,10 +3289,21 @@ def load_matrix_stage_rows_bulk(projects, global_stages=None):
         return {}
 
     if global_stages is None:
-        global_stages = [dict(row) for row in query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")]
+        global_stages = [dict(row) for row in get_active_stage_models()]
     else:
         global_stages = [dict(row) for row in global_stages]
     placeholders = ",".join("%s" for _ in project_ids)
+    active_stage_ids = [project["etapa_atual_id"] for project in projects if project["etapa_atual_id"]]
+    stats_placeholders = ",".join("%s" for _ in active_stage_ids)
+    selected_stages_sql = (
+        f"""
+                SELECT pe.id
+                FROM projeto_etapas pe
+                WHERE pe.id IN ({stats_placeholders})
+            """
+        if active_stage_ids
+        else "SELECT NULL::integer AS id WHERE FALSE"
+    )
     stage_stats_params = [
         CHECKLIST_STATUS_NOT_APPLICABLE,
         CHECKLIST_STATUS_DONE,
@@ -3302,18 +3313,13 @@ def load_matrix_stage_rows_bulk(projects, global_stages=None):
         CHECKLIST_STATUS_DONE,
         CHECKLIST_STATUS_NOT_APPLICABLE,
     ]
-    params = project_ids + stage_stats_params + project_ids
+    params = active_stage_ids + stage_stats_params + project_ids
     project_stages = [
         dict(row)
         for row in query_db(
             f"""
             WITH selected_stages AS (
-                SELECT pe.id
-                FROM projeto_etapas pe
-                JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE pe.projeto_id IN ({placeholders})
-                  AND em.ativa = 1
-                  AND COALESCE(pe.show_in_project, 1) = 1
+                {selected_stages_sql}
             ),
             pci_stats AS (
                 SELECT
@@ -3824,6 +3830,13 @@ def fetch_cliente_autocomplete_options():
     return get_cached_lookup("cliente_autocomplete_options", _fetch_cliente_autocomplete_options_uncached)
 
 
+def get_active_stage_models():
+    return get_cached_lookup(
+        "active_stage_models",
+        lambda: query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem"),
+    )
+
+
 def get_active_users():
     return get_cached_lookup(
         "active_users",
@@ -3836,6 +3849,93 @@ def get_cartorio_options():
         "cartorio_options",
         lambda: query_db("SELECT * FROM cartorios ORDER BY nome"),
     )
+
+
+def get_matrix_summary_counts(today_iso, in_7):
+    return get_cached_lookup(
+        ("matrix_summary_counts", today_iso, in_7),
+        lambda: query_db(
+            """
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM projeto_etapas pe
+                    JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                    WHERE em.ativa = 1
+                      AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+                      AND pe.prazo BETWEEN %s AND %s
+                      AND lower(pe.status) NOT IN ('concluido', 'cancelado')
+                ) AS sete_dias,
+                (
+                    SELECT COUNT(*)
+                    FROM projeto_etapas
+                    WHERE lower(status) = 'atrasado'
+                      AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+                ) AS atrasados,
+                (
+                    SELECT COUNT(*)
+                    FROM projetos p
+                    JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+                    JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                    WHERE lower(em.nome) = 'cartorio'
+                ) AS cartorio,
+                (
+                    SELECT COUNT(*)
+                    FROM pendencias
+                    WHERE lower(status) NOT IN ('resolvida', 'cancelada')
+                ) AS pendencias
+            """,
+            (today_iso, in_7),
+            one=True,
+        ),
+        ttl_seconds=30,
+    )
+
+
+def get_matrix_static_options():
+    def load_options():
+        row = query_db(
+            """
+            SELECT
+                COALESCE(
+                    (
+                        SELECT json_agg(row_to_json(s))
+                        FROM (SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem) s
+                    ),
+                    '[]'::json
+                ) AS etapas,
+                COALESCE(
+                    (
+                        SELECT json_agg(row_to_json(u))
+                        FROM (SELECT * FROM usuarios WHERE ativo = 1 ORDER BY nome) u
+                    ),
+                    '[]'::json
+                ) AS usuarios,
+                COALESCE(
+                    (
+                        SELECT json_agg(row_to_json(c))
+                        FROM (SELECT * FROM cartorios ORDER BY nome) c
+                    ),
+                    '[]'::json
+                ) AS cartorios,
+                COALESCE(
+                    (
+                        SELECT json_agg(row_to_json(tp))
+                        FROM (SELECT * FROM tipos_processo WHERE ativo = 1 ORDER BY ordem, nome) tp
+                    ),
+                    '[]'::json
+                ) AS process_types
+            """,
+            one=True,
+        )
+        return {
+            "etapas": row["etapas"] or [],
+            "usuarios": row["usuarios"] or [],
+            "cartorios": row["cartorios"] or [],
+            "process_types": row["process_types"] or [],
+        }
+
+    return get_cached_lookup("matrix_static_options", load_options)
 
 
 def find_cliente_option_by_name(nome):
@@ -4754,15 +4854,16 @@ def projects():
         """,
         [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso] + params + [today_iso],
     )
-    etapas = query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")
+    matrix_options = get_matrix_static_options()
+    etapas = matrix_options["etapas"]
     matrix_rows_by_project = load_matrix_stage_rows_bulk(projetos, etapas)
     matrix = [(project, matrix_rows_by_project.get(project["id"], [])) for project in projetos]
-    stage_ids = [stage["id"] for _, project_stages in matrix for stage in project_stages if stage.get("id")]
+    active_stage_ids = [project["etapa_atual_id"] for project, _ in matrix if project["etapa_atual_id"]]
     matrix_checklists = {}
     pending_by_stage = {}
     pending_by_project = {}
-    if stage_ids:
-        placeholders = ",".join("%s" for _ in stage_ids)
+    if active_stage_ids:
+        placeholders = ",".join("%s" for _ in active_stage_ids)
         # Checklist do processo (por tipo) — somente a tarefa, sem selos, agrupado por etapa do projeto.
         for item in query_db(
             f"""
@@ -4772,23 +4873,25 @@ def projects():
             WHERE project_stage_id IN ({placeholders}) AND active = 1 AND status != %s
             ORDER BY project_stage_id, order_index, id
             """,
-            [CHECKLIST_STATUS_DONE] + stage_ids + [CHECKLIST_STATUS_NOT_APPLICABLE],
+            [CHECKLIST_STATUS_DONE] + active_stage_ids + [CHECKLIST_STATUS_NOT_APPLICABLE],
         ):
             matrix_checklists.setdefault(item["projeto_etapa_id"], []).append(item)
+    project_ids = [project["id"] for project, _ in matrix]
+    if project_ids:
+        placeholders = ",".join("%s" for _ in project_ids)
         for pending in query_db(
             f"""
             SELECT pd.*, u.nome AS responsavel_nome
             FROM pendencias pd
             LEFT JOIN usuarios u ON u.id = pd.responsavel_id
-            WHERE pd.etapa_id IN ({placeholders})
+            WHERE pd.projeto_id IN ({placeholders})
               AND lower(pd.status) NOT IN ('resolvida', 'cancelada')
             ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
             """,
-            stage_ids,
+            project_ids,
         ):
             pending_by_stage.setdefault(pending["etapa_id"], []).append(pending)
             pending_by_project.setdefault(pending["projeto_id"], []).append(pending)
-    project_ids = [project["id"] for project, _ in matrix]
     notes_by_project = {}
     if project_ids:
         project_placeholders = ",".join("%s" for _ in project_ids)
@@ -4803,40 +4906,7 @@ def projects():
             project_ids,
         ):
             notes_by_project.setdefault(note["projeto_id"], []).append(note)
-    summary_counts = query_db(
-        """
-        SELECT
-            (
-                SELECT COUNT(*)
-                FROM projeto_etapas pe
-                JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE em.ativa = 1
-                  AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-                  AND pe.prazo BETWEEN %s AND %s
-                  AND lower(pe.status) NOT IN ('concluido', 'cancelado')
-            ) AS sete_dias,
-            (
-                SELECT COUNT(*)
-                FROM projeto_etapas
-                WHERE lower(status) = 'atrasado'
-                  AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-            ) AS atrasados,
-            (
-                SELECT COUNT(*)
-                FROM projetos p
-                JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
-                JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE lower(em.nome) = 'cartorio'
-            ) AS cartorio,
-            (
-                SELECT COUNT(*)
-                FROM pendencias
-                WHERE lower(status) NOT IN ('resolvida', 'cancelada')
-            ) AS pendencias
-        """,
-        (today_iso, in_7),
-        one=True,
-    )
+    summary_counts = get_matrix_summary_counts(today_iso, in_7)
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
         "sete_dias": summary_counts["sete_dias"],
@@ -4853,9 +4923,9 @@ def projects():
         notes_by_project=notes_by_project,
         summary=summary,
         etapas=etapas,
-        usuarios=get_active_users(),
-        cartorios=get_cartorio_options(),
-        process_types=get_process_type_options(),
+        usuarios=matrix_options["usuarios"],
+        cartorios=matrix_options["cartorios"],
+        process_types=matrix_options["process_types"],
         filters=filters,
     )
 

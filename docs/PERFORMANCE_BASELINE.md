@@ -130,3 +130,33 @@ Resultado de validacao final:
 | `/users` | 200 | 123.7 | 53.2 | 2 | 6633 |
 | `/cartorio` | 200 | 128.7 | 55.2 | 2 | 3907 |
 | `/reports` | 200 | 109.2 | 35.8 | 1 | 22618 |
+
+## Atualizacao - 2026-07-01 - matriz de projetos
+
+Problema observado: a matriz estava lenta mesmo com poucos projetos porque a rota
+buscava dados de apoio e checklist de todas as etapas visiveis antes de entregar
+a tela.
+
+Mudancas aplicadas:
+
+- Lookups fixos da matriz (`etapas`, `usuarios`, `cartorios` e `tipos_processo`)
+  passaram a vir em uma unica consulta cacheada.
+- O calculo de checklist da matriz passou a considerar somente a etapa atual de
+  cada projeto, que e a unica etapa que exibe checklist no modal.
+- A consulta de checklist visivel passou a carregar apenas as etapas atuais.
+- Pendencias da matriz passaram a ser carregadas por projeto, evitando uma lista
+  grande de IDs de etapas.
+- Os contadores do topo da matriz passaram a usar cache curto de 30 segundos.
+
+Comparacao medida com 4 projetos:
+
+| Cenario `/projects` | Antes queries | Depois queries | Observacao |
+| --- | ---: | ---: | --- |
+| Primeira abertura no processo | 14 | 11 | Inclui refresh de atrasos e caches frios |
+| Abertura com cache aquecido | 8 | 6 | Fluxo comum depois do primeiro acesso |
+
+Benchmark isolado da matriz apos a mudanca:
+
+| Rota | Status | Mediana total ms | Mediana DB ms | Mediana queries | Bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `/projects` | 200 | 231.7 | 153.6 | 6 | 134576 |
