@@ -1,0 +1,183 @@
+"""Measure GET route latency and database round trips.
+
+This script uses Flask's test client against the configured DATABASE_URL. It logs
+in by placing an active user id in the session, then performs GET requests only.
+It is intended for local diagnostics and CI smoke checks, not load testing. Avoid
+using it against an uninitialized database if a GET route may run lazy repair.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+from statistics import median
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import app as geogestao  # noqa: E402
+
+
+DEFAULT_PATHS = [
+    "/",
+    "/projects",
+    "/project/create",
+    "/my-missions",
+    "/clients",
+    "/cartorios",
+    "/users",
+    "/cartorio",
+    "/reports",
+]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Measure GeoGestao route performance.")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=int(os.environ.get("GEOGESTAO_BENCHMARK_RUNS", "3")),
+        help="number of GET requests per path",
+    )
+    parser.add_argument(
+        "--paths",
+        default=os.environ.get("GEOGESTAO_BENCHMARK_PATHS", ""),
+        help="comma-separated path list; defaults to the main GET routes",
+    )
+    return parser.parse_args()
+
+
+def fetch_active_user_id() -> int:
+    with geogestao.app.app_context():
+        user = geogestao.query_db(
+            """
+            SELECT id
+            FROM usuarios
+            WHERE ativo = 1
+            ORDER BY
+                CASE perfil_acesso
+                    WHEN 'admin' THEN 0
+                    WHEN 'coordenador' THEN 1
+                    WHEN 'tecnico' THEN 2
+                    ELSE 3
+                END,
+                id
+            LIMIT 1
+            """,
+            one=True,
+        )
+        if not user:
+            raise RuntimeError("No active user found for benchmark session.")
+        return int(user["id"])
+
+
+def fetch_first_project_path() -> str | None:
+    with geogestao.app.app_context():
+        project = geogestao.query_db("SELECT id FROM projetos ORDER BY id LIMIT 1", one=True)
+        if not project:
+            return None
+        return f"/project/{project['id']}"
+
+
+def build_paths(path_arg: str) -> list[str]:
+    if path_arg.strip():
+        return [path.strip() for path in path_arg.split(",") if path.strip()]
+    paths = list(DEFAULT_PATHS)
+    project_path = fetch_first_project_path()
+    if project_path:
+        paths.insert(3, project_path)
+    return paths
+
+
+class QueryProbe:
+    def __init__(self) -> None:
+        self.original = geogestao._execute_cursor
+        self.reset()
+
+    def reset(self) -> None:
+        self.count = 0
+        self.seconds = 0.0
+
+    def install(self) -> None:
+        def wrapper(cur, query, args=()):
+            start = time.perf_counter()
+            try:
+                return self.original(cur, query, args)
+            finally:
+                self.count += 1
+                self.seconds += time.perf_counter() - start
+
+        geogestao._execute_cursor = wrapper
+
+    def uninstall(self) -> None:
+        geogestao._execute_cursor = self.original
+
+
+def measure_path(client, probe: QueryProbe, path: str, runs: int) -> dict:
+    samples = []
+    statuses = []
+    sizes = []
+    for _ in range(runs):
+        probe.reset()
+        start = time.perf_counter()
+        response = client.get(path)
+        total_ms = (time.perf_counter() - start) * 1000
+        samples.append(
+            {
+                "total_ms": total_ms,
+                "db_ms": probe.seconds * 1000,
+                "queries": probe.count,
+            }
+        )
+        statuses.append(response.status_code)
+        sizes.append(len(response.get_data()))
+    return {
+        "path": path,
+        "status": statuses[-1],
+        "median_total_ms": median(sample["total_ms"] for sample in samples),
+        "median_db_ms": median(sample["db_ms"] for sample in samples),
+        "median_queries": median(sample["queries"] for sample in samples),
+        "bytes": sizes[-1],
+    }
+
+
+def main() -> int:
+    args = parse_args()
+    if args.runs < 1:
+        raise SystemExit("--runs must be at least 1")
+
+    user_id = fetch_active_user_id()
+    paths = build_paths(args.paths)
+    probe = QueryProbe()
+    rows = []
+    probe.install()
+    try:
+        with geogestao.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess["user_id"] = user_id
+            for path in paths:
+                rows.append(measure_path(client, probe, path, args.runs))
+    finally:
+        probe.uninstall()
+
+    print("| Route | Status | Median total ms | Median DB ms | Median queries | Bytes |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: |")
+    for row in rows:
+        print(
+            "| {path} | {status} | {total:.1f} | {db:.1f} | {queries:.0f} | {bytes} |".format(
+                path=row["path"],
+                status=row["status"],
+                total=row["median_total_ms"],
+                db=row["median_db_ms"],
+                queries=row["median_queries"],
+                bytes=row["bytes"],
+            )
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

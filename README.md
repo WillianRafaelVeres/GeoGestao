@@ -103,7 +103,27 @@ Nao ha usuarios de demonstracao no login. Para criar o primeiro administrador em
 - `templates/`: telas HTML/Jinja.
 - `static/style.css`: interface visual.
 - `static/app.js`: comportamento pequeno da interface.
+- `scripts/measure_routes.py`: diagnostico local de performance das principais rotas.
+- `docs/ARCHITECTURE.md`: visao tecnica do sistema.
+- `docs/PERFORMANCE_DATABASE_GUIDELINES.md`: regras de performance, banco e seguranca.
+- `docs/PERFORMANCE_BASELINE.md`: baseline medido para comparar melhorias.
 - `Documento_Tecnico_GeoGestao_Topografia.docx`: documento de produto usado como base.
+
+## Diagnostico de performance
+
+Antes e depois de otimizar rotas, rode:
+
+```bash
+python scripts/measure_routes.py --runs 3
+```
+
+As respostas HTTP tambem enviam `X-Request-ID` e `Server-Timing`, ajudando a ver
+tempo total, tempo de banco e quantidade de queries por pagina. Para log detalhado
+no servidor, defina:
+
+```text
+GEOGESTAO_PERF_LOG=1
+```
 
 ## Proximos passos tecnicos
 

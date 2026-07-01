@@ -511,25 +511,32 @@ def close_connection(exception):
 
 @app.before_request
 def start_perf_timer():
-    if PERF_LOG_ENABLED:
-        g._request_start = time.perf_counter()
-        g._query_count = 0
-        g._query_time = 0.0
+    request_id = (request.headers.get("X-Request-ID") or "").strip()
+    g.request_id = request_id[:80] if request_id else secrets.token_hex(8)
+    g._request_start = time.perf_counter()
+    g._query_count = 0
+    g._query_time = 0.0
 
 
 @app.after_request
 def log_perf_metrics(response):
-    if PERF_LOG_ENABLED and hasattr(g, "_request_start"):
+    if hasattr(g, "_request_start"):
         elapsed = time.perf_counter() - g._request_start
-        app.logger.info(
-            "perf route=%s method=%s status=%s total_ms=%.1f queries=%s db_ms=%.1f",
-            request.path,
-            request.method,
-            response.status_code,
-            elapsed * 1000,
-            getattr(g, "_query_count", 0),
-            getattr(g, "_query_time", 0.0) * 1000,
-        )
+        db_ms = getattr(g, "_query_time", 0.0) * 1000
+        query_count = getattr(g, "_query_count", 0)
+        response.headers["X-Request-ID"] = getattr(g, "request_id", "")
+        response.headers["Server-Timing"] = f"app;dur={elapsed * 1000:.1f}, db;dur={db_ms:.1f};desc=\"{query_count} queries\""
+        if PERF_LOG_ENABLED:
+            app.logger.info(
+                "perf request_id=%s route=%s method=%s status=%s total_ms=%.1f queries=%s db_ms=%.1f",
+                getattr(g, "request_id", ""),
+                request.path,
+                request.method,
+                response.status_code,
+                elapsed * 1000,
+                query_count,
+                db_ms,
+            )
     return response
 
 
