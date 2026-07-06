@@ -129,6 +129,20 @@ ROLE_LABELS = {
     "consulta": "Consulta",
 }
 
+FORMAS_PAGAMENTO = {
+    "PIX": "PIX",
+    "DINHEIRO": "Dinheiro",
+    "TRANSFERENCIA": "Transferencia bancaria",
+    "BOLETO": "Boleto",
+    "CARTAO_CREDITO": "Cartao de credito",
+    "CARTAO_DEBITO": "Cartao de debito",
+    "CHEQUE": "Cheque",
+    "PERMUTA": "Permuta / servicos",
+    "OUTRO": "Outro",
+}
+
+FINANCEIRO_QUASE_PRONTO_PCT = 75
+
 PRIORITY_WEIGHT = {"Alta": 0, "Media": 1, "Baixa": 2, "": 3, None: 3}
 
 REPORT_THRESHOLDS = {
@@ -733,6 +747,7 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_exigencias_status_prazo ON exigencias_cartorio (status, prazo_resposta)",
         "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_usuario_criado ON senha_reset_tokens (usuario_id, criado_em DESC)",
         "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_expires ON senha_reset_tokens (expires_at)",
+        "CREATE INDEX IF NOT EXISTS idx_projeto_pagamentos_projeto ON projeto_pagamentos (projeto_id, data_pagamento DESC, id DESC)",
     ]
     cur = db.cursor()
     try:
@@ -1308,6 +1323,17 @@ def init_db():
             FOREIGN KEY(project_id) REFERENCES projetos(id),
             FOREIGN KEY(stage_id) REFERENCES projeto_etapas(id),
             FOREIGN KEY(responsible_id) REFERENCES usuarios(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS projeto_pagamentos (
+            id SERIAL PRIMARY KEY,
+            projeto_id INTEGER NOT NULL,
+            valor DOUBLE PRECISION NOT NULL,
+            forma_pagamento TEXT,
+            data_pagamento TEXT,
+            observacoes TEXT,
+            criado_em TEXT NOT NULL,
+            usuario_id INTEGER
         );
         """
     )
@@ -3188,6 +3214,8 @@ def record_event(project_id, event_type, description, user_id=None):
 
 
 def delete_project_records(db, project_id):
+    if table_columns(db, "projeto_pagamentos"):
+        db.execute("DELETE FROM projeto_pagamentos WHERE projeto_id = %s", (project_id,))
     db.execute("DELETE FROM apontamentos_tempo WHERE projeto_id = %s", (project_id,))
     db.execute("DELETE FROM eventos_historico WHERE projeto_id = %s", (project_id,))
     db.execute("DELETE FROM movimentacoes_etapa WHERE projeto_id = %s", (project_id,))
@@ -7454,6 +7482,274 @@ def users():
     pending_users = [row for row in rows if not row["ativo"] and row["perfil_acesso"] == "consulta" and not (row["cargo"] or "").strip()]
     active_users = [row for row in rows if row["ativo"]]
     return render_template("users.html", users=rows, pending_users=pending_users, active_users=active_users)
+
+
+_financeiro_schema_ready = False
+
+
+def ensure_financeiro_schema():
+    """Cria a tabela de pagamentos se ainda nao existir (uma verificacao por processo)."""
+    global _financeiro_schema_ready
+    if _financeiro_schema_ready:
+        return
+    db = get_db()
+    # Sem FOREIGN KEY: o papel do banco nao tem privilegio REFERENCES nas tabelas
+    # existentes; a exclusao em cascata e manual (delete_project_records).
+    db.execute_statements(
+        """
+        CREATE TABLE IF NOT EXISTS projeto_pagamentos (
+            id SERIAL PRIMARY KEY,
+            projeto_id INTEGER NOT NULL,
+            valor DOUBLE PRECISION NOT NULL,
+            forma_pagamento TEXT,
+            data_pagamento TEXT,
+            observacoes TEXT,
+            criado_em TEXT NOT NULL,
+            usuario_id INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_projeto_pagamentos_projeto
+            ON projeto_pagamentos (projeto_id, data_pagamento DESC, id DESC)
+        """
+    )
+    db.commit()
+    _financeiro_schema_ready = True
+
+
+def require_admin_or_redirect():
+    if can_admin():
+        return None
+    flash("Somente administrador pode acessar o financeiro.", "danger")
+    return redirect(url_for("dashboard"))
+
+
+def parse_payment_date(raw):
+    raw = (raw or "").strip()
+    if raw:
+        try:
+            return datetime.fromisoformat(raw).date().isoformat()
+        except ValueError:
+            pass
+    return app_today().isoformat()
+
+
+@app.route("/financeiro")
+@login_required
+def financeiro():
+    denied = require_admin_or_redirect()
+    if denied:
+        return denied
+    ensure_financeiro_schema()
+
+    rows = query_db(
+        """
+        SELECT
+            p.id, p.codigo, p.nome, p.status, p.valor,
+            COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(c.nome, ''), p.proprietario) AS cliente_nome,
+            em.nome AS etapa_nome, pe.status AS etapa_status,
+            prog.total_etapas, prog.etapas_concluidas,
+            pag.total_pago, pag.qtd_pagamentos, pag.ultimo_pagamento
+        FROM projetos p
+        LEFT JOIN clientes c ON c.id = p.cliente_id
+        LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+        LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE lower(COALESCE(pe2.status, '')) NOT IN ('nao aplicavel', 'cancelado')
+                ) AS total_etapas,
+                COUNT(*) FILTER (
+                    WHERE lower(COALESCE(pe2.status, '')) = 'concluido'
+                ) AS etapas_concluidas
+            FROM projeto_etapas pe2
+            WHERE pe2.projeto_id = p.id
+              AND COALESCE(pe2.workflow_active, 1) = 1
+              AND COALESCE(pe2.show_in_project, 1) = 1
+        ) prog ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(pg.valor), 0) AS total_pago,
+                   COUNT(*) AS qtd_pagamentos,
+                   MAX(pg.data_pagamento) AS ultimo_pagamento
+            FROM projeto_pagamentos pg
+            WHERE pg.projeto_id = p.id
+        ) pag ON TRUE
+        WHERE lower(COALESCE(p.status, '')) != 'cancelado'
+          AND (
+              lower(COALESCE(p.status, '')) != 'concluido'
+              OR COALESCE(p.valor, 0) - pag.total_pago > 0.005
+          )
+        ORDER BY lower(p.nome)
+        """
+    )
+
+    em_aberto = []
+    concluidos_pendentes = []
+    quase_prontos = []
+    sem_valor_count = 0
+    total_carteira = 0.0
+    a_receber_ativos = 0.0
+    a_receber_concluidos = 0.0
+    quase_prontos_saldo = 0.0
+
+    for row in rows:
+        item = dict(row)
+        valor = float(item["valor"] or 0.0)
+        pago = float(item["total_pago"] or 0.0)
+        saldo = round(valor - pago, 2)
+        total = item["total_etapas"] or 0
+        done = item["etapas_concluidas"] or 0
+        item["pct"] = int(done / total * 100) if total else 0
+        item["saldo"] = saldo
+        item["tem_valor"] = valor > 0.005
+        if (item["status"] or "").lower() == "concluido":
+            concluidos_pendentes.append(item)
+            a_receber_concluidos += max(saldo, 0.0)
+            continue
+        em_aberto.append(item)
+        if item["tem_valor"]:
+            total_carteira += valor
+            a_receber_ativos += max(saldo, 0.0)
+        else:
+            sem_valor_count += 1
+        if item["tem_valor"] and item["pct"] >= FINANCEIRO_QUASE_PRONTO_PCT and saldo > 0.005:
+            quase_prontos.append(item)
+            quase_prontos_saldo += saldo
+    quase_prontos.sort(key=lambda item: (-item["pct"], -item["saldo"]))
+
+    recebido = query_db(
+        """
+        SELECT
+            COALESCE(SUM(valor), 0) AS total,
+            COALESCE(SUM(valor) FILTER (WHERE data_pagamento >= %s), 0) AS ultimos_30d
+        FROM projeto_pagamentos
+        """,
+        ((app_today() - timedelta(days=30)).isoformat(),),
+        one=True,
+    )
+
+    payments_by_project = {}
+    project_ids = [item["id"] for item in em_aberto + concluidos_pendentes if item["qtd_pagamentos"]]
+    if project_ids:
+        placeholders = ",".join("%s" for _ in project_ids)
+        for payment in query_db(
+            f"""
+            SELECT pg.*, u.nome AS usuario_nome
+            FROM projeto_pagamentos pg
+            LEFT JOIN usuarios u ON u.id = pg.usuario_id
+            WHERE pg.projeto_id IN ({placeholders})
+            ORDER BY COALESCE(pg.data_pagamento, '') DESC, pg.id DESC
+            """,
+            project_ids,
+        ):
+            payments_by_project.setdefault(payment["projeto_id"], []).append(payment)
+
+    return render_template(
+        "financeiro.html",
+        em_aberto=em_aberto,
+        concluidos_pendentes=concluidos_pendentes,
+        quase_prontos=quase_prontos,
+        payments_by_project=payments_by_project,
+        formas_pagamento=FORMAS_PAGAMENTO,
+        quase_pronto_pct=FINANCEIRO_QUASE_PRONTO_PCT,
+        resumo={
+            "total_a_receber": a_receber_ativos + a_receber_concluidos,
+            "a_receber_ativos": a_receber_ativos,
+            "a_receber_concluidos": a_receber_concluidos,
+            "total_carteira": total_carteira,
+            "recebido_total": float(recebido["total"] or 0.0),
+            "recebido_30d": float(recebido["ultimos_30d"] or 0.0),
+            "quase_prontos_count": len(quase_prontos),
+            "quase_prontos_saldo": quase_prontos_saldo,
+            "sem_valor_count": sem_valor_count,
+        },
+    )
+
+
+@app.route("/financeiro/pagamento", methods=["POST"])
+@login_required
+def financeiro_registrar_pagamento():
+    denied = require_admin_or_redirect()
+    if denied:
+        return denied
+    ensure_financeiro_schema()
+    projeto_id = request.form.get("projeto_id")
+    projeto = query_db("SELECT id, nome, valor FROM projetos WHERE id = %s", (projeto_id,), one=True)
+    if not projeto:
+        flash("Projeto nao encontrado.", "danger")
+        return redirect(url_for("financeiro"))
+    valor = parse_currency_value(request.form.get("valor", "").strip())
+    if not valor or valor <= 0:
+        flash("Informe um valor de pagamento maior que zero.", "danger")
+        return redirect(url_for("financeiro"))
+    forma = request.form.get("forma_pagamento", "")
+    if forma not in FORMAS_PAGAMENTO:
+        forma = "OUTRO"
+    data_pagamento = parse_payment_date(request.form.get("data_pagamento"))
+    execute_db(
+        """
+        INSERT INTO projeto_pagamentos
+            (projeto_id, valor, forma_pagamento, data_pagamento, observacoes, criado_em, usuario_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            projeto["id"],
+            valor,
+            forma,
+            data_pagamento,
+            request.form.get("observacoes", "").strip(),
+            app_now_iso(),
+            g.user["id"],
+        ),
+    )
+    total_pago = scalar(
+        get_db(), "SELECT COALESCE(SUM(valor), 0) FROM projeto_pagamentos WHERE projeto_id = %s", (projeto["id"],)
+    )
+    saldo = round(float(projeto["valor"] or 0.0) - float(total_pago or 0.0), 2)
+    if projeto["valor"] and saldo < -0.005:
+        flash(
+            f"Pagamento registrado. Atencao: o total pago supera o valor do projeto em {format_currency(abs(saldo))}.",
+            "warning",
+        )
+    elif projeto["valor"]:
+        flash(f"Pagamento de {format_currency(valor)} registrado. Saldo restante: {format_currency(max(saldo, 0))}.", "success")
+    else:
+        flash(f"Pagamento de {format_currency(valor)} registrado. Defina o valor do projeto para acompanhar o saldo.", "success")
+    return redirect(url_for("financeiro"))
+
+
+@app.route("/financeiro/pagamento/<int:payment_id>/excluir", methods=["POST"])
+@login_required
+def financeiro_excluir_pagamento(payment_id):
+    denied = require_admin_or_redirect()
+    if denied:
+        return denied
+    ensure_financeiro_schema()
+    payment = query_db("SELECT id, valor FROM projeto_pagamentos WHERE id = %s", (payment_id,), one=True)
+    if not payment:
+        flash("Pagamento nao encontrado.", "danger")
+        return redirect(url_for("financeiro"))
+    execute_db("DELETE FROM projeto_pagamentos WHERE id = %s", (payment_id,))
+    flash(f"Pagamento de {format_currency(payment['valor'])} excluido.", "success")
+    return redirect(url_for("financeiro"))
+
+
+@app.route("/financeiro/projeto/<int:project_id>/valor", methods=["POST"])
+@login_required
+def financeiro_definir_valor(project_id):
+    denied = require_admin_or_redirect()
+    if denied:
+        return denied
+    projeto = query_db("SELECT id FROM projetos WHERE id = %s", (project_id,), one=True)
+    if not projeto:
+        flash("Projeto nao encontrado.", "danger")
+        return redirect(url_for("financeiro"))
+    valor = parse_currency_value(request.form.get("valor", "").strip())
+    if valor is None or valor < 0:
+        flash("Informe um valor valido para o projeto.", "danger")
+        return redirect(url_for("financeiro"))
+    execute_db("UPDATE projetos SET valor = %s WHERE id = %s", (valor, project_id))
+    flash(f"Valor do projeto atualizado para {format_currency(valor)}.", "success")
+    return redirect(url_for("financeiro"))
 
 
 @app.route("/cartorio")

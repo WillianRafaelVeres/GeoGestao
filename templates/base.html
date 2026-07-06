@@ -28,6 +28,9 @@
             <a class="{{ 'active' if request.endpoint == 'my_missions' else '' }}" href="{{ url_for('my_missions') }}">Minhas missoes</a>
             <a class="{{ 'active' if request.endpoint == 'cartorio_board' else '' }}" href="{{ url_for('cartorio_board') }}">Cartorio e orgaos</a>
             <a class="{{ 'active' if request.endpoint == 'reports' else '' }}" href="{{ url_for('reports') }}">Relatorios</a>
+            {% if can_admin() %}
+                <a class="{{ 'active' if request.endpoint == 'financeiro' else '' }}" href="{{ url_for('financeiro') }}">Financeiro</a>
+            {% endif %}
             <div class="nav-label">Cadastros</div>
             <a class="{{ 'active' if request.endpoint == 'clients' else '' }}" href="{{ url_for('clients') }}">Clientes</a>
             <a class="{{ 'active' if request.endpoint == 'cartorios' else '' }}" href="{{ url_for('cartorios') }}">Cartorios</a>
@@ -66,7 +69,7 @@
 <script type="speculationrules">
 {
     "prerender": [{
-        "where": {"href_matches": ["/", "/projects", "/my-missions", "/cartorio", "/reports", "/clients", "/cartorios", "/users"]},
+        "where": {"href_matches": ["/", "/projects", "/my-missions", "/cartorio", "/reports", "/clients", "/cartorios", "/users", "/financeiro"]},
         "eagerness": "moderate"
     }]
 }
