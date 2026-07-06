@@ -1426,8 +1426,8 @@ a:hover { color: #1d4ed8; }
 .active-stage-cell.tone-amber { border-color: #ead39a; border-left-color: var(--amber); background: #fff9ea; }
 .active-stage-cell.tone-red, .active-stage-cell.is-late { border-color: #fca5a5; border-left-color: var(--red); background: #fef2f2; }
 .active-stage-cell.tone-purple { border-color: #d8c8ee; border-left-color: var(--purple); background: #f5f3ff; }
-.active-stage-cell.is-unassigned { border-color: #93c5fd; border-left-color: #2563eb; background: #eff6ff; }
-.active-stage-cell.is-unassigned strong { color: #1d4ed8; }
+.active-stage-cell.is-unassigned { border-color: #ead39a; border-left-color: var(--amber); background: #fff9ea; }
+.active-stage-cell.is-unassigned strong { color: #92400e; }
 
 /* Past stages (concluido) — only dots, no interaction */
 .cell-past {
