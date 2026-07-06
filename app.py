@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -9,6 +10,7 @@ import secrets
 import smtplib
 import socket
 import sys
+import threading
 import time
 from email.message import EmailMessage
 import psycopg2
@@ -323,9 +325,34 @@ BACKLOG_FUTURO = [
 app = Flask(__name__)
 app.config.from_mapping(SECRET_KEY=SECRET_KEY, DATABASE_URL=DATABASE_URL)
 
+_static_version_cache = {}
+
+
+def _static_file_version(filename):
+    cached = _static_version_cache.get(filename)
+    if cached is not None:
+        return cached
+    try:
+        version = str(int(os.stat(os.path.join(app.static_folder, filename)).st_mtime))
+    except OSError:
+        version = "0"
+    if not app.debug:
+        _static_version_cache[filename] = version
+    return version
+
+
+@app.url_defaults
+def add_static_version(endpoint, values):
+    # Anexa ?v=<mtime> a todo url_for('static', ...): o browser pode cachear
+    # por um ano e ainda assim buscar a versao nova assim que o arquivo mudar.
+    if endpoint == "static" and "filename" in values:
+        values.setdefault("v", _static_file_version(values["filename"]))
+
 DB_POOL_MINCONN = int(os.environ.get("GEOGESTAO_DB_POOL_MINCONN", "1"))
-DB_POOL_MAXCONN = int(os.environ.get("GEOGESTAO_DB_POOL_MAXCONN", "4"))
+DB_POOL_MAXCONN = int(os.environ.get("GEOGESTAO_DB_POOL_MAXCONN", "10"))
 DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("GEOGESTAO_DB_STATEMENT_TIMEOUT_MS", "30000"))
+DB_IDLE_PING_SECONDS = int(os.environ.get("GEOGESTAO_DB_IDLE_PING_SECONDS", "240"))
+USER_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_USER_CACHE_TTL_SECONDS", "60"))
 PERF_LOG_ENABLED = os.environ.get("GEOGESTAO_PERF_LOG", "0") == "1"
 REPORTS_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_REPORTS_CACHE_TTL_SECONDS", "60"))
 DUE_STATUS_REFRESH_TTL_SECONDS = int(os.environ.get("GEOGESTAO_DUE_STATUS_REFRESH_TTL_SECONDS", "300"))
@@ -343,6 +370,7 @@ _reports_cache = {"expires_at": 0.0, "value": None}
 _lookup_cache = {}
 _due_statuses_next_refresh = 0.0
 _refreshing_due_statuses = False
+_due_refresh_lock = threading.Lock()
 
 
 class PgConn:
@@ -387,6 +415,7 @@ class PgConn:
         if not self._conn.closed and self._conn.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
             self._conn.rollback()
         if self._release_callback:
+            self._conn.geogestao_last_used = time.monotonic()
             self._release_callback(self._conn)
         else:
             self._conn.close()
@@ -406,6 +435,21 @@ def _execute_cursor(cur, query, args=()):
         _record_query_time(time.perf_counter() - start)
 
 
+class _AppConnection(psycopg2.extensions.connection):
+    """Conexão que lembra se já foi configurada, evitando SET/commit a cada checkout."""
+
+    geogestao_configured = False
+    geogestao_last_used = 0.0
+
+
+def _configure_connection(conn):
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+    conn.commit()
+    conn.geogestao_configured = True
+    conn.geogestao_last_used = time.monotonic()
+
+
 def _create_raw_connection(database_url):
     conn = psycopg2.connect(
         database_url,
@@ -416,10 +460,9 @@ def _create_raw_connection(database_url):
         keepalives_interval=10,
         keepalives_count=3,
         application_name="geogestao",
+        connection_factory=_AppConnection,
     )
-    with conn.cursor() as cur:
-        cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
-    conn.commit()
+    _configure_connection(conn)
     return conn
 
 
@@ -437,15 +480,28 @@ def _get_db_pool(database_url):
             keepalives_interval=10,
             keepalives_count=3,
             application_name="geogestao",
+            connection_factory=_AppConnection,
         )
-        conn = _db_pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
-            conn.commit()
-        finally:
-            _db_pool.putconn(conn)
     return _db_pool
+
+
+def _checkout_pooled_connection(pool):
+    conn = pool.getconn()
+    try:
+        if conn.closed:
+            raise psycopg2.OperationalError("conexao do pool ja estava fechada")
+        if not conn.geogestao_configured:
+            _configure_connection(conn)
+        elif time.monotonic() - conn.geogestao_last_used > DB_IDLE_PING_SECONDS:
+            # Conexão ociosa há muito tempo: o pooler pode tê-la derrubado em silêncio.
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            conn.rollback()
+            conn.geogestao_last_used = time.monotonic()
+        return conn
+    except Exception:
+        pool.putconn(conn, close=True)
+        raise
 
 
 def _connect_with_retry(database_url, use_pool=True):
@@ -455,12 +511,15 @@ def _connect_with_retry(database_url, use_pool=True):
         try:
             if use_pool:
                 pool = _get_db_pool(database_url)
-                conn = pool.getconn()
-                with conn.cursor() as cur:
-                    cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
-                conn.commit()
+                conn = _checkout_pooled_connection(pool)
                 return PgConn(conn, release_callback=pool.putconn)
             return PgConn(_create_raw_connection(database_url))
+        except psycopg2.pool.PoolError as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(0.1 * attempt)
+                continue
+            raise
         except psycopg2.OperationalError as exc:
             last_error = exc
             message = str(exc)
@@ -538,6 +597,40 @@ def log_perf_metrics(response):
                 query_count,
                 db_ms,
             )
+    return response
+
+
+COMPRESSIBLE_MIMETYPES = {
+    "text/html",
+    "text/css",
+    "text/plain",
+    "text/csv",
+    "application/javascript",
+    "application/json",
+    "image/svg+xml",
+}
+
+
+@app.after_request
+def apply_response_optimizations(response):
+    # Estaticos versionados (?v=mtime) podem ser cacheados como imutaveis.
+    if request.endpoint == "static" and request.args.get("v"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    # Compressao gzip: as paginas maiores caem de ~130KB para ~13KB.
+    if (
+        response.status_code == 200
+        and not response.direct_passthrough
+        and response.mimetype in COMPRESSIBLE_MIMETYPES
+        and not response.headers.get("Content-Encoding")
+        and "gzip" in (request.headers.get("Accept-Encoding") or "").lower()
+    ):
+        payload = response.get_data()
+        if len(payload) > 1024:
+            compressed = gzip.compress(payload, compresslevel=6)
+            if len(compressed) < len(payload):
+                response.set_data(compressed)
+                response.headers["Content-Encoding"] = "gzip"
+                response.vary.add("Accept-Encoding")
     return response
 
 
@@ -2991,57 +3084,97 @@ def get_reports_context_cached():
     return context
 
 
+def _run_due_status_updates(db, today, now_iso):
+    db.execute(
+        """
+        UPDATE projeto_etapas
+        SET status = 'atrasado', atraso_origem = COALESCE(atraso_origem, 'interno')
+        WHERE prazo IS NOT NULL
+          AND prazo != ''
+          AND prazo < %s
+          AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+          AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo', 'atrasado')
+        """,
+        (today,),
+    )
+    db.execute(
+        """
+        UPDATE tarefas
+        SET status = 'atrasado'
+        WHERE prazo IS NOT NULL
+          AND prazo != ''
+          AND prazo < %s
+          AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo', 'atrasado')
+        """,
+        (today,),
+    )
+    db.execute(
+        """
+        UPDATE exigencias_cartorio
+        SET status = 'atrasado', atualizado_em = %s
+        WHERE prazo_resposta IS NOT NULL
+          AND prazo_resposta != ''
+          AND prazo_resposta < %s
+          AND lower(status) NOT IN ('concluido', 'cancelado', 'atrasado')
+        """,
+        (now_iso, today),
+    )
+    db.commit()
+
+
+def _background_due_status_refresh(today, now_iso):
+    global _due_statuses_next_refresh, _refreshing_due_statuses
+    try:
+        db = connect_db()
+        try:
+            _run_due_status_updates(db, today, now_iso)
+        finally:
+            db.close()
+        invalidate_runtime_caches()
+        _due_statuses_next_refresh = time.monotonic() + DUE_STATUS_REFRESH_TTL_SECONDS
+    except Exception:
+        app.logger.exception("Falha ao atualizar status vencidos em background.")
+        _due_statuses_next_refresh = time.monotonic() + 30.0
+    finally:
+        _refreshing_due_statuses = False
+
+
 def refresh_due_statuses(force=False):
+    """Marca etapas/tarefas/exigencias vencidas como atrasadas.
+
+    O caminho normal (TTL) roda em uma thread de background para nunca
+    segurar o carregamento da pagina; force=True mantem o comportamento
+    sincrono na conexao do request.
+    """
     global _due_statuses_next_refresh, _refreshing_due_statuses
     now_monotonic = time.monotonic()
     if not force and now_monotonic < _due_statuses_next_refresh:
         return
-    _refreshing_due_statuses = True
     today = app_today().isoformat()
-    db = get_db()
-    try:
-        db.execute(
-            """
-            UPDATE projeto_etapas
-            SET status = 'atrasado', atraso_origem = COALESCE(atraso_origem, 'interno')
-            WHERE prazo IS NOT NULL
-              AND prazo != ''
-              AND prazo < %s
-              AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-              AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo', 'atrasado')
-            """,
-            (today,),
-        )
-        db.execute(
-            """
-            UPDATE tarefas
-            SET status = 'atrasado'
-            WHERE prazo IS NOT NULL
-              AND prazo != ''
-              AND prazo < %s
-              AND lower(status) NOT IN ('concluido', 'cancelado', 'aguardando externo', 'atrasado')
-            """,
-            (today,),
-        )
-        db.execute(
-            """
-            UPDATE exigencias_cartorio
-            SET status = 'atrasado', atualizado_em = %s
-            WHERE prazo_resposta IS NOT NULL
-              AND prazo_resposta != ''
-              AND prazo_resposta < %s
-              AND lower(status) NOT IN ('concluido', 'cancelado', 'atrasado')
-            """,
-            (app_now_iso(), today),
-        )
-        db.commit()
-        invalidate_runtime_caches()
-        _due_statuses_next_refresh = time.monotonic() + DUE_STATUS_REFRESH_TTL_SECONDS
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        _refreshing_due_statuses = False
+    now_iso = app_now_iso()
+    if force:
+        _refreshing_due_statuses = True
+        db = get_db()
+        try:
+            _run_due_status_updates(db, today, now_iso)
+            invalidate_runtime_caches()
+            _due_statuses_next_refresh = time.monotonic() + DUE_STATUS_REFRESH_TTL_SECONDS
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            _refreshing_due_statuses = False
+        return
+    with _due_refresh_lock:
+        if time.monotonic() < _due_statuses_next_refresh or _refreshing_due_statuses:
+            return
+        _refreshing_due_statuses = True
+    threading.Thread(
+        target=_background_due_status_refresh,
+        args=(today, now_iso),
+        daemon=True,
+        name="geogestao-due-refresh",
+    ).start()
 
 
 def record_event(project_id, event_type, description, user_id=None):
@@ -3633,9 +3766,19 @@ def login_required(view):
 @app.before_request
 def load_logged_user():
     g.user = None
-    if "user_id" in session:
-        db = get_db()
-        g.user = db.execute("SELECT * FROM usuarios WHERE id = %s AND ativo = 1", (session["user_id"],)).fetchone()
+    user_id = session.get("user_id")
+    if user_id:
+        # Cache curto: evita uma ida ao banco em todo request. Qualquer escrita
+        # (execute_db) invalida o cache, entao alteracoes de usuario valem na hora.
+        g.user = get_cached_lookup(
+            ("logged_user", user_id),
+            lambda: query_db(
+                "SELECT * FROM usuarios WHERE id = %s AND ativo = 1",
+                (user_id,),
+                one=True,
+            ),
+            ttl_seconds=USER_CACHE_TTL_SECONDS,
+        )
 
 
 def format_date(value):

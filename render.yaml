@@ -4,7 +4,9 @@ services:
     runtime: python
     plan: free
     buildCommand: python -m pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 120
+    # Nota: o banco fica em sa-east-1 (Sao Paulo). Se este servico for recriado,
+    # escolha a regiao Render mais proxima (virginia) para reduzir a latencia por query.
+    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 120
     envVars:
       - key: GEOGESTAO_DEBUG
         value: "0"
