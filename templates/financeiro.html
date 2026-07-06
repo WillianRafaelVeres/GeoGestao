@@ -189,6 +189,7 @@
     <div class="modal-dialog modal-dialog-centered">
         <form method="post" action="{{ url_for('financeiro_registrar_pagamento') }}" class="modal-content">
             <input type="hidden" name="projeto_id" id="pagamentoProjetoId">
+            <input type="hidden" name="registro_uid" id="pagamentoRegistroUid">
             <div class="modal-header">
                 <div>
                     <span class="module-label">Registrar pagamento</span>
@@ -233,6 +234,12 @@ document.querySelectorAll("[data-pagamento-projeto]").forEach((botao) => {
     botao.addEventListener("click", () => {
         document.getElementById("pagamentoProjetoId").value = botao.dataset.pagamentoProjeto;
         document.getElementById("pagamentoProjetoNome").textContent = botao.dataset.pagamentoNome;
+        // Codigo unico por abertura do modal: pagamentos iguais entram normalmente,
+        // mas o reenvio acidental do mesmo formulario e ignorado pelo servidor.
+        document.getElementById("pagamentoRegistroUid").value =
+            (window.crypto && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : Date.now() + "-" + Math.random().toString(16).slice(2);
     });
 });
 </script>

@@ -630,6 +630,10 @@ def apply_response_optimizations(response):
     # Estaticos versionados (?v=mtime) podem ser cacheados como imutaveis.
     if request.endpoint == "static" and request.args.get("v"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    # Paginas financeiras nunca podem sair de cache/prerender/bfcache:
+    # o usuario precisa ver sempre o estado atual dos pagamentos.
+    if request.path.startswith("/financeiro"):
+        response.headers["Cache-Control"] = "no-store"
     # Compressao gzip: as paginas maiores caem de ~130KB para ~13KB.
     if (
         response.status_code == 200
@@ -748,6 +752,7 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_usuario_criado ON senha_reset_tokens (usuario_id, criado_em DESC)",
         "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_expires ON senha_reset_tokens (expires_at)",
         "CREATE INDEX IF NOT EXISTS idx_projeto_pagamentos_projeto ON projeto_pagamentos (projeto_id, data_pagamento DESC, id DESC)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_pagamentos_registro_uid ON projeto_pagamentos (registro_uid)",
     ]
     cur = db.cursor()
     try:
@@ -1333,7 +1338,8 @@ def init_db():
             data_pagamento TEXT,
             observacoes TEXT,
             criado_em TEXT NOT NULL,
-            usuario_id INTEGER
+            usuario_id INTEGER,
+            registro_uid TEXT
         );
         """
     )
@@ -7512,6 +7518,13 @@ def ensure_financeiro_schema():
             ON projeto_pagamentos (projeto_id, data_pagamento DESC, id DESC)
         """
     )
+    # registro_uid: identificador unico de cada envio do formulario. Permite
+    # aceitar pagamentos identicos de proposito e ignorar reenvios do mesmo
+    # formulario (clique duplo, F5 reenviando o POST).
+    add_column_if_missing(db, "projeto_pagamentos", "registro_uid", "TEXT")
+    db.execute_statements(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_pagamentos_registro_uid ON projeto_pagamentos (registro_uid)"
+    )
     db.commit()
     _financeiro_schema_ready = True
 
@@ -7685,22 +7698,34 @@ def financeiro_registrar_pagamento():
     if forma not in FORMAS_PAGAMENTO:
         forma = "OUTRO"
     data_pagamento = parse_payment_date(request.form.get("data_pagamento"))
-    execute_db(
-        """
-        INSERT INTO projeto_pagamentos
-            (projeto_id, valor, forma_pagamento, data_pagamento, observacoes, criado_em, usuario_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            projeto["id"],
-            valor,
-            forma,
-            data_pagamento,
-            request.form.get("observacoes", "").strip(),
-            app_now_iso(),
-            g.user["id"],
-        ),
-    )
+    # Identificador unico do envio: cada abertura do modal gera um novo, entao
+    # pagamentos iguais de proposito entram; so o reenvio do MESMO formulario
+    # (clique duplo, F5 reenviando) e ignorado.
+    registro_uid = (request.form.get("registro_uid") or "").strip()[:64] or secrets.token_hex(16)
+    if query_db("SELECT id FROM projeto_pagamentos WHERE registro_uid = %s", (registro_uid,), one=True):
+        flash("Este pagamento ja havia sido salvo — o envio repetido foi ignorado.", "info")
+        return redirect(url_for("financeiro"))
+    try:
+        execute_db(
+            """
+            INSERT INTO projeto_pagamentos
+                (projeto_id, valor, forma_pagamento, data_pagamento, observacoes, criado_em, usuario_id, registro_uid)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                projeto["id"],
+                valor,
+                forma,
+                data_pagamento,
+                request.form.get("observacoes", "").strip(),
+                app_now_iso(),
+                g.user["id"],
+                registro_uid,
+            ),
+        )
+    except psycopg2.errors.UniqueViolation:
+        flash("Este pagamento ja havia sido salvo — o envio repetido foi ignorado.", "info")
+        return redirect(url_for("financeiro"))
     total_pago = scalar(
         get_db(), "SELECT COALESCE(SUM(valor), 0) FROM projeto_pagamentos WHERE projeto_id = %s", (projeto["id"],)
     )
