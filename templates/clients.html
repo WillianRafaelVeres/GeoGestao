@@ -134,11 +134,12 @@
                                 </div>
                                 <div class="form-grid four">
                                     {{ field_text('Data de nascimento', 'pf_data_nascimento', pf.data_nascimento, 'date') }}
-                                    {{ uf_select('UF nascimento', 'pf_uf_nascimento', pf.uf_nascimento) }}
-                                    {{ field_text('Cidade nascimento', 'pf_cidade_nascimento', pf.cidade_nascimento) }}
+                                    {{ uf_select('UF nascimento', 'pf_uf_nascimento', pf.uf_nascimento, '', 'data-city-uf="pf_nasc"') }}
+                                    {{ field_text('Cidade nascimento', 'pf_cidade_nascimento', pf.cidade_nascimento, 'text', '', '', '', 'data-city-input="pf_nasc"') }}
                                     {{ field_text('Nome do pai', 'pf_nome_pai', pf.nome_pai) }}
                                     {{ field_text('Nome da mae', 'pf_nome_mae', pf.nome_mae) }}
                                 </div>
+                                <div class="city-warning" data-city-warning="pf_nasc">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                             </div>
                             <div class="form-subsection" data-client-section="contato">
                                 <div class="form-subsection-title">
@@ -180,14 +181,14 @@
                                 {{ field_text('E-mail', 'pj_email', pj.email, 'email') }}
                                 {{ field_text('Telefone', 'pj_telefone', format_phone(pj.telefone), 'text', 'phone') }}
                                 {{ field_text('CEP', 'pj_cep', format_cep(pj.cep), 'text', 'cep', '', '', 'data-cep-prefix="pj"') }}
-                                {{ uf_select('UF', 'pj_uf', pj.uf, '', 'data-city-uf') }}
-                                {{ field_text('Cidade', 'pj_cidade', pj.cidade, 'text', '', '', '', 'data-city-input') }}
+                                {{ uf_select('UF', 'pj_uf', pj.uf, '', 'data-city-uf="pj"') }}
+                                {{ field_text('Cidade', 'pj_cidade', pj.cidade, 'text', '', '', '', 'data-city-input="pj"') }}
                                 {{ field_text('Bairro', 'pj_bairro', pj.bairro) }}
                                 {{ field_text('Logradouro', 'pj_logradouro', pj.logradouro) }}
                                 {{ field_text('Numero', 'pj_numero', pj.numero) }}
                                 {{ field_text('Complemento', 'pj_complemento', pj.complemento) }}
                             </div>
-                            <div class="city-warning">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
+                            <div class="city-warning" data-city-warning="pj">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
 
                         <section class="client-section conditional-section" data-section="pf-address" data-client-section="endereco-pf">
@@ -197,14 +198,14 @@
                             </div>
                             <div class="form-grid four">
                                 {{ field_text('CEP', 'pf_end_cep', format_cep(endereco.cep), 'text', 'cep', '', '', 'data-cep-prefix="pf_end"') }}
-                                {{ uf_select('UF', 'pf_end_uf', endereco.uf, '', 'data-city-uf') }}
-                                {{ field_text('Cidade', 'pf_end_cidade', endereco.cidade, 'text', '', '', '', 'data-city-input') }}
+                                {{ uf_select('UF', 'pf_end_uf', endereco.uf, '', 'data-city-uf="pf_end"') }}
+                                {{ field_text('Cidade', 'pf_end_cidade', endereco.cidade, 'text', '', '', '', 'data-city-input="pf_end"') }}
                                 {{ field_text('Bairro', 'pf_end_bairro', endereco.bairro) }}
                                 {{ field_text('Logradouro', 'pf_end_logradouro', endereco.logradouro) }}
                                 {{ field_text('Numero', 'pf_end_numero', endereco.numero) }}
                                 {{ field_text('Complemento', 'pf_end_complemento', endereco.complemento) }}
                             </div>
-                            <div class="city-warning">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
+                            <div class="city-warning" data-city-warning="pf_end">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
 
                         <section class="client-section conditional-section" data-section="procurador" data-client-section="procurador">
@@ -238,15 +239,15 @@
                                 {{ field_text('E-mail', 'proc_email', procurador.email, 'email') }}
                                 {{ field_text('Telefone', 'proc_telefone', format_phone(procurador.telefone), 'text', 'phone') }}
                                 {{ field_text('CEP', 'proc_cep', format_cep(procurador.cep), 'text', 'cep', '', '', 'data-cep-prefix="proc"') }}
-                                {{ uf_select('UF', 'proc_uf', procurador.uf, '', 'data-city-uf') }}
-                                {{ field_text('Cidade', 'proc_cidade', procurador.cidade, 'text', '', '', '', 'data-city-input') }}
+                                {{ uf_select('UF', 'proc_uf', procurador.uf, '', 'data-city-uf="proc"') }}
+                                {{ field_text('Cidade', 'proc_cidade', procurador.cidade, 'text', '', '', '', 'data-city-input="proc"') }}
                                 {{ field_text('Bairro', 'proc_bairro', procurador.bairro) }}
                                 {{ field_text('Logradouro', 'proc_logradouro', procurador.logradouro) }}
                                 {{ field_text('Numero', 'proc_numero', procurador.numero) }}
                                 {{ field_text('Complemento', 'proc_complemento', procurador.complemento) }}
                                 {{ field_text('Texto adicional/habilitacao', 'proc_texto_adicional', procurador.texto_adicional, 'text', '', 'span-2', 'Ex.: profissional habilitado, CFTA no ...') }}
                             </div>
-                            <div class="city-warning">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
+                            <div class="city-warning" data-city-warning="proc">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
 
                         <section class="client-section">

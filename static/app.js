@@ -419,13 +419,6 @@ function initDocumentalClientForm() {
     if (!forms.length) return;
 
     const spouseRequiredRegimes = ["COMUNHAO_PARCIAL", "COMUNHAO_UNIVERSAL", "PARTICIPACAO_FINAL_AQUESTOS"];
-    const citiesByUf = {
-        PR: ["Rio Negro", "Curitiba", "Campo Largo", "Lapa", "Sao Mateus do Sul"],
-        SC: ["Mafra", "Joinville", "Florianopolis", "Canoinhas", "Porto Uniao"],
-        SP: ["Sao Paulo", "Campinas", "Santos", "Sorocaba", "Jundiai"],
-        RS: ["Porto Alegre", "Caxias do Sul", "Pelotas", "Santa Maria"],
-        MG: ["Belo Horizonte", "Uberlandia", "Juiz de Fora", "Contagem"],
-    };
 
     forms.forEach((form) => {
         const tipoCliente = form.querySelector('[data-role="tipo-cliente"]');
@@ -517,11 +510,6 @@ function initDocumentalClientForm() {
             pfSexo.addEventListener("change", updateDefaultNationality);
         }
 
-        form.querySelectorAll("[data-city-input], [data-city-uf]").forEach((field) => {
-            field.addEventListener("change", () => updateCityWarnings(form));
-            field.addEventListener("input", () => updateCityWarnings(form));
-        });
-
         setupCepLookup(form, updateCityWarnings);
         setupCpfInlineValidation(form);
         setupCnpjLookup(form, updateCityWarnings);
@@ -552,27 +540,8 @@ function initDocumentalClientForm() {
     initPendingFocusShortcuts();
 
     function updateCityWarnings(form) {
-        form.querySelectorAll(".client-section").forEach((section) => {
-            const uf = section.querySelector("[data-city-uf]");
-            const city = section.querySelector("[data-city-input]");
-            const warning = section.querySelector(".city-warning");
-            if (!uf || !city || !warning || !uf.value || !city.value) {
-                if (warning) warning.classList.remove("is-visible");
-                return;
-            }
-            const allowed = citiesByUf[uf.value];
-            const normalized = normalizeCity(city.value);
-            const isKnown = !allowed || allowed.map(normalizeCity).includes(normalized);
-            warning.classList.toggle("is-visible", !isKnown);
-        });
-    }
-
-    function normalizeCity(value) {
-        return (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .toLowerCase()
-            .trim();
+        // A validacao de cidade x UF vive no CityService (lista oficial do IBGE).
+        if (window.CityService) window.CityService.refreshWarnings(form);
     }
 }
 

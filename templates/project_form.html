@@ -35,13 +35,19 @@
                 <div class="ac-list" id="cartorioList"></div>
             </div>
         </div>
-        <div class="col-md-4">
-            <label class="form-label">Cidade</label>
-            <input class="form-control" name="cidade" />
-        </div>
         <div class="col-md-2">
             <label class="form-label">UF</label>
-            <input class="form-control" name="uf" maxlength="2" value="SP" />
+            <select class="form-select" name="uf" data-city-uf="projeto">
+                <option value="">UF</option>
+                {% for uf_option in ufs %}
+                    <option value="{{ uf_option }}">{{ uf_option }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <label class="form-label">Cidade</label>
+            <input class="form-control" name="cidade" data-city-input="projeto" autocomplete="off" placeholder="Selecione a UF e digite..." />
+            <div class="city-warning" data-city-warning="projeto">Verifique a cidade: ela nao foi encontrada para a UF selecionada.</div>
         </div>
         <div class="col-md-6">
             <label class="form-label">Tipo de processo</label>

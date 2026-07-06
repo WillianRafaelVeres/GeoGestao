@@ -4376,6 +4376,7 @@ def utility_processor():
         "can_manage": can_manage,
         "can_admin": can_admin,
         "today_iso": app_today().isoformat(),
+        "ufs": UFS,
     }
 
 

@@ -44,8 +44,20 @@
             <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
             <div><label class="form-label">CNS</label><input class="form-control" name="cns" placeholder="Codigo Nacional de Serventia" /></div>
             <div class="row g-2">
-                <div class="col-8"><label class="form-label">Cidade</label><input class="form-control" name="cidade" /></div>
-                <div class="col-4"><label class="form-label">UF</label><input class="form-control" name="uf" maxlength="2" /></div>
+                <div class="col-4">
+                    <label class="form-label">UF</label>
+                    <select class="form-select" name="uf" data-city-uf="cartorio">
+                        <option value="">UF</option>
+                        {% for uf_option in ufs %}
+                            <option value="{{ uf_option }}">{{ uf_option }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-8">
+                    <label class="form-label">Cidade</label>
+                    <input class="form-control" name="cidade" data-city-input="cartorio" autocomplete="off" placeholder="Selecione a UF e digite..." />
+                    <div class="city-warning" data-city-warning="cartorio">Verifique a cidade: ela nao foi encontrada para a UF selecionada.</div>
+                </div>
             </div>
             <div><label class="form-label">Contato</label><input class="form-control" name="contato" /></div>
             <div><label class="form-label">Oficial</label><input class="form-control" name="oficial" /></div>
@@ -77,8 +89,24 @@
                 <div class="row g-3">
                     <div class="col-md-8"><label class="form-label">Nome</label><input class="form-control" name="nome" value="{{ item.nome }}" required /></div>
                     <div class="col-md-4"><label class="form-label">CNS</label><input class="form-control" name="cns" value="{{ item.cns or '' }}" /></div>
-                    <div class="col-md-8"><label class="form-label">Cidade</label><input class="form-control" name="cidade" value="{{ item.cidade or '' }}" /></div>
-                    <div class="col-md-4"><label class="form-label">UF</label><input class="form-control" name="uf" maxlength="2" value="{{ item.uf or '' }}" /></div>
+                    <div class="col-md-4">
+                        <label class="form-label">UF</label>
+                        <select class="form-select" name="uf" data-city-uf="cartorio">
+                            <option value="">UF</option>
+                            {% set item_uf = (item.uf or '')|upper %}
+                            {% if item.uf and item_uf not in ufs %}
+                                <option value="{{ item.uf }}" selected>{{ item.uf }}</option>
+                            {% endif %}
+                            {% for uf_option in ufs %}
+                                <option value="{{ uf_option }}" {% if item_uf == uf_option %}selected{% endif %}>{{ uf_option }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-8">
+                        <label class="form-label">Cidade</label>
+                        <input class="form-control" name="cidade" value="{{ item.cidade or '' }}" data-city-input="cartorio" autocomplete="off" />
+                        <div class="city-warning" data-city-warning="cartorio">Verifique a cidade: ela nao foi encontrada para a UF selecionada.</div>
+                    </div>
                     <div class="col-md-6"><label class="form-label">Contato principal</label><input class="form-control" name="contato" value="{{ item.contato or '' }}" /></div>
                     <div class="col-md-6"><label class="form-label">Oficial</label><input class="form-control" name="oficial" value="{{ item.oficial or '' }}" /></div>
                     <div class="col-md-4"><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" value="{{ item.email or '' }}" /></div>

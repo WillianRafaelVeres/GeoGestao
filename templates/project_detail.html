@@ -108,13 +108,31 @@
                 </div>
 
                 <div class="col-12"><h3 class="form-section-title">Localizacao e processo</h3></div>
-                <div class="col-md-4">
-                    <label class="form-label">Cidade</label>
-                    <input class="form-control" name="cidade" value="{{ project.cidade or '' }}" {% if not can_manage() %}readonly{% endif %} />
-                </div>
                 <div class="col-md-2">
                     <label class="form-label">UF</label>
-                    <input class="form-control" name="uf" value="{{ project.uf or '' }}" {% if not can_manage() %}readonly{% endif %} />
+                    {% if can_manage() %}
+                        <select class="form-select" name="uf" data-city-uf="projeto">
+                            <option value="">UF</option>
+                            {% set project_uf = (project.uf or '')|upper %}
+                            {% if project.uf and project_uf not in ufs %}
+                                <option value="{{ project.uf }}" selected>{{ project.uf }}</option>
+                            {% endif %}
+                            {% for uf_option in ufs %}
+                                <option value="{{ uf_option }}" {% if project_uf == uf_option %}selected{% endif %}>{{ uf_option }}</option>
+                            {% endfor %}
+                        </select>
+                    {% else %}
+                        <input class="form-control" name="uf" value="{{ project.uf or '' }}" readonly />
+                    {% endif %}
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Cidade</label>
+                    {% if can_manage() %}
+                        <input class="form-control" name="cidade" value="{{ project.cidade or '' }}" data-city-input="projeto" autocomplete="off" />
+                        <div class="city-warning" data-city-warning="projeto">Verifique a cidade: ela nao foi encontrada para a UF selecionada.</div>
+                    {% else %}
+                        <input class="form-control" name="cidade" value="{{ project.cidade or '' }}" readonly />
+                    {% endif %}
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Tipo de processo</label>
