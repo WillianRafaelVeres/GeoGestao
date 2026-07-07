@@ -26,6 +26,7 @@
     {% set pj = context.pessoa_juridica or {} %}
     {% set endereco = context.endereco or {} %}
     {% set procurador = context.procurador or {} %}
+    {% set procuradores = context.procuradores or ([procurador] if procurador else []) %}
     {% set pend = context.cliente_pendencias or {} %}
     <div class="modal fade client-modal" id="{{ modal_id }}" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
@@ -210,42 +211,157 @@
 
                         <section class="client-section conditional-section" data-section="procurador" data-client-section="procurador">
                             <div class="client-section-title">
-                                <h3>5. Procurador / representante</h3>
-                                <small>Exibido somente quando quem assina e procurador ou quando o cliente e PJ.</small>
+                                <h3>5. Procuradores e representantes</h3>
+                                <small>Adicione um ou mais responsaveis pela assinatura sem ocupar espaco no cadastro.</small>
                             </div>
-                            <div class="form-grid four">
-                                {{ field_text('Nome completo', 'proc_nome_completo', procurador.nome_completo) }}
-                                {{ field_text('CPF', 'proc_cpf', format_cpf(procurador.cpf), 'text', 'cpf') }}
-                                {{ field_text('RG', 'proc_rg', procurador.rg, 'text', '', '', '', 'maxlength="20"') }}
-                                {{ field_text('Orgao RG', 'proc_orgao_expedidor_rg', procurador.orgao_expedidor_rg, 'text', '', '', '', 'maxlength="20"') }}
-                                {{ field_text('Nacionalidade', 'proc_nacionalidade', procurador.nacionalidade) }}
-                                {{ field_text('Profissao/ocupacao', 'proc_profissao_ocupacao', procurador.profissao_ocupacao) }}
-                                <label>Sexo
-                                    <select name="proc_sexo">
-                                        <option value="">Selecione</option>
-                                        {% for key, label in sexos.items() %}
-                                            <option value="{{ key }}" {% if procurador.sexo == key %}selected{% endif %}>{{ label }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </label>
-                                <label>Estado civil
-                                    <select name="proc_estado_civil">
-                                        <option value="">Selecione</option>
-                                        {% for key, label in estados_civis.items() %}
-                                            <option value="{{ key }}" {% if procurador.estado_civil == key %}selected{% endif %}>{{ label }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </label>
-                                {{ field_text('E-mail', 'proc_email', procurador.email, 'email') }}
-                                {{ field_text('Telefone', 'proc_telefone', format_phone(procurador.telefone), 'text', 'phone') }}
-                                {{ field_text('CEP', 'proc_cep', format_cep(procurador.cep), 'text', 'cep', '', '', 'data-cep-prefix="proc"') }}
-                                {{ uf_select('UF', 'proc_uf', procurador.uf, '', 'data-city-uf="proc"') }}
-                                {{ field_text('Cidade', 'proc_cidade', procurador.cidade, 'text', '', '', '', 'data-city-input="proc"') }}
-                                {{ field_text('Bairro', 'proc_bairro', procurador.bairro) }}
-                                {{ field_text('Logradouro', 'proc_logradouro', procurador.logradouro) }}
-                                {{ field_text('Numero', 'proc_numero', procurador.numero) }}
-                                {{ field_text('Complemento', 'proc_complemento', procurador.complemento) }}
-                                {{ field_text('Texto adicional/habilitacao', 'proc_texto_adicional', procurador.texto_adicional, 'text', '', 'span-2', 'Ex.: profissional habilitado, CFTA no ...') }}
+                            <div class="representative-manager" data-representative-manager>
+                                <div class="representative-list" data-rep-list>
+                                    {% for rep in procuradores %}
+                                        <div class="representative-row" data-rep-row>
+                                                <input type="hidden" name="rep_id" value="{{ rep.id or '' }}" data-rep-value="id">
+                                                <input type="hidden" name="rep_tipo_representacao" value="{{ rep.tipo_representacao or 'PROCURADOR' }}" data-rep-value="tipo_representacao">
+                                                <input type="hidden" name="rep_nome_completo" value="{{ rep.nome_completo or '' }}" data-rep-value="nome_completo">
+                                                <input type="hidden" name="rep_cpf" value="{{ format_cpf(rep.cpf) }}" data-rep-value="cpf">
+                                                <input type="hidden" name="rep_rg" value="{{ rep.rg or '' }}" data-rep-value="rg">
+                                                <input type="hidden" name="rep_orgao_expedidor_rg" value="{{ rep.orgao_expedidor_rg or '' }}" data-rep-value="orgao_expedidor_rg">
+                                                <input type="hidden" name="rep_nacionalidade" value="{{ rep.nacionalidade or '' }}" data-rep-value="nacionalidade">
+                                                <input type="hidden" name="rep_profissao_ocupacao" value="{{ rep.profissao_ocupacao or '' }}" data-rep-value="profissao_ocupacao">
+                                                <input type="hidden" name="rep_sexo" value="{{ rep.sexo or '' }}" data-rep-value="sexo">
+                                                <input type="hidden" name="rep_estado_civil" value="{{ rep.estado_civil or '' }}" data-rep-value="estado_civil">
+                                                <input type="hidden" name="rep_regime_casamento" value="{{ rep.regime_casamento or '' }}" data-rep-value="regime_casamento">
+                                                <input type="hidden" name="rep_nome_pai" value="{{ rep.nome_pai or '' }}" data-rep-value="nome_pai">
+                                                <input type="hidden" name="rep_nome_mae" value="{{ rep.nome_mae or '' }}" data-rep-value="nome_mae">
+                                                <input type="hidden" name="rep_data_nascimento" value="{{ rep.data_nascimento or '' }}" data-rep-value="data_nascimento">
+                                                <input type="hidden" name="rep_uf_nascimento" value="{{ rep.uf_nascimento or '' }}" data-rep-value="uf_nascimento">
+                                                <input type="hidden" name="rep_cidade_nascimento" value="{{ rep.cidade_nascimento or '' }}" data-rep-value="cidade_nascimento">
+                                                <input type="hidden" name="rep_email" value="{{ rep.email or '' }}" data-rep-value="email">
+                                                <input type="hidden" name="rep_telefone" value="{{ format_phone(rep.telefone) }}" data-rep-value="telefone">
+                                                <input type="hidden" name="rep_cep" value="{{ format_cep(rep.cep) }}" data-rep-value="cep">
+                                                <input type="hidden" name="rep_uf" value="{{ rep.uf or '' }}" data-rep-value="uf">
+                                                <input type="hidden" name="rep_cidade" value="{{ rep.cidade or '' }}" data-rep-value="cidade">
+                                                <input type="hidden" name="rep_bairro" value="{{ rep.bairro or '' }}" data-rep-value="bairro">
+                                                <input type="hidden" name="rep_logradouro" value="{{ rep.logradouro or '' }}" data-rep-value="logradouro">
+                                                <input type="hidden" name="rep_numero" value="{{ rep.numero or '' }}" data-rep-value="numero">
+                                                <input type="hidden" name="rep_complemento" value="{{ rep.complemento or '' }}" data-rep-value="complemento">
+                                                <input type="hidden" name="rep_texto_adicional" value="{{ rep.texto_adicional or '' }}" data-rep-value="texto_adicional">
+                                                <div>
+                                                    <strong data-rep-label-name>{{ rep.nome_completo or 'Sem nome' }}</strong>
+                                                    <small><span data-rep-label-type>{{ representative_types.get(rep.tipo_representacao or 'PROCURADOR') }}</span> - <span data-rep-label-cpf>{{ format_cpf(rep.cpf) or 'CPF pendente' }}</span></small>
+                                                </div>
+                                                <div class="representative-actions">
+                                                    <button type="button" class="mini-icon-btn" data-rep-edit title="Editar">Editar</button>
+                                                    <button type="button" class="mini-icon-btn danger" data-rep-remove title="Remover">Remover</button>
+                                                </div>
+                                        </div>
+                                    {% endfor %}
+                                    <div class="representative-empty" data-rep-empty>Nenhum procurador ou representante adicionado.</div>
+                                </div>
+
+                                <button type="button" class="representative-add" data-rep-add title="Adicionar procurador ou representante">+</button>
+
+                                <div class="representative-popout is-hidden" data-rep-popout>
+                                    <div class="representative-popout-head">
+                                        <strong data-rep-popout-title>Novo responsavel</strong>
+                                        <button type="button" class="btn-close" data-rep-cancel aria-label="Fechar"></button>
+                                    </div>
+                                    <div class="form-grid four">
+                                        <label>Tipo
+                                            <select data-rep-field="tipo_representacao">
+                                                {% for key, label in representative_types.items() %}
+                                                    <option value="{{ key }}">{{ label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </label>
+                                        <label>Nome completo<input type="text" data-rep-field="nome_completo"></label>
+                                        <label>CPF<input type="text" data-mask="cpf" data-rep-field="cpf"></label>
+                                        <label>RG<input type="text" maxlength="20" data-rep-field="rg"></label>
+                                        <label>Orgao RG<input type="text" maxlength="20" data-rep-field="orgao_expedidor_rg"></label>
+                                        <label>Nacionalidade<input type="text" data-rep-field="nacionalidade"></label>
+                                        <label>Profissao/ocupacao<input type="text" data-rep-field="profissao_ocupacao"></label>
+                                        <label>Sexo
+                                            <select data-rep-field="sexo">
+                                                <option value="">Selecione</option>
+                                                {% for key, label in sexos.items() %}
+                                                    <option value="{{ key }}">{{ label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </label>
+                                        <label>Estado civil
+                                            <select data-rep-field="estado_civil">
+                                                <option value="">Selecione</option>
+                                                {% for key, label in estados_civis.items() %}
+                                                    <option value="{{ key }}">{{ label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </label>
+                                        <label>Regime de casamento
+                                            <select data-rep-field="regime_casamento">
+                                                <option value="">Selecione</option>
+                                                {% for key, label in regimes_casamento.items() %}
+                                                    <option value="{{ key }}">{{ label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </label>
+                                        <label>E-mail<input type="email" data-rep-field="email"></label>
+                                        <label>Telefone<input type="text" data-mask="phone" data-rep-field="telefone"></label>
+                                        <label>CEP<input type="text" data-mask="cep" data-rep-field="cep"></label>
+                                        <label>UF
+                                            <select data-rep-field="uf">
+                                                <option value="">UF</option>
+                                                {% for uf in ufs %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+                                            </select>
+                                        </label>
+                                        <label>Cidade<input type="text" data-rep-field="cidade"></label>
+                                        <label>Bairro<input type="text" data-rep-field="bairro"></label>
+                                        <label>Logradouro<input type="text" data-rep-field="logradouro"></label>
+                                        <label>Numero<input type="text" data-rep-field="numero"></label>
+                                        <label>Complemento<input type="text" data-rep-field="complemento"></label>
+                                        <label class="span-2">Texto adicional/habilitacao<input type="text" data-rep-field="texto_adicional" placeholder="Ex.: profissional habilitado, CFTA no ..."></label>
+                                    </div>
+                                    <div class="representative-popout-actions">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" data-rep-cancel>Cancelar</button>
+                                        <button type="button" class="btn btn-primary btn-sm" data-rep-save>Salvar responsavel</button>
+                                    </div>
+                                </div>
+
+                                <template data-rep-template>
+                                    <div class="representative-row" data-rep-row>
+                                        <input type="hidden" name="rep_id" value="" data-rep-value="id">
+                                        <input type="hidden" name="rep_tipo_representacao" value="PROCURADOR" data-rep-value="tipo_representacao">
+                                        <input type="hidden" name="rep_nome_completo" value="" data-rep-value="nome_completo">
+                                        <input type="hidden" name="rep_cpf" value="" data-rep-value="cpf">
+                                        <input type="hidden" name="rep_rg" value="" data-rep-value="rg">
+                                        <input type="hidden" name="rep_orgao_expedidor_rg" value="" data-rep-value="orgao_expedidor_rg">
+                                        <input type="hidden" name="rep_nacionalidade" value="" data-rep-value="nacionalidade">
+                                        <input type="hidden" name="rep_profissao_ocupacao" value="" data-rep-value="profissao_ocupacao">
+                                        <input type="hidden" name="rep_sexo" value="" data-rep-value="sexo">
+                                        <input type="hidden" name="rep_estado_civil" value="" data-rep-value="estado_civil">
+                                        <input type="hidden" name="rep_regime_casamento" value="" data-rep-value="regime_casamento">
+                                        <input type="hidden" name="rep_nome_pai" value="" data-rep-value="nome_pai">
+                                        <input type="hidden" name="rep_nome_mae" value="" data-rep-value="nome_mae">
+                                        <input type="hidden" name="rep_data_nascimento" value="" data-rep-value="data_nascimento">
+                                        <input type="hidden" name="rep_uf_nascimento" value="" data-rep-value="uf_nascimento">
+                                        <input type="hidden" name="rep_cidade_nascimento" value="" data-rep-value="cidade_nascimento">
+                                        <input type="hidden" name="rep_email" value="" data-rep-value="email">
+                                        <input type="hidden" name="rep_telefone" value="" data-rep-value="telefone">
+                                        <input type="hidden" name="rep_cep" value="" data-rep-value="cep">
+                                        <input type="hidden" name="rep_uf" value="" data-rep-value="uf">
+                                        <input type="hidden" name="rep_cidade" value="" data-rep-value="cidade">
+                                        <input type="hidden" name="rep_bairro" value="" data-rep-value="bairro">
+                                        <input type="hidden" name="rep_logradouro" value="" data-rep-value="logradouro">
+                                        <input type="hidden" name="rep_numero" value="" data-rep-value="numero">
+                                        <input type="hidden" name="rep_complemento" value="" data-rep-value="complemento">
+                                        <input type="hidden" name="rep_texto_adicional" value="" data-rep-value="texto_adicional">
+                                        <div>
+                                            <strong data-rep-label-name>Sem nome</strong>
+                                            <small><span data-rep-label-type>Procurador</span> - <span data-rep-label-cpf>CPF pendente</span></small>
+                                        </div>
+                                        <div class="representative-actions">
+                                            <button type="button" class="mini-icon-btn" data-rep-edit title="Editar">Editar</button>
+                                            <button type="button" class="mini-icon-btn danger" data-rep-remove title="Remover">Remover</button>
+                                        </div>
+                                    </div>
+                                </template>
                             </div>
                             <div class="city-warning" data-city-warning="proc">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>

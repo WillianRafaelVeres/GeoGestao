@@ -1,42 +1,133 @@
 {% extends 'base.html' %}
-{% block title %}Checklist de Cartorio{% endblock %}
+{% block title %}Documentacao obrigatoria{% endblock %}
 {% block content %}
 <div class="page-heading">
     <div>
-        <h1>Checklist de cartorio</h1>
-        <p>Itens padrao do processo na etapa Escritório usados em protocolo/cartório.</p>
+        <h1>Documentacao obrigatoria (Escritorio)</h1>
+        <p>Checklist de documentos por tipo de processo e por cartorio. Alteracoes valem para projetos novos e sao adicionadas aos projetos em andamento (itens ja marcados nao mudam).</p>
+    </div>
+    <div>
+        <a class="btn btn-outline-secondary" href="{{ url_for('cartorios') }}">Voltar aos cartorios</a>
     </div>
 </div>
 
 <section class="panel">
-    <div class="panel-header">
-        <h2>Por tipo de processo</h2>
-    </div>
-    <div class="table-responsive">
-        <table class="table compact-table">
-            <thead>
-                <tr>
-                    <th>Tipo de processo</th>
-                    <th>Checklist Escritório</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for group in checklist_by_process %}
-                    <tr>
-                        <td><strong>{{ group.process_type_name }}</strong></td>
-                        <td>
-                            <ul class="list-unstyled mb-0">
-                                {% for item in group.items %}
-                                    <li>{{ item.title }}</li>
-                                {% endfor %}
-                            </ul>
-                        </td>
-                    </tr>
-                {% else %}
-                    <tr><td colspan="2">Nenhum checklist encontrado.</td></tr>
+    <div class="panel-header"><h2>Lista em edicao</h2></div>
+    <form method="get" class="row g-2 align-items-end" style="padding: 0 1rem 1rem;">
+        <div class="col-md-5">
+            <label class="form-label">Cartorio</label>
+            <select class="form-select" name="cartorio_id" onchange="this.form.submit()">
+                <option value="">Padrao geral (todos os cartorios)</option>
+                {% for cartorio in cartorio_options %}
+                    <option value="{{ cartorio.id }}" {% if selected_cartorio_id == cartorio.id %}selected{% endif %}>{{ cartorio.nome }}</option>
                 {% endfor %}
-            </tbody>
-        </table>
-    </div>
+            </select>
+        </div>
+        <div class="col-md-5">
+            <label class="form-label">Tipo de processo</label>
+            <select class="form-select" name="process_type" onchange="this.form.submit()">
+                {% for process_type in process_types %}
+                    <option value="{{ process_type.chave }}" {% if selected_process == process_type.chave %}selected{% endif %}>{{ process_type.nome }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </form>
 </section>
+
+<div class="content-grid two-columns">
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Documentos exigidos</h2>
+        </div>
+        {% if items %}
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead><tr><th style="width:3rem">#</th><th>Documento</th><th style="width:9rem">Acoes</th></tr></thead>
+                    <tbody>
+                        {% for item in items %}
+                            <tr>
+                                <td>{{ loop.index }}</td>
+                                <td>{{ item.title }}</td>
+                                <td>
+                                    <div class="d-flex gap-1">
+                                        <form method="post">
+                                            <input type="hidden" name="action" value="move_up" />
+                                            <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                            <input type="hidden" name="cartorio_id" value="{{ selected_cartorio_id or '' }}" />
+                                            <input type="hidden" name="process_type" value="{{ selected_process }}" />
+                                            <button class="btn btn-outline-secondary btn-sm" type="submit" title="Subir" {% if loop.first %}disabled{% endif %}>&uarr;</button>
+                                        </form>
+                                        <form method="post">
+                                            <input type="hidden" name="action" value="move_down" />
+                                            <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                            <input type="hidden" name="cartorio_id" value="{{ selected_cartorio_id or '' }}" />
+                                            <input type="hidden" name="process_type" value="{{ selected_process }}" />
+                                            <button class="btn btn-outline-secondary btn-sm" type="submit" title="Descer" {% if loop.last %}disabled{% endif %}>&darr;</button>
+                                        </form>
+                                        <form method="post" onsubmit="return confirm('Remover este documento do padrao?');">
+                                            <input type="hidden" name="action" value="remove" />
+                                            <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                            <input type="hidden" name="cartorio_id" value="{{ selected_cartorio_id or '' }}" />
+                                            <input type="hidden" name="process_type" value="{{ selected_process }}" />
+                                            <button class="btn btn-outline-danger btn-sm" type="submit">Remover</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div style="padding: 0 1rem;">
+                <p class="text-muted">
+                    Esta lista ainda nao tem documentos proprios.
+                    {% if inherited_source %}Enquanto estiver vazia, os projetos usam o <strong>{{ inherited_source }}</strong> abaixo:{% endif %}
+                </p>
+                {% if inherited_items %}
+                    <ul>
+                        {% for item in inherited_items %}
+                            <li>{{ item.title }}</li>
+                        {% endfor %}
+                    </ul>
+                    <p class="text-muted">Use "Copiar de outra lista" para trazer esses itens e personalizar.</p>
+                {% endif %}
+            </div>
+        {% endif %}
+        <form method="post" class="d-flex gap-2" style="padding: 0 1rem 1rem;">
+            <input type="hidden" name="action" value="add" />
+            <input type="hidden" name="cartorio_id" value="{{ selected_cartorio_id or '' }}" />
+            <input type="hidden" name="process_type" value="{{ selected_process }}" />
+            <input class="form-control" name="titulo" placeholder="Novo documento (ex.: Planta assinada em 2 vias)" required />
+            <button class="btn btn-primary" type="submit">Adicionar</button>
+        </form>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><h2>Copiar de outra lista</h2></div>
+        <form method="post" class="vstack gap-3" style="padding: 0 1rem 1rem;">
+            <input type="hidden" name="action" value="copy" />
+            <input type="hidden" name="cartorio_id" value="{{ selected_cartorio_id or '' }}" />
+            <input type="hidden" name="process_type" value="{{ selected_process }}" />
+            <div>
+                <label class="form-label">Copiar de</label>
+                <select class="form-select" name="source">
+                    <option value="system">Padrao do sistema</option>
+                    <option value="">Padrao geral (todos os cartorios)</option>
+                    {% for cartorio in cartorio_options %}
+                        {% if cartorio.id != selected_cartorio_id %}
+                            <option value="{{ cartorio.id }}">{{ cartorio.nome }}</option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="copy_all_types" value="1" id="copy-all-types" />
+                <label class="form-check-label" for="copy-all-types">Copiar todos os tipos de processo (nao so o selecionado)</label>
+            </div>
+            <p class="text-muted mb-0">A copia so adiciona documentos que ainda nao existem na lista de destino.</p>
+            <button class="btn btn-outline-primary" type="submit">Copiar para esta lista</button>
+        </form>
+    </section>
+</div>
 {% endblock %}

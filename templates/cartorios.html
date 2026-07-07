@@ -6,7 +6,7 @@
         <p>Locais externos usados nos projetos e nas exigencias.</p>
     </div>
     <div>
-        <a class="btn btn-outline-primary" href="{{ url_for('cartorios_checklist') }}">Checklist obrigatorio do cartorio</a>
+        <a class="btn btn-outline-primary" href="{{ url_for('cartorios_checklist') }}">Documentacao obrigatoria</a>
     </div>
 </div>
 
@@ -29,7 +29,10 @@
                             <td>{{ item.oficial or '-' }}</td>
                             <td>{{ item.projetos }}</td>
                             <td>
-                                <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-cartorio-{{ item.id }}">Editar</button>
+                                <div class="d-flex gap-1">
+                                    <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-cartorio-{{ item.id }}">Editar</button>
+                                    <a class="btn btn-outline-primary btn-sm" href="{{ url_for('cartorios_checklist', cartorio_id=item.id) }}" title="Documentacao obrigatoria deste cartorio">Checklist</a>
+                                </div>
                             </td>
                         </tr>
                     {% else %}

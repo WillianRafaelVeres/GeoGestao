@@ -86,6 +86,7 @@ from process_checklist_templates import (
     CHECKLIST_STATUS_NOT_STARTED,
     CRITICALITY_CRITICAL,
     CRITICALITY_LOW,
+    CRITICALITY_MEDIUM,
     PROCESS_CHECKLIST_TEMPLATES,
     REQUIREMENT_CONDITIONAL,
     REQUIREMENT_OPTIONAL,
@@ -132,6 +133,11 @@ ROLE_LABELS = {
     "coordenador": "Coordenador",
     "tecnico": "Tecnico",
     "consulta": "Consulta",
+}
+
+REPRESENTATIVE_TYPES = {
+    "PROCURADOR": "Procurador",
+    "REPRESENTANTE": "Representante",
 }
 
 FORMAS_PAGAMENTO = {
@@ -718,6 +724,10 @@ def add_column_if_missing(db, table_name, column_name, definition):
         db.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
+def drop_constraint_if_exists(db, table_name, constraint_name):
+    db.execute(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}")
+
+
 def ensure_performance_indexes(db):
     statements = [
         "CREATE INDEX IF NOT EXISTS idx_usuarios_lower_email ON usuarios (lower(email))",
@@ -734,6 +744,8 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_project_checklist_stage_active_status ON project_checklist_items (project_stage_id, active, status, order_index, id)",
         "CREATE INDEX IF NOT EXISTS idx_project_checklist_project_stage_key ON project_checklist_items (project_id, stage_key, project_stage_id)",
         "CREATE INDEX IF NOT EXISTS idx_checklist_itens_etapa_concluido ON checklist_itens (projeto_etapa_id, concluido, id)",
+        "CREATE INDEX IF NOT EXISTS idx_cartorio_checklist_templates_lookup ON cartorio_checklist_templates (process_type_key, cartorio_id)",
+        "CREATE INDEX IF NOT EXISTS idx_procuradores_cliente_principal ON procuradores (cliente_id, principal DESC, id)",
         "CREATE INDEX IF NOT EXISTS idx_tarefas_etapa_status_prazo ON tarefas (projeto_etapa_id, status, prazo)",
         "CREATE INDEX IF NOT EXISTS idx_process_stage_templates_process_active ON process_stage_templates (process_type_key, active, stage_order, id)",
         "CREATE INDEX IF NOT EXISTS idx_process_checklist_templates_process_active ON process_checklist_templates (process_type_key, active, stage_key, order_index, id)",
@@ -911,7 +923,9 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS procuradores (
             id SERIAL PRIMARY KEY,
-            cliente_id INTEGER NOT NULL UNIQUE,
+            cliente_id INTEGER NOT NULL,
+            tipo_representacao TEXT NOT NULL DEFAULT 'PROCURADOR',
+            principal INTEGER NOT NULL DEFAULT 1,
             sexo TEXT,
             nome_completo TEXT,
             estado_civil TEXT,
@@ -1210,6 +1224,18 @@ def init_db():
             FOREIGN KEY(completed_by) REFERENCES usuarios(id)
         );
 
+        CREATE TABLE IF NOT EXISTS cartorio_checklist_templates (
+            id SERIAL PRIMARY KEY,
+            cartorio_id INTEGER,
+            process_type_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY(cartorio_id) REFERENCES cartorios(id)
+        );
+
         CREATE TABLE IF NOT EXISTS eventos_historico (
             id SERIAL PRIMARY KEY,
             projeto_id INTEGER,
@@ -1372,6 +1398,9 @@ def init_db():
     add_column_if_missing(db, "conjuges", "email", "TEXT")
     add_column_if_missing(db, "conjuges", "telefone", "TEXT")
     add_column_if_missing(db, "procuradores", "telefone", "TEXT")
+    add_column_if_missing(db, "procuradores", "tipo_representacao", "TEXT NOT NULL DEFAULT 'PROCURADOR'")
+    add_column_if_missing(db, "procuradores", "principal", "INTEGER NOT NULL DEFAULT 1")
+    drop_constraint_if_exists(db, "procuradores", "procuradores_cliente_id_key")
     add_column_if_missing(db, "projetos", "valor", "DOUBLE PRECISION")
     add_column_if_missing(db, "projetos", "ordem_prioridade", "INTEGER")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
@@ -1902,6 +1931,34 @@ def find_project_stage_id_for_template_stage(db, project_id, template_stage_key)
     return stages[0]["id"] if stages else None
 
 
+def get_cartorio_checklist_rows(db, process_type_key, cartorio_id):
+    """Documentacao obrigatoria (etapa Escritorio) configurada em /cartorios/checklist.
+
+    Prioridade: lista propria do cartorio do projeto; senao, padrao geral
+    (cartorio_id NULL). Lista vazia = usar o modelo padrao do codigo.
+    """
+    process_key = normalize_project_process_type(process_type_key)
+    if cartorio_id:
+        rows = db.execute(
+            """
+            SELECT * FROM cartorio_checklist_templates
+            WHERE process_type_key = %s AND cartorio_id = %s AND active = 1
+            ORDER BY order_index, id
+            """,
+            (process_key, cartorio_id),
+        ).fetchall()
+        if rows:
+            return rows
+    return db.execute(
+        """
+        SELECT * FROM cartorio_checklist_templates
+        WHERE process_type_key = %s AND cartorio_id IS NULL AND active = 1
+        ORDER BY order_index, id
+        """,
+        (process_key,),
+    ).fetchall()
+
+
 def create_project_checklist_from_template(db, project_id, process_type_key):
     process_key = normalize_project_process_type(process_type_key)
 
@@ -1917,6 +1974,12 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
         templates,
         key=lambda row: (PROCESS_CHECKLIST_STAGE_ORDER.get(row["stage_key"], 999), row["order_index"], row["id"]),
     )
+    project_row = first_row(db, "SELECT cartorio_id FROM projetos WHERE id = %s", (project_id,))
+    custom_office_items = get_cartorio_checklist_rows(
+        db, process_key, project_row["cartorio_id"] if project_row else None
+    )
+    if custom_office_items:
+        templates = [template for template in templates if template["stage_key"] != "ESCRITORIO"]
     now = app_now_iso()
     stages = db.execute(
         """
@@ -1969,6 +2032,44 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
                 now,
             ),
         )
+    if custom_office_items:
+        office_stage_id = (
+            stage_by_key.get("ESCRITORIO")
+            or stage_by_legacy.get("escritorio")
+            or first_stage_id
+        )
+        for custom in custom_office_items:
+            values.append(
+                (
+                    project_id,
+                    office_stage_id,
+                    None,
+                    process_key,
+                    "ESCRITORIO",
+                    PROCESS_CHECKLIST_STAGE_NAMES.get("ESCRITORIO", "Escritorio"),
+                    custom["title"],
+                    None,
+                    CHECKLIST_STATUS_NOT_STARTED,
+                    REQUIREMENT_REQUIRED,
+                    CRITICALITY_MEDIUM,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    0,
+                    0,
+                    0,
+                    1,
+                    None,
+                    None,
+                    custom["order_index"],
+                    1,
+                    now,
+                    now,
+                )
+            )
     if not values:
         return 0
     cursor = db.cursor()
@@ -2018,6 +2119,41 @@ def sync_project_checklist_stage_links(db, project_id):
         (project_id, app_now_iso(), project_id),
     ).fetchone()
     return row["updated_count"] if row else 0
+
+
+def sync_cartorio_checklist_to_projects(db, process_type_key, cartorio_id):
+    """Aplica o padrao de documentacao aos projetos ativos afetados (so adiciona itens;
+    nada e removido e itens ja marcados nao mudam)."""
+    process_key = normalize_project_process_type(process_type_key)
+    if cartorio_id:
+        projects = db.execute(
+            """
+            SELECT id FROM projetos
+            WHERE tipo_servico = %s AND cartorio_id = %s
+              AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+            """,
+            (process_key, cartorio_id),
+        ).fetchall()
+    else:
+        # Padrao geral: atinge apenas projetos cujo cartorio nao tem lista propria.
+        projects = db.execute(
+            """
+            SELECT p.id FROM projetos p
+            WHERE p.tipo_servico = %s
+              AND lower(COALESCE(p.status, '')) NOT IN ('concluido', 'cancelado')
+              AND NOT EXISTS (
+                  SELECT 1 FROM cartorio_checklist_templates cct
+                  WHERE cct.cartorio_id = p.cartorio_id
+                    AND cct.process_type_key = %s
+                    AND cct.active = 1
+              )
+            """,
+            (process_key, process_key),
+        ).fetchall()
+    for row in projects:
+        create_project_checklist_from_template(db, row["id"], process_key)
+        sync_project_checklist_stage_links(db, row["id"])
+    return len(projects)
 
 
 def initialize_project_workflow(db, project_id, process_type_key, user_id=None, force=False):
@@ -3955,7 +4091,13 @@ def _fetch_cliente_autocomplete_options_uncached():
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
         LEFT JOIN enderecos_proprietario ep ON ep.pessoa_fisica_id = pf.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
-        LEFT JOIN procuradores pr ON pr.cliente_id = c.id
+        LEFT JOIN LATERAL (
+            SELECT *
+            FROM procuradores
+            WHERE cliente_id = c.id
+            ORDER BY principal DESC, id
+            LIMIT 1
+        ) pr ON TRUE
         ORDER BY
             lower(COALESCE(
                 NULLIF(c.nome_exibicao, ''),
@@ -5020,7 +5162,13 @@ def projects():
         LEFT JOIN clientes c ON c.id = p.cliente_id
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
-        LEFT JOIN procuradores pr ON pr.cliente_id = c.id
+        LEFT JOIN LATERAL (
+            SELECT *
+            FROM procuradores
+            WHERE cliente_id = c.id
+            ORDER BY principal DESC, id
+            LIMIT 1
+        ) pr ON TRUE
         LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
         LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
@@ -5772,6 +5920,12 @@ def project_action(project_id):
                 db = get_db()
                 initialize_project_workflow(db, project_id, new_process_key, user_id=g.user["id"], force=True)
                 db.commit()
+        elif workflow_initialized and str(project["cartorio_id"] or "") != str(request.form.get("cartorio_id") or ""):
+            # Cartorio mudou: adiciona ao checklist os documentos exigidos pelo novo cartorio.
+            db = get_db()
+            create_project_checklist_from_template(db, project_id, new_process_key)
+            sync_project_checklist_stage_links(db, project_id)
+            db.commit()
         record_event(project_id, "projeto_atualizado", "Dados principais do projeto atualizados.")
         flash("Projeto atualizado.", "success")
 
@@ -6559,7 +6713,11 @@ def load_cliente_documental(cliente_id):
         conjuge = query_db("SELECT * FROM conjuges WHERE pessoa_fisica_id = %s", (pf["id"],), one=True)
         endereco = query_db("SELECT * FROM enderecos_proprietario WHERE pessoa_fisica_id = %s", (pf["id"],), one=True)
     pj = query_db("SELECT * FROM pessoas_juridicas WHERE cliente_id = %s", (cliente_id,), one=True)
-    procurador = query_db("SELECT * FROM procuradores WHERE cliente_id = %s", (cliente_id,), one=True)
+    procuradores = query_db(
+        "SELECT * FROM procuradores WHERE cliente_id = %s ORDER BY principal DESC, id",
+        (cliente_id,),
+    )
+    procurador = procuradores[0] if procuradores else None
     imoveis = query_db(
         """
         SELECT i.*, ci.id AS vinculo_id, ci.papel, ci.percentual_participacao, ci.principal
@@ -6583,6 +6741,7 @@ def load_cliente_documental(cliente_id):
         "pessoa_juridica": row_to_plain_dict(pj),
         "endereco": row_to_plain_dict(endereco),
         "procurador": row_to_plain_dict(procurador),
+        "procuradores": [row_to_plain_dict(row) for row in procuradores],
         "imoveis": [row_to_plain_dict(row) for row in imoveis],
         "vertices_by_imovel": {key: [row_to_plain_dict(row) for row in rows] for key, rows in vertices_by_imovel.items()},
     }
@@ -6627,7 +6786,7 @@ def load_clientes_documental_batch(client_rows):
         client_ids,
     )
     procurador_rows = query_db(
-        f"SELECT * FROM procuradores WHERE cliente_id IN ({client_placeholders}) ORDER BY cliente_id, id",
+        f"SELECT * FROM procuradores WHERE cliente_id IN ({client_placeholders}) ORDER BY cliente_id, principal DESC, id",
         client_ids,
     )
     imovel_rows = query_db(
@@ -6644,6 +6803,7 @@ def load_clientes_documental_batch(client_rows):
     pfs_by_client = first_by(pf_rows, "cliente_id")
     pjs_by_client = first_by(pj_rows, "cliente_id")
     procuradores_by_client = first_by(procurador_rows, "cliente_id")
+    procuradores_grouped_by_client = group_by(procurador_rows, "cliente_id")
     imoveis_by_client = group_by(imovel_rows, "cliente_id")
 
     pf_ids = [row["id"] for row in pf_rows]
@@ -6691,6 +6851,9 @@ def load_clientes_documental_batch(client_rows):
             "pessoa_juridica": row_to_plain_dict(pjs_by_client.get(client_id)),
             "endereco": row_to_plain_dict(enderecos_by_pf.get(pf_id)),
             "procurador": row_to_plain_dict(procuradores_by_client.get(client_id)),
+            "procuradores": [
+                row_to_plain_dict(row) for row in procuradores_grouped_by_client.get(client_id, [])
+            ],
             "imoveis": [row_to_plain_dict(row) for row in imoveis],
             "vertices_by_imovel": {
                 imovel["id"]: [row_to_plain_dict(row) for row in vertices_by_imovel.get(imovel["id"], [])]
@@ -6724,32 +6887,116 @@ def form_decimal(name):
     return float(value) if value not in (None, "") else None
 
 
+REPRESENTATIVE_FORM_FIELDS = [
+    "id",
+    "tipo_representacao",
+    "nome_completo",
+    "cpf",
+    "rg",
+    "orgao_expedidor_rg",
+    "nacionalidade",
+    "profissao_ocupacao",
+    "sexo",
+    "estado_civil",
+    "regime_casamento",
+    "nome_pai",
+    "nome_mae",
+    "data_nascimento",
+    "uf_nascimento",
+    "cidade_nascimento",
+    "email",
+    "telefone",
+    "cep",
+    "uf",
+    "cidade",
+    "bairro",
+    "logradouro",
+    "numero",
+    "complemento",
+    "texto_adicional",
+]
+
+
+def representative_type(value):
+    value = (value or "").strip().upper()
+    return value if value in REPRESENTATIVE_TYPES else "PROCURADOR"
+
+
+def parse_representantes_form(form):
+    rows = []
+    lists = {
+        field: form.getlist(f"rep_{field}")
+        for field in REPRESENTATIVE_FORM_FIELDS
+    }
+    total = max([len(values) for values in lists.values()] or [0])
+    for index in range(total):
+        row = {}
+        for field in REPRESENTATIVE_FORM_FIELDS:
+            values = lists[field]
+            row[field] = values[index].strip() if index < len(values) and values[index] is not None else ""
+        row["tipo_representacao"] = representative_type(row.get("tipo_representacao"))
+        row["cpf"] = only_digits(row.get("cpf"))
+        row["cep"] = only_digits(row.get("cep"))
+        if any(row.get(field) for field in row if field != "tipo_representacao"):
+            rows.append(row)
+
+    if not rows and (form.get("proc_nome_completo") or form.get("proc_cpf")):
+        rows.append(
+            {
+                "id": "",
+                "tipo_representacao": representative_type(form.get("proc_tipo_representacao")),
+                "nome_completo": form.get("proc_nome_completo", "").strip(),
+                "cpf": only_digits(form.get("proc_cpf")),
+                "rg": form.get("proc_rg", "").strip(),
+                "orgao_expedidor_rg": form.get("proc_orgao_expedidor_rg", "").strip(),
+                "nacionalidade": form.get("proc_nacionalidade", "").strip(),
+                "profissao_ocupacao": form.get("proc_profissao_ocupacao", "").strip(),
+                "sexo": form.get("proc_sexo", "").strip(),
+                "estado_civil": form.get("proc_estado_civil", "").strip(),
+                "regime_casamento": form.get("proc_regime_casamento", "").strip(),
+                "nome_pai": form.get("proc_nome_pai", "").strip(),
+                "nome_mae": form.get("proc_nome_mae", "").strip(),
+                "data_nascimento": form.get("proc_data_nascimento", "").strip(),
+                "uf_nascimento": form.get("proc_uf_nascimento", "").strip(),
+                "cidade_nascimento": form.get("proc_cidade_nascimento", "").strip(),
+                "email": form.get("proc_email", "").strip(),
+                "telefone": form.get("proc_telefone", "").strip(),
+                "cep": only_digits(form.get("proc_cep")),
+                "uf": form.get("proc_uf", "").strip(),
+                "cidade": form.get("proc_cidade", "").strip(),
+                "bairro": form.get("proc_bairro", "").strip(),
+                "logradouro": form.get("proc_logradouro", "").strip(),
+                "numero": form.get("proc_numero", "").strip(),
+                "complemento": form.get("proc_complemento", "").strip(),
+                "texto_adicional": form.get("proc_texto_adicional", "").strip(),
+            }
+        )
+    return rows
+
+
 def validate_cliente_form(form):
     errors = []
     warnings = []
     tipo_cliente = form.get("tipo_cliente") or "PESSOA_FISICA"
     pf_cpf = only_digits(form.get("pf_cpf"))
     pj_cnpj = only_digits(form.get("pj_cnpj"))
-    proc_cpf = only_digits(form.get("proc_cpf"))
+    representantes = parse_representantes_form(form)
+    representante_principal = representantes[0] if representantes else {}
     conj_cpf = only_digits(form.get("conj_cpf"))
     sigef = form.get("imovel_codigo_certificacao_sigef") or ""
     cep_fields = [
         ("pf_end_cep", "CEP do proprietario"),
         ("pj_cep", "CEP da empresa"),
-        ("proc_cep", "CEP do procurador"),
     ]
     cidade_fields = [
         ("pf_end_cidade", "pf_end_uf", "cidade do proprietario"),
         ("pj_cidade", "pj_uf", "cidade da empresa"),
-        ("proc_cidade", "proc_uf", "cidade do procurador"),
     ]
 
     if pf_cpf and not validate_cpf(pf_cpf):
         errors.append("CPF da pessoa fisica invalido.")
     if conj_cpf and not validate_cpf(conj_cpf):
         errors.append("CPF do conjuge invalido.")
-    if proc_cpf and not validate_cpf(proc_cpf):
-        errors.append("CPF do procurador/representante invalido.")
     if pj_cnpj and not validate_cnpj(pj_cnpj):
         errors.append("CNPJ invalido.")
 
@@ -6757,7 +7004,6 @@ def validate_cliente_form(form):
         ("pf_email", "E-mail da pessoa fisica"),
         ("conj_email", "E-mail do conjuge"),
         ("pj_email", "E-mail da empresa"),
-        ("proc_email", "E-mail do procurador"),
     ]:
         if form.get(field) and not validate_email(form.get(field)):
             errors.append(f"{label} invalido.")
@@ -6773,10 +7019,22 @@ def validate_cliente_form(form):
     for field, label in [
         ("pf_data_nascimento", "Data de nascimento da pessoa fisica"),
         ("conj_data_nascimento", "Data de nascimento do conjuge"),
-        ("proc_data_nascimento", "Data de nascimento do procurador"),
     ]:
         if form.get(field) and not validate_date(form.get(field)):
             errors.append(f"{label} invalida.")
+
+    for index, representante in enumerate(representantes, start=1):
+        label = REPRESENTATIVE_TYPES.get(representante["tipo_representacao"], "Representante")
+        if representante.get("cpf") and not validate_cpf(representante["cpf"]):
+            errors.append(f"CPF do {label.lower()} {index} invalido.")
+        if representante.get("email") and not validate_email(representante["email"]):
+            errors.append(f"E-mail do {label.lower()} {index} invalido.")
+        if representante.get("cep") and not validate_cep(representante["cep"]):
+            errors.append(f"CEP do {label.lower()} {index} invalido.")
+        if representante.get("cidade") and representante.get("uf") and not validate_cidade_uf(representante["cidade"], representante["uf"]):
+            warnings.append(f"Verifique se a cidade do {label.lower()} {index} corresponde ao UF selecionado.")
+        if representante.get("data_nascimento") and not validate_date(representante["data_nascimento"]):
+            errors.append(f"Data de nascimento do {label.lower()} {index} invalida.")
 
     if sigef and not validate_uuid_like(sigef):
         warnings.append("Codigo SIGEF nao parece um UUID. O cadastro foi salvo como rascunho para revisao.")
@@ -6786,7 +7044,7 @@ def validate_cliente_form(form):
             warnings.append("Pessoa juridica sem CNPJ fica como cadastro incompleto.")
         if not form.get("pj_razao_social"):
             warnings.append("Pessoa juridica sem razao social fica como cadastro incompleto.")
-        if not proc_cpf or not form.get("proc_nome_completo"):
+        if not representante_principal.get("cpf") or not representante_principal.get("nome_completo"):
             warnings.append("Pessoa juridica exige representante/procurador para documentos.")
     else:
         if not pf_cpf:
@@ -6872,7 +7130,7 @@ def save_cliente_documental():
         upsert_conjuge(pf_id, now)
 
     if quem_assina == "PROCURADOR" or tipo_cliente == "PESSOA_JURIDICA":
-        upsert_procurador(cliente_id, now)
+        sync_procuradores(cliente_id, now)
     else:
         execute_db("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
 
@@ -7059,59 +7317,58 @@ def upsert_pessoa_juridica(cliente_id, now):
     )
 
 
-def upsert_procurador(cliente_id, now):
-    existing = query_db("SELECT id FROM procuradores WHERE cliente_id = %s", (cliente_id,), one=True)
-    values = (
-        get_form_value("proc_sexo") or None,
-        get_form_value("proc_nome_completo") or None,
-        get_form_value("proc_estado_civil") or None,
-        get_form_value("proc_regime_casamento") or None,
-        get_form_value("proc_profissao_ocupacao") or None,
-        get_form_value("proc_nacionalidade") or None,
-        get_form_value("proc_rg") or None,
-        get_form_value("proc_orgao_expedidor_rg") or None,
-        only_digits(get_form_value("proc_cpf")) or None,
-        get_form_value("proc_nome_pai") or None,
-        get_form_value("proc_nome_mae") or None,
-        get_form_value("proc_data_nascimento") or None,
-        get_form_value("proc_uf_nascimento") or None,
-        get_form_value("proc_cidade_nascimento") or None,
-        get_form_value("proc_email") or None,
-        get_form_value("proc_telefone") or None,
-        get_form_value("proc_texto_adicional") or None,
-        get_form_value("proc_logradouro") or None,
-        get_form_value("proc_uf") or None,
-        get_form_value("proc_cidade") or None,
-        get_form_value("proc_bairro") or None,
-        only_digits(get_form_value("proc_cep")) or None,
-        get_form_value("proc_numero") or None,
-        get_form_value("proc_complemento") or None,
-        now,
-    )
-    if existing:
-        execute_db(
-            """
-            UPDATE procuradores
-            SET sexo = %s, nome_completo = %s, estado_civil = %s, regime_casamento = %s, profissao_ocupacao = %s,
-                nacionalidade = %s, rg = %s, orgao_expedidor_rg = %s, cpf = %s, nome_pai = %s, nome_mae = %s,
-                data_nascimento = %s, uf_nascimento = %s, cidade_nascimento = %s, email = %s, telefone = %s, texto_adicional = %s,
-                logradouro = %s, uf = %s, cidade = %s, bairro = %s, cep = %s, numero = %s, complemento = %s, atualizado_em = %s
-            WHERE id = %s
-            """,
-            values + (existing["id"],),
-        )
-        return existing["id"]
-    return execute_db(
-        """
-        INSERT INTO procuradores
-            (sexo, nome_completo, estado_civil, regime_casamento, profissao_ocupacao, nacionalidade,
-             rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae, data_nascimento, uf_nascimento,
-             cidade_nascimento, email, telefone, texto_adicional, logradouro, uf, cidade, bairro, cep, numero,
-             complemento, atualizado_em, cliente_id, criado_em)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        values + (cliente_id, now),
-    )
+def sync_procuradores(cliente_id, now):
+    representantes = parse_representantes_form(request.form)
+    db = get_db()
+    try:
+        db.execute("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
+        for index, representante in enumerate(representantes):
+            db.execute(
+                """
+                INSERT INTO procuradores
+                    (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
+                     profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
+                     data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional,
+                     logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    cliente_id,
+                    representative_type(representante.get("tipo_representacao")),
+                    1 if index == 0 else 0,
+                    representante.get("sexo") or None,
+                    representante.get("nome_completo") or None,
+                    representante.get("estado_civil") or None,
+                    representante.get("regime_casamento") or None,
+                    representante.get("profissao_ocupacao") or None,
+                    representante.get("nacionalidade") or None,
+                    representante.get("rg") or None,
+                    representante.get("orgao_expedidor_rg") or None,
+                    only_digits(representante.get("cpf")) or None,
+                    representante.get("nome_pai") or None,
+                    representante.get("nome_mae") or None,
+                    representante.get("data_nascimento") or None,
+                    representante.get("uf_nascimento") or None,
+                    representante.get("cidade_nascimento") or None,
+                    representante.get("email") or None,
+                    representante.get("telefone") or None,
+                    representante.get("texto_adicional") or None,
+                    representante.get("logradouro") or None,
+                    representante.get("uf") or None,
+                    representante.get("cidade") or None,
+                    representante.get("bairro") or None,
+                    only_digits(representante.get("cep")) or None,
+                    representante.get("numero") or None,
+                    representante.get("complemento") or None,
+                    now,
+                    now,
+                ),
+            )
+        db.commit()
+        invalidate_runtime_caches()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def upsert_imovel_vinculado(cliente_id, now):
@@ -7302,6 +7559,7 @@ def empty_cliente_context():
         "pessoa_juridica": {},
         "endereco": {},
         "procurador": {},
+        "procuradores": [],
         "imoveis": [],
         "vertices_by_imovel": {},
     }
@@ -7475,7 +7733,13 @@ def clients():
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
         LEFT JOIN enderecos_proprietario ep ON ep.pessoa_fisica_id = pf.id
-        LEFT JOIN procuradores pr ON pr.cliente_id = c.id
+        LEFT JOIN LATERAL (
+            SELECT *
+            FROM procuradores
+            WHERE cliente_id = c.id
+            ORDER BY principal DESC, id
+            LIMIT 1
+        ) pr ON TRUE
         {where_clause}
         ORDER BY lower(COALESCE(NULLIF(c.nome_exibicao, ''), c.nome, '')), lower(COALESCE(c.nome, ''))
         """,
@@ -7500,6 +7764,7 @@ def clients():
         regimes_casamento=REGIMES_CASAMENTO,
         status_cadastro_options=STATUS_CADASTRO,
         ufs=UFS,
+        representative_types=REPRESENTATIVE_TYPES,
     )
 
 
@@ -7563,35 +7828,215 @@ def cartorios():
     return render_template("cartorios.html", cartorios=rows)
 
 
-@app.route("/cartorios/checklist")
+@app.route("/cartorios/checklist", methods=["GET", "POST"])
 @login_required
 def cartorios_checklist():
+    """Gestao da documentacao obrigatoria (etapa Escritorio) por tipo de processo e cartorio."""
     if not can_manage():
         flash("Permissao negada.", "danger")
         return redirect(url_for("cartorios"))
 
     process_types = query_db(
-        """
-        SELECT chave, nome
-        FROM tipos_processo
-        WHERE ativo = 1
-        ORDER BY ordem, nome
-        """
+        "SELECT chave, nome FROM tipos_processo WHERE ativo = 1 ORDER BY ordem, nome"
     )
-    checklist_by_process = []
-    for process_type in process_types:
-        items = get_checklist_template_for_process_stage(process_type["chave"], "ESCRITORIO")
-        if not items:
-            continue
-        checklist_by_process.append(
-            {
-                "process_type_key": process_type["chave"],
-                "process_type_name": process_type["nome"],
-                "items": items,
-            }
-        )
+    cartorio_options = query_db("SELECT id, nome FROM cartorios ORDER BY nome")
 
-    return render_template("cartorios_checklist.html", checklist_by_process=checklist_by_process)
+    raw_cartorio = (request.values.get("cartorio_id") or "").strip()
+    selected_cartorio_id = int(raw_cartorio) if raw_cartorio.isdigit() else None
+    valid_process_keys = {process_type["chave"] for process_type in process_types}
+    selected_process = (request.values.get("process_type") or "").strip()
+    if selected_process not in valid_process_keys:
+        selected_process = process_types[0]["chave"] if process_types else ""
+
+    def manager_redirect():
+        args = {"process_type": selected_process}
+        if selected_cartorio_id:
+            args["cartorio_id"] = selected_cartorio_id
+        return redirect(url_for("cartorios_checklist", **args))
+
+    def scope_items(db, process_key, cartorio_id):
+        return db.execute(
+            """
+            SELECT * FROM cartorio_checklist_templates
+            WHERE process_type_key = %s AND cartorio_id IS NOT DISTINCT FROM %s AND active = 1
+            ORDER BY order_index, id
+            """,
+            (process_key, cartorio_id),
+        ).fetchall()
+
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        db = get_db()
+        now = app_now_iso()
+
+        if action == "add":
+            titulo = (request.form.get("titulo") or "").strip()
+            if not titulo:
+                flash("Informe o nome do documento.", "danger")
+                return manager_redirect()
+            duplicate = first_row(
+                db,
+                """
+                SELECT id FROM cartorio_checklist_templates
+                WHERE process_type_key = %s AND cartorio_id IS NOT DISTINCT FROM %s
+                  AND lower(title) = lower(%s) AND active = 1
+                """,
+                (selected_process, selected_cartorio_id, titulo),
+            )
+            if duplicate:
+                flash("Ja existe um documento com esse nome nesta lista.", "warning")
+                return manager_redirect()
+            next_order = scalar(
+                db,
+                """
+                SELECT COALESCE(MAX(order_index), 0) + 1 FROM cartorio_checklist_templates
+                WHERE process_type_key = %s AND cartorio_id IS NOT DISTINCT FROM %s AND active = 1
+                """,
+                (selected_process, selected_cartorio_id),
+            )
+            db.execute(
+                """
+                INSERT INTO cartorio_checklist_templates
+                    (cartorio_id, process_type_key, title, order_index, active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, 1, %s, %s)
+                """,
+                (selected_cartorio_id, selected_process, titulo, next_order, now, now),
+            )
+            synced = sync_cartorio_checklist_to_projects(db, selected_process, selected_cartorio_id)
+            db.commit()
+            flash(f"Documento adicionado. Checklist atualizado em {synced} projeto(s) em andamento.", "success")
+            return manager_redirect()
+
+        if action == "remove":
+            raw_item_id = (request.form.get("item_id") or "").strip()
+            item = first_row(
+                db,
+                "SELECT * FROM cartorio_checklist_templates WHERE id = %s AND active = 1",
+                (raw_item_id,),
+            ) if raw_item_id.isdigit() else None
+            if not item:
+                flash("Documento nao encontrado.", "danger")
+                return manager_redirect()
+            db.execute(
+                "UPDATE cartorio_checklist_templates SET active = 0, updated_at = %s WHERE id = %s",
+                (now, item["id"]),
+            )
+            db.commit()
+            flash("Documento removido do padrao (projetos existentes nao sao alterados).", "success")
+            return manager_redirect()
+
+        if action in ("move_up", "move_down"):
+            items = scope_items(db, selected_process, selected_cartorio_id)
+            index = next(
+                (i for i, item in enumerate(items) if str(item["id"]) == request.form.get("item_id")),
+                None,
+            )
+            if index is None:
+                return manager_redirect()
+            neighbor = index - 1 if action == "move_up" else index + 1
+            if not (0 <= neighbor < len(items)):
+                return manager_redirect()
+            # Reatribui a ordem inteira: corrige empates herdados de order_index repetido.
+            order = [item["id"] for item in items]
+            order[index], order[neighbor] = order[neighbor], order[index]
+            for position, item_id in enumerate(order, 1):
+                db.execute(
+                    "UPDATE cartorio_checklist_templates SET order_index = %s, updated_at = %s WHERE id = %s",
+                    (position, now, item_id),
+                )
+            db.commit()
+            return manager_redirect()
+
+        if action == "copy":
+            source_raw = (request.form.get("source") or "").strip()
+            copy_all_types = request.form.get("copy_all_types") == "1"
+            source_cartorio_id = int(source_raw) if source_raw.isdigit() else None
+            if source_raw != "system" and (source_cartorio_id or None) == (selected_cartorio_id or None):
+                flash("Origem e destino sao a mesma lista.", "warning")
+                return manager_redirect()
+            process_keys = (
+                [process_type["chave"] for process_type in process_types]
+                if copy_all_types
+                else [selected_process]
+            )
+            copied = 0
+            affected_keys = []
+            for process_key in process_keys:
+                if source_raw == "system":
+                    source_titles = [
+                        template["title"]
+                        for template in get_checklist_template_for_process_stage(process_key, "ESCRITORIO")
+                    ]
+                else:
+                    source_titles = [
+                        row["title"] for row in scope_items(db, process_key, source_cartorio_id)
+                    ]
+                if not source_titles:
+                    continue
+                existing = {
+                    row["title"].lower()
+                    for row in scope_items(db, process_key, selected_cartorio_id)
+                }
+                next_order = scalar(
+                    db,
+                    """
+                    SELECT COALESCE(MAX(order_index), 0) FROM cartorio_checklist_templates
+                    WHERE process_type_key = %s AND cartorio_id IS NOT DISTINCT FROM %s AND active = 1
+                    """,
+                    (process_key, selected_cartorio_id),
+                )
+                added_here = 0
+                for title in source_titles:
+                    if title.lower() in existing:
+                        continue
+                    next_order += 1
+                    db.execute(
+                        """
+                        INSERT INTO cartorio_checklist_templates
+                            (cartorio_id, process_type_key, title, order_index, active, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, 1, %s, %s)
+                        """,
+                        (selected_cartorio_id, process_key, title, next_order, now, now),
+                    )
+                    added_here += 1
+                if added_here:
+                    copied += added_here
+                    affected_keys.append(process_key)
+            synced = 0
+            for process_key in affected_keys:
+                synced += sync_cartorio_checklist_to_projects(db, process_key, selected_cartorio_id)
+            db.commit()
+            if copied:
+                flash(f"{copied} documento(s) copiado(s). Checklist atualizado em {synced} projeto(s) em andamento.", "success")
+            else:
+                flash("Nada para copiar: a origem esta vazia ou os documentos ja existem no destino.", "warning")
+            return manager_redirect()
+
+        flash("Acao invalida.", "danger")
+        return manager_redirect()
+
+    db = get_db()
+    items = scope_items(db, selected_process, selected_cartorio_id)
+    inherited_items = []
+    inherited_source = None
+    if not items:
+        if selected_cartorio_id:
+            inherited_items = scope_items(db, selected_process, None)
+            inherited_source = "Padrao geral"
+        if not inherited_items:
+            inherited_items = get_checklist_template_for_process_stage(selected_process, "ESCRITORIO")
+            inherited_source = "Padrao do sistema"
+
+    return render_template(
+        "cartorios_checklist.html",
+        process_types=process_types,
+        cartorio_options=cartorio_options,
+        selected_cartorio_id=selected_cartorio_id,
+        selected_process=selected_process,
+        items=items,
+        inherited_items=inherited_items,
+        inherited_source=inherited_source,
+    )
 
 
 @app.route("/users", methods=["GET", "POST"])
@@ -7984,4 +8429,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     debug = os.environ.get("GEOGESTAO_DEBUG", "1") == "1"
     app.run(debug=debug, use_reloader=debug, host="127.0.0.1", port=port)
-

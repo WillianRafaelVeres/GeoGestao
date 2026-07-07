@@ -125,6 +125,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
 
     initDocumentalClientForm();
+    initRepresentativeManagers();
     initClientLiveSearch();
     initProjectClientAutocompletes();
     initSingleSubmitForms();
@@ -159,6 +160,129 @@ function initMatrixLiveFilters() {
         timer = setTimeout(() => {
             input.form.requestSubmit();
         }, 450);
+    });
+}
+
+function initRepresentativeManagers() {
+    document.querySelectorAll("[data-representative-manager]").forEach((manager) => {
+        const list = manager.querySelector("[data-rep-list]");
+        const empty = manager.querySelector("[data-rep-empty]");
+        const addButton = manager.querySelector("[data-rep-add]");
+        const popout = manager.querySelector("[data-rep-popout]");
+        const template = manager.querySelector("[data-rep-template]");
+        const title = manager.querySelector("[data-rep-popout-title]");
+        const saveButton = manager.querySelector("[data-rep-save]");
+        let editingRow = null;
+
+        if (!list || !popout || !template) return;
+
+        const fields = Array.from(popout.querySelectorAll("[data-rep-field]"));
+
+        function updateEmptyState() {
+            const hasRows = Boolean(list.querySelector("[data-rep-row]"));
+            if (empty) empty.style.display = hasRows ? "none" : "block";
+        }
+
+        function rowInput(row, field) {
+            return row.querySelector(`[data-rep-value="${field}"]`);
+        }
+
+        function getRowValue(row, field) {
+            const input = rowInput(row, field);
+            return input ? input.value : "";
+        }
+
+        function setRowValue(row, field, value) {
+            const input = rowInput(row, field);
+            if (input) input.value = value || "";
+        }
+
+        function typeLabel(value) {
+            const select = popout.querySelector('[data-rep-field="tipo_representacao"]');
+            if (!select) return value || "Procurador";
+            const option = Array.from(select.options).find((item) => item.value === value);
+            return option ? option.textContent : "Procurador";
+        }
+
+        function refreshRowLabels(row) {
+            const name = getRowValue(row, "nome_completo") || "Sem nome";
+            const cpf = getRowValue(row, "cpf") || "CPF pendente";
+            const type = getRowValue(row, "tipo_representacao") || "PROCURADOR";
+            const nameLabel = row.querySelector("[data-rep-label-name]");
+            const cpfLabel = row.querySelector("[data-rep-label-cpf]");
+            const typeNode = row.querySelector("[data-rep-label-type]");
+            if (nameLabel) nameLabel.textContent = name;
+            if (cpfLabel) cpfLabel.textContent = cpf;
+            if (typeNode) typeNode.textContent = typeLabel(type);
+        }
+
+        function openPopout(row = null) {
+            editingRow = row;
+            fields.forEach((field) => {
+                field.value = row ? getRowValue(row, field.dataset.repField) : "";
+            });
+            const typeField = popout.querySelector('[data-rep-field="tipo_representacao"]');
+            if (typeField && !typeField.value) typeField.value = "PROCURADOR";
+            if (title) title.textContent = row ? "Editar responsavel" : "Novo responsavel";
+            popout.classList.remove("is-hidden");
+            const first = popout.querySelector('[data-rep-field="nome_completo"]');
+            if (first) first.focus();
+        }
+
+        function closePopout() {
+            editingRow = null;
+            popout.classList.add("is-hidden");
+            fields.forEach((field) => {
+                field.value = "";
+                field.classList.remove("is-invalid");
+            });
+        }
+
+        function createRow() {
+            const fragment = template.content.cloneNode(true);
+            const row = fragment.querySelector("[data-rep-row]");
+            list.insertBefore(fragment, empty || null);
+            return row || list.querySelector("[data-rep-row]:last-of-type");
+        }
+
+        function savePopout() {
+            const name = (popout.querySelector('[data-rep-field="nome_completo"]')?.value || "").trim();
+            const cpf = (popout.querySelector('[data-rep-field="cpf"]')?.value || "").trim();
+            if (!name && !cpf) {
+                alert("Informe ao menos o nome ou CPF do responsavel.");
+                return;
+            }
+            const row = editingRow || createRow();
+            if (!row) return;
+            fields.forEach((field) => {
+                setRowValue(row, field.dataset.repField, field.value.trim());
+            });
+            refreshRowLabels(row);
+            updateEmptyState();
+            closePopout();
+        }
+
+        if (addButton) addButton.addEventListener("click", () => openPopout());
+        if (saveButton) saveButton.addEventListener("click", savePopout);
+        popout.querySelectorAll("[data-rep-cancel]").forEach((button) => {
+            button.addEventListener("click", closePopout);
+        });
+
+        list.addEventListener("click", (event) => {
+            const edit = event.target.closest("[data-rep-edit]");
+            const remove = event.target.closest("[data-rep-remove]");
+            const row = event.target.closest("[data-rep-row]");
+            if (edit && row) {
+                openPopout(row);
+            }
+            if (remove && row && confirm("Remover este responsavel?")) {
+                row.remove();
+                updateEmptyState();
+            }
+        });
+
+        list.querySelectorAll("[data-rep-row]").forEach(refreshRowLabels);
+        updateEmptyState();
     });
 }
 
