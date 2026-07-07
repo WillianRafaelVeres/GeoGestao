@@ -498,6 +498,13 @@ a:hover { color: #1d4ed8; }
 
 /* ===== FORM PANEL ===== */
 .form-panel { max-width: none; }
+.cartorio-lookup {
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+}
+.cartorio-lookup small { display: block; margin-top: 7px; }
 .inline-update { display: grid; grid-template-columns: minmax(110px, 1fr) 120px 140px auto; gap: 6px; }
 .table-actions { min-width: 110px; }
 .ac-wrapper { position: relative; }

@@ -48,7 +48,7 @@ STAGE_LABELS = {
     "PREPARACAO": "Preparacao",
     "MEDICAO": "Medicao / Campo",
     "PROCESSAMENTO": "Processamento",
-    "ESCRITORIO": "Escritorio / Pecas tecnicas",
+    "ESCRITORIO": "Escritorio",
     "CONFERENCIA": "Conferencia",
     "ASSINATURAS": "Assinaturas / Anuencias",
     "ORGAO_EXTERNO": "Orgao externo",

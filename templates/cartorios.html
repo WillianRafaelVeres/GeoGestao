@@ -45,14 +45,44 @@
 
     <section class="panel">
         <div class="panel-header"><h2>Novo cartorio/orgao</h2></div>
-        <form method="post" class="vstack gap-3">
+        <form method="post" class="vstack gap-3" data-cartorio-form data-single-submit>
             <input type="hidden" name="action" value="create" />
-            <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
-            <div><label class="form-label">CNS</label><input class="form-control" name="cns" placeholder="Codigo Nacional de Serventia" /></div>
+            <div class="cartorio-lookup" data-cartorio-lookup>
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        <label class="form-label">UF</label>
+                        <select class="form-select" data-cartorio-lookup-uf>
+                            <option value="">Selecione</option>
+                            {% for uf_option in ufs %}
+                                <option value="{{ uf_option }}">{{ uf_option }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Cidade</label>
+                        <select class="form-select" data-cartorio-lookup-city disabled>
+                            <option value="">Escolha a UF</option>
+                        </select>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label">Cartorio cadastrado</label>
+                        <select class="form-select" data-cartorio-lookup-office disabled>
+                            <option value="">Escolha a cidade</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Ou buscar pelo CNS</label>
+                        <input class="form-control" data-cartorio-lookup-cns placeholder="Digite o CNS para preencher nome, cidade e UF" />
+                    </div>
+                </div>
+                <small class="text-muted">Use esta busca para reaproveitar dados ja cadastrados. Para importar todos os CNS, use a base oficial do Justica Aberta/CNJ como fonte.</small>
+            </div>
+            <div><label class="form-label">Nome</label><input class="form-control" name="nome" data-cartorio-field="nome" required /></div>
+            <div><label class="form-label">CNS</label><input class="form-control" name="cns" data-cartorio-field="cns" placeholder="Codigo Nacional de Serventia" /></div>
             <div class="row g-2">
                 <div class="col-4">
                     <label class="form-label">UF</label>
-                    <select class="form-select" name="uf" data-city-uf="cartorio">
+                    <select class="form-select" name="uf" data-city-uf="cartorio" data-cartorio-field="uf">
                         <option value="">UF</option>
                         {% for uf_option in ufs %}
                             <option value="{{ uf_option }}">{{ uf_option }}</option>
@@ -61,18 +91,18 @@
                 </div>
                 <div class="col-8">
                     <label class="form-label">Cidade</label>
-                    <input class="form-control" name="cidade" data-city-input="cartorio" autocomplete="off" placeholder="Selecione a UF e digite..." />
+                    <input class="form-control" name="cidade" data-city-input="cartorio" data-cartorio-field="cidade" autocomplete="off" placeholder="Selecione a UF e digite..." />
                     <div class="city-warning" data-city-warning="cartorio">Verifique a cidade: ela nao foi encontrada para a UF selecionada.</div>
                 </div>
             </div>
-            <div><label class="form-label">Contato</label><input class="form-control" name="contato" /></div>
-            <div><label class="form-label">Oficial</label><input class="form-control" name="oficial" /></div>
+            <div><label class="form-label">Contato</label><input class="form-control" name="contato" data-cartorio-field="contato" /></div>
+            <div><label class="form-label">Oficial</label><input class="form-control" name="oficial" data-cartorio-field="oficial" /></div>
             <div class="row g-2">
-                <div class="col-md-6"><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" /></div>
-                <div class="col-md-6"><label class="form-label">Telefone</label><input class="form-control" name="telefone" /></div>
+                <div class="col-md-6"><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" data-cartorio-field="email" /></div>
+                <div class="col-md-6"><label class="form-label">Telefone</label><input class="form-control" name="telefone" data-cartorio-field="telefone" /></div>
             </div>
-            <div><label class="form-label">WhatsApp</label><input class="form-control" name="whatsapp" /></div>
-            <div><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3"></textarea></div>
+            <div><label class="form-label">WhatsApp</label><input class="form-control" name="whatsapp" data-cartorio-field="whatsapp" /></div>
+            <div><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3" data-cartorio-field="observacoes"></textarea></div>
             <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Cadastrar</button>
         </form>
     </section>
@@ -129,4 +159,7 @@
     </div>
 </div>
 {% endfor %}
+<script>
+window.cartorioCatalog = {{ cartorio_catalog|tojson }};
+</script>
 {% endblock %}

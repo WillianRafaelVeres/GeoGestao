@@ -4,7 +4,7 @@
 <div class="page-heading">
     <div>
         <h1>Documentacao obrigatoria (Escritorio)</h1>
-        <p>Checklist de documentos por tipo de processo e por cartorio. Alteracoes valem para projetos novos e sao adicionadas aos projetos em andamento (itens ja marcados nao mudam).</p>
+        <p>Checklist de documentos por tipo de processo, cartorio e modelo. Alteracoes valem para projetos novos e sao adicionadas aos projetos em andamento (itens ja marcados nao mudam).</p>
     </div>
     <div>
         <a class="btn btn-outline-secondary" href="{{ url_for('cartorios') }}">Voltar aos cartorios</a>
@@ -32,6 +32,9 @@
             </select>
         </div>
     </form>
+    <p class="text-muted" style="padding: 0 1rem 1rem; margin: 0;">
+        Regra de uso: lista especifica do cartorio e processo, depois padrao geral, depois padrao do sistema.
+    </p>
 </section>
 
 <div class="content-grid two-columns">
@@ -42,12 +45,22 @@
         {% if items %}
             <div class="table-responsive">
                 <table class="table compact-table">
-                    <thead><tr><th style="width:3rem">#</th><th>Documento</th><th style="width:9rem">Acoes</th></tr></thead>
+                    <thead><tr><th style="width:3rem">#</th><th>Documento</th><th>Modelo / observacoes</th><th style="width:9rem">Acoes</th></tr></thead>
                     <tbody>
                         {% for item in items %}
                             <tr>
                                 <td>{{ loop.index }}</td>
-                                <td>{{ item.title }}</td>
+                                <td><strong>{{ item.title }}</strong></td>
+                                <td>
+                                    {% if item.modelo_referencia %}
+                                        <strong>{{ item.modelo_referencia }}</strong>
+                                    {% endif %}
+                                    {% if item.observacoes %}
+                                        <small>{{ item.observacoes }}</small>
+                                    {% elif not item.modelo_referencia %}
+                                        <span class="text-muted">Sem modelo especifico.</span>
+                                    {% endif %}
+                                </td>
                                 <td>
                                     <div class="d-flex gap-1">
                                         <form method="post">
@@ -87,19 +100,40 @@
                 {% if inherited_items %}
                     <ul>
                         {% for item in inherited_items %}
-                            <li>{{ item.title }}</li>
+                            <li>
+                                <strong>{{ item.title }}</strong>
+                                {% if item.modelo_referencia is defined and item.modelo_referencia %}
+                                    <span class="text-muted"> - {{ item.modelo_referencia }}</span>
+                                {% endif %}
+                                {% if item.observacoes is defined and item.observacoes %}
+                                    <small>{{ item.observacoes }}</small>
+                                {% elif item.description is defined and item.description %}
+                                    <small>{{ item.description }}</small>
+                                {% endif %}
+                            </li>
                         {% endfor %}
                     </ul>
                     <p class="text-muted">Use "Copiar de outra lista" para trazer esses itens e personalizar.</p>
                 {% endif %}
             </div>
         {% endif %}
-        <form method="post" class="d-flex gap-2" style="padding: 0 1rem 1rem;">
+        <form method="post" class="vstack gap-2" style="padding: 0 1rem 1rem;" data-single-submit>
             <input type="hidden" name="action" value="add" />
             <input type="hidden" name="cartorio_id" value="{{ selected_cartorio_id or '' }}" />
             <input type="hidden" name="process_type" value="{{ selected_process }}" />
-            <input class="form-control" name="titulo" placeholder="Novo documento (ex.: Planta assinada em 2 vias)" required />
-            <button class="btn btn-primary" type="submit">Adicionar</button>
+            <div>
+                <label class="form-label">Documento</label>
+                <input class="form-control" name="titulo" placeholder="Ex.: Planta assinada" required />
+            </div>
+            <div>
+                <label class="form-label">Modelo / referencia</label>
+                <input class="form-control" name="modelo_referencia" placeholder="Ex.: Modelo do 2o Oficio, 2 vias, assinatura digital..." />
+            </div>
+            <div>
+                <label class="form-label">Observacoes</label>
+                <textarea class="form-control" name="observacoes" rows="2" placeholder="Detalhes que a equipe precisa conferir antes de protocolar."></textarea>
+            </div>
+            <button class="btn btn-primary" type="submit">Adicionar documento</button>
         </form>
     </section>
 

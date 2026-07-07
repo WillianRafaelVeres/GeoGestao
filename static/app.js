@@ -128,6 +128,7 @@ window.addEventListener("DOMContentLoaded", () => {
     initRepresentativeManagers();
     initClientLiveSearch();
     initProjectClientAutocompletes();
+    initCartorioLookup();
     initSingleSubmitForms();
     initMatrixLiveFilters();
 });
@@ -148,6 +149,96 @@ function initSingleSubmitForms() {
                 }
             });
         });
+    });
+}
+
+function initCartorioLookup() {
+    const catalog = Array.isArray(window.cartorioCatalog) ? window.cartorioCatalog : [];
+    document.querySelectorAll("[data-cartorio-lookup]").forEach((lookup) => {
+        const form = lookup.closest("[data-cartorio-form]") || lookup.closest("form");
+        if (!form) return;
+        const ufSelect = lookup.querySelector("[data-cartorio-lookup-uf]");
+        const citySelect = lookup.querySelector("[data-cartorio-lookup-city]");
+        const officeSelect = lookup.querySelector("[data-cartorio-lookup-office]");
+        const cnsInput = lookup.querySelector("[data-cartorio-lookup-cns]");
+
+        const normalize = (value) => String(value || "").trim().toLowerCase();
+        const uniqueSorted = (values) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
+        const setOptions = (select, values, placeholder) => {
+            if (!select) return;
+            select.innerHTML = "";
+            const first = document.createElement("option");
+            first.value = "";
+            first.textContent = placeholder;
+            select.appendChild(first);
+            values.forEach((value) => {
+                const option = document.createElement("option");
+                option.value = value;
+                option.textContent = value;
+                select.appendChild(option);
+            });
+            select.disabled = values.length === 0;
+        };
+        const setField = (name, value) => {
+            const field = form.querySelector(`[data-cartorio-field="${name}"]`) || form.querySelector(`[name="${name}"]`);
+            if (!field) return;
+            field.value = value || "";
+            field.dispatchEvent(new Event("input", { bubbles: true }));
+            field.dispatchEvent(new Event("change", { bubbles: true }));
+        };
+        const fillForm = (item) => {
+            if (!item) return;
+            ["nome", "cns", "cidade", "uf", "contato", "email", "telefone", "whatsapp", "oficial", "observacoes"].forEach((field) => {
+                setField(field, item[field] || "");
+            });
+            if (ufSelect) ufSelect.value = item.uf || "";
+            refreshCities();
+            if (citySelect) citySelect.value = item.cidade || "";
+            refreshOffices();
+            if (officeSelect) officeSelect.value = String(item.id || "");
+            if (cnsInput) cnsInput.value = item.cns || "";
+        };
+        const refreshCities = () => {
+            const uf = ufSelect?.value || "";
+            const cities = uniqueSorted(catalog.filter((item) => !uf || item.uf === uf).map((item) => item.cidade));
+            setOptions(citySelect, cities, uf ? "Selecione a cidade" : "Escolha a UF");
+            setOptions(officeSelect, [], "Escolha a cidade");
+        };
+        const refreshOffices = () => {
+            const uf = ufSelect?.value || "";
+            const city = citySelect?.value || "";
+            const offices = catalog
+                .filter((item) => (!uf || item.uf === uf) && (!city || item.cidade === city))
+                .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+            if (!officeSelect) return;
+            officeSelect.innerHTML = "";
+            const first = document.createElement("option");
+            first.value = "";
+            first.textContent = offices.length ? "Selecione o cartorio" : "Nenhum cartorio cadastrado";
+            officeSelect.appendChild(first);
+            offices.forEach((item) => {
+                const option = document.createElement("option");
+                option.value = String(item.id);
+                option.textContent = item.cns ? `${item.nome} - CNS ${item.cns}` : item.nome;
+                officeSelect.appendChild(option);
+            });
+            officeSelect.disabled = offices.length === 0;
+        };
+
+        ufSelect?.addEventListener("change", refreshCities);
+        citySelect?.addEventListener("change", refreshOffices);
+        officeSelect?.addEventListener("change", () => {
+            const item = catalog.find((entry) => String(entry.id) === officeSelect.value);
+            fillForm(item);
+        });
+        cnsInput?.addEventListener("input", () => {
+            const cns = normalize(cnsInput.value).replace(/\D/g, "");
+            if (cns.length < 4) return;
+            const item = catalog.find((entry) => normalize(entry.cns).replace(/\D/g, "") === cns);
+            if (item) fillForm(item);
+        });
+
+        refreshCities();
     });
 }
 
@@ -546,7 +637,15 @@ function initDocumentalClientForm() {
     const forms = document.querySelectorAll(".cliente-form");
     if (!forms.length) return;
 
-    const spouseRequiredRegimes = ["COMUNHAO_PARCIAL", "COMUNHAO_UNIVERSAL", "PARTICIPACAO_FINAL_AQUESTOS"];
+    const spouseRequiredRegimes = [
+        "COMUNHAO_PARCIAL",
+        "COMUNHAO_PARCIAL_APOS_6515",
+        "COMUNHAO_UNIVERSAL",
+        "COMUNHAO_UNIVERSAL_ANTES_6515",
+        "PARTICIPACAO_FINAL_AQUESTOS",
+        "OUTRO_PACTO_ANTENUPCIAL",
+    ];
+    const spouseOptionalRegimes = ["SEPARACAO_TOTAL", "SEPARACAO_OBRIGATORIA"];
 
     forms.forEach((form) => {
         const tipoCliente = form.querySelector('[data-role="tipo-cliente"]');
@@ -599,7 +698,7 @@ function initDocumentalClientForm() {
             if ((!hasCivilRegime || isPJ) && regimeCasamento) regimeCasamento.value = "";
             const regime = regimeCasamento ? regimeCasamento.value : "";
 
-            const isSeparationTotal = hasCivilRegime && regime === "SEPARACAO_TOTAL";
+            const isSeparationTotal = hasCivilRegime && spouseOptionalRegimes.includes(regime);
             if (incluirConjuge) {
                 incluirConjuge.closest(".spouse-opt-in").classList.toggle("is-hidden", isPJ || !isSeparationTotal);
                 if (!isSeparationTotal) incluirConjuge.checked = false;

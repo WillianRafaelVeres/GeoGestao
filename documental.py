@@ -29,9 +29,13 @@ ESTADOS_CIVIS = {
 
 REGIMES_CASAMENTO = {
     "COMUNHAO_PARCIAL": "Comunhao parcial de bens",
+    "COMUNHAO_PARCIAL_APOS_6515": "Comunhao parcial de bens (regime legal apos Lei 6.515/77)",
     "COMUNHAO_UNIVERSAL": "Comunhao universal de bens",
-    "SEPARACAO_TOTAL": "Separacao total de bens",
+    "COMUNHAO_UNIVERSAL_ANTES_6515": "Comunhao universal de bens (anterior a Lei 6.515/77)",
+    "SEPARACAO_TOTAL": "Separacao convencional/total de bens",
+    "SEPARACAO_OBRIGATORIA": "Separacao obrigatoria/legal de bens",
     "PARTICIPACAO_FINAL_AQUESTOS": "Participacao final nos aquestos",
+    "OUTRO_PACTO_ANTENUPCIAL": "Outro regime convencionado em pacto antenupcial",
 }
 
 TIPOS_CERTIDAO = {
@@ -64,8 +68,11 @@ CIDADES_REFERENCIA_POR_UF = {
 
 CONJUGE_REQUIRED_REGIMES = {
     "COMUNHAO_PARCIAL",
+    "COMUNHAO_PARCIAL_APOS_6515",
     "COMUNHAO_UNIVERSAL",
+    "COMUNHAO_UNIVERSAL_ANTES_6515",
     "PARTICIPACAO_FINAL_AQUESTOS",
+    "OUTRO_PACTO_ANTENUPCIAL",
 }
 
 TEMPLATE_PLACEHOLDERS = {

@@ -73,8 +73,8 @@ MACRO_STAGES = [
     },
     {
         "key": "ESCRITORIO",
-        "name": "Escritorio / Pecas tecnicas",
-        "description": "Elaboracao de planta, memorial, pecas, documentos tecnicos e organizacao interna.",
+        "name": "Escritorio",
+        "description": "Preparacao das pecas e do checklist de documentacao obrigatoria do cartorio.",
         "order": 7,
         "default_responsible_role": "escritorio",
         "default_deadline_days": 6,

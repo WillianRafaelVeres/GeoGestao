@@ -217,7 +217,7 @@ DEFAULT_STAGES = [
         "nome": "Escritorio",
         "ordem": 6,
         "cor": "dark",
-        "checklist": ["Planta iniciada", "Memorial iniciado", "Documentacao revisada", "Conferencia interna", "Planta PDF", "Planta DWG/DXF", "Camadas conferidas", "Arquivo final validado", "Memorial descritivo", "ART/RRT", "Requerimento", "Anexos conferidos"],
+        "checklist": ["Planta iniciada", "Memorial iniciado", "Documentacao obrigatoria revisada", "Conferencia interna", "Planta PDF", "Planta DWG/DXF", "Camadas conferidas", "Arquivo final validado", "Memorial descritivo", "ART/RRT", "Requerimento", "Anexos conferidos"],
     },
     {
         "nome": "Assinaturas",
@@ -293,7 +293,7 @@ PROCESS_CHECKLIST_STAGE_NAMES = {
     "PREPARACAO": "Preparacao",
     "MEDICAO": "Medicao / Campo",
     "PROCESSAMENTO": "Processamento",
-    "ESCRITORIO": "Escritorio / Pecas tecnicas",
+    "ESCRITORIO": "Escritorio",
     "CONFERENCIA": "Conferencia",
     "ASSINATURAS": "Assinaturas / Anuencias",
     "ORGAO_EXTERNO": "Orgao externo",
@@ -744,7 +744,8 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_project_checklist_stage_active_status ON project_checklist_items (project_stage_id, active, status, order_index, id)",
         "CREATE INDEX IF NOT EXISTS idx_project_checklist_project_stage_key ON project_checklist_items (project_id, stage_key, project_stage_id)",
         "CREATE INDEX IF NOT EXISTS idx_checklist_itens_etapa_concluido ON checklist_itens (projeto_etapa_id, concluido, id)",
-        "CREATE INDEX IF NOT EXISTS idx_cartorio_checklist_templates_lookup ON cartorio_checklist_templates (process_type_key, cartorio_id)",
+        "CREATE INDEX IF NOT EXISTS idx_cartorio_checklist_templates_lookup ON cartorio_checklist_templates (process_type_key, cartorio_id, active, order_index, id)",
+        "CREATE INDEX IF NOT EXISTS idx_cartorio_checklist_templates_cartorio_id ON cartorio_checklist_templates (cartorio_id)",
         "CREATE INDEX IF NOT EXISTS idx_procuradores_cliente_principal ON procuradores (cliente_id, principal DESC, id)",
         "CREATE INDEX IF NOT EXISTS idx_tarefas_etapa_status_prazo ON tarefas (projeto_etapa_id, status, prazo)",
         "CREATE INDEX IF NOT EXISTS idx_process_stage_templates_process_active ON process_stage_templates (process_type_key, active, stage_order, id)",
@@ -1229,6 +1230,8 @@ def init_db():
             cartorio_id INTEGER,
             process_type_key TEXT NOT NULL,
             title TEXT NOT NULL,
+            modelo_referencia TEXT,
+            observacoes TEXT,
             order_index INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT,
@@ -1395,6 +1398,8 @@ def init_db():
     add_column_if_missing(db, "cartorios", "telefone", "TEXT")
     add_column_if_missing(db, "cartorios", "whatsapp", "TEXT")
     add_column_if_missing(db, "cartorios", "oficial", "TEXT")
+    add_column_if_missing(db, "cartorio_checklist_templates", "modelo_referencia", "TEXT")
+    add_column_if_missing(db, "cartorio_checklist_templates", "observacoes", "TEXT")
     add_column_if_missing(db, "conjuges", "email", "TEXT")
     add_column_if_missing(db, "conjuges", "telefone", "TEXT")
     add_column_if_missing(db, "procuradores", "telefone", "TEXT")
@@ -1744,10 +1749,20 @@ def legacy_estado_civil(value):
 def legacy_regime_casamento(value):
     mapping = {
         "comunhao_parcial": "COMUNHAO_PARCIAL",
+        "comunhao_parcial_apos_6515": "COMUNHAO_PARCIAL_APOS_6515",
+        "comunhao_parcial_apos_lei_6515_77": "COMUNHAO_PARCIAL_APOS_6515",
         "comunhao_universal": "COMUNHAO_UNIVERSAL",
+        "comunhao_de_bens": "COMUNHAO_UNIVERSAL_ANTES_6515",
+        "comunhao_bens": "COMUNHAO_UNIVERSAL_ANTES_6515",
+        "comunhao_universal_antes_6515": "COMUNHAO_UNIVERSAL_ANTES_6515",
+        "comunhao_universal_antes_lei_6515_77": "COMUNHAO_UNIVERSAL_ANTES_6515",
         "separacao_total": "SEPARACAO_TOTAL",
+        "separacao_convencional": "SEPARACAO_TOTAL",
+        "separacao_obrigatoria": "SEPARACAO_OBRIGATORIA",
+        "separacao_legal": "SEPARACAO_OBRIGATORIA",
         "participacao_acertos": "PARTICIPACAO_FINAL_AQUESTOS",
         "participacao_final_aquestos": "PARTICIPACAO_FINAL_AQUESTOS",
+        "outro_pacto_antenupcial": "OUTRO_PACTO_ANTENUPCIAL",
     }
     return mapping.get((value or "").lower(), value or None)
 
@@ -2048,7 +2063,7 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
                     "ESCRITORIO",
                     PROCESS_CHECKLIST_STAGE_NAMES.get("ESCRITORIO", "Escritorio"),
                     custom["title"],
-                    None,
+                    custom["observacoes"],
                     CHECKLIST_STATUS_NOT_STARTED,
                     REQUIREMENT_REQUIRED,
                     CRITICALITY_MEDIUM,
@@ -2063,7 +2078,7 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
                     0,
                     1,
                     None,
-                    None,
+                    custom["modelo_referencia"],
                     custom["order_index"],
                     1,
                     now,
@@ -7825,7 +7840,24 @@ def cartorios():
         ORDER BY c.nome
         """
     )
-    return render_template("cartorios.html", cartorios=rows)
+    cartorio_catalog = [
+        {
+            "id": row["id"],
+            "nome": row["nome"] or "",
+            "cns": row["cns"] or "",
+            "cidade": row["cidade"] or "",
+            "uf": (row["uf"] or "").upper(),
+            "contato": row["contato"] or "",
+            "email": row["email"] or "",
+            "telefone": row["telefone"] or "",
+            "whatsapp": row["whatsapp"] or "",
+            "oficial": row["oficial"] or "",
+            "observacoes": row["observacoes"] or "",
+        }
+        for row in rows
+        if row["nome"] or row["cns"] or row["cidade"] or row["uf"]
+    ]
+    return render_template("cartorios.html", cartorios=rows, cartorio_catalog=cartorio_catalog)
 
 
 @app.route("/cartorios/checklist", methods=["GET", "POST"])
@@ -7871,6 +7903,8 @@ def cartorios_checklist():
 
         if action == "add":
             titulo = (request.form.get("titulo") or "").strip()
+            modelo_referencia = (request.form.get("modelo_referencia") or "").strip()
+            observacoes = (request.form.get("observacoes") or "").strip()
             if not titulo:
                 flash("Informe o nome do documento.", "danger")
                 return manager_redirect()
@@ -7880,11 +7914,12 @@ def cartorios_checklist():
                 SELECT id FROM cartorio_checklist_templates
                 WHERE process_type_key = %s AND cartorio_id IS NOT DISTINCT FROM %s
                   AND lower(title) = lower(%s) AND active = 1
+                  AND lower(COALESCE(modelo_referencia, '')) = lower(%s)
                 """,
-                (selected_process, selected_cartorio_id, titulo),
+                (selected_process, selected_cartorio_id, titulo, modelo_referencia),
             )
             if duplicate:
-                flash("Ja existe um documento com esse nome nesta lista.", "warning")
+                flash("Ja existe um documento com esse nome e modelo nesta lista.", "warning")
                 return manager_redirect()
             next_order = scalar(
                 db,
@@ -7897,10 +7932,10 @@ def cartorios_checklist():
             db.execute(
                 """
                 INSERT INTO cartorio_checklist_templates
-                    (cartorio_id, process_type_key, title, order_index, active, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, 1, %s, %s)
+                    (cartorio_id, process_type_key, title, modelo_referencia, observacoes, order_index, active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s)
                 """,
-                (selected_cartorio_id, selected_process, titulo, next_order, now, now),
+                (selected_cartorio_id, selected_process, titulo, modelo_referencia, observacoes, next_order, now, now),
             )
             synced = sync_cartorio_checklist_to_projects(db, selected_process, selected_cartorio_id)
             db.commit()
@@ -7963,18 +7998,27 @@ def cartorios_checklist():
             affected_keys = []
             for process_key in process_keys:
                 if source_raw == "system":
-                    source_titles = [
-                        template["title"]
+                    source_documents = [
+                        {
+                            "title": template["title"],
+                            "modelo_referencia": "",
+                            "observacoes": template["description"] or template["help_text"] or "",
+                        }
                         for template in get_checklist_template_for_process_stage(process_key, "ESCRITORIO")
                     ]
                 else:
-                    source_titles = [
-                        row["title"] for row in scope_items(db, process_key, source_cartorio_id)
+                    source_documents = [
+                        {
+                            "title": row["title"],
+                            "modelo_referencia": row["modelo_referencia"] or "",
+                            "observacoes": row["observacoes"] or "",
+                        }
+                        for row in scope_items(db, process_key, source_cartorio_id)
                     ]
-                if not source_titles:
+                if not source_documents:
                     continue
                 existing = {
-                    row["title"].lower()
+                    ((row["title"] or "").lower(), (row["modelo_referencia"] or "").lower())
                     for row in scope_items(db, process_key, selected_cartorio_id)
                 }
                 next_order = scalar(
@@ -7986,18 +8030,29 @@ def cartorios_checklist():
                     (process_key, selected_cartorio_id),
                 )
                 added_here = 0
-                for title in source_titles:
-                    if title.lower() in existing:
+                for document in source_documents:
+                    key = ((document["title"] or "").lower(), (document["modelo_referencia"] or "").lower())
+                    if key in existing:
                         continue
                     next_order += 1
                     db.execute(
                         """
                         INSERT INTO cartorio_checklist_templates
-                            (cartorio_id, process_type_key, title, order_index, active, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, 1, %s, %s)
+                            (cartorio_id, process_type_key, title, modelo_referencia, observacoes, order_index, active, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s)
                         """,
-                        (selected_cartorio_id, process_key, title, next_order, now, now),
+                        (
+                            selected_cartorio_id,
+                            process_key,
+                            document["title"],
+                            document["modelo_referencia"],
+                            document["observacoes"],
+                            next_order,
+                            now,
+                            now,
+                        ),
                     )
+                    existing.add(key)
                     added_here += 1
                 if added_here:
                     copied += added_here
