@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% block title %}Checklist de Cartorio{% endblock %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Checklist de cartorio</h1>
+        <p>Itens padrao do processo na etapa Escritório usados em protocolo/cartório.</p>
+    </div>
+</div>
+
+<section class="panel">
+    <div class="panel-header">
+        <h2>Por tipo de processo</h2>
+    </div>
+    <div class="table-responsive">
+        <table class="table compact-table">
+            <thead>
+                <tr>
+                    <th>Tipo de processo</th>
+                    <th>Checklist Escritório</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for group in checklist_by_process %}
+                    <tr>
+                        <td><strong>{{ group.process_type_name }}</strong></td>
+                        <td>
+                            <ul class="list-unstyled mb-0">
+                                {% for item in group.items %}
+                                    <li>{{ item.title }}</li>
+                                {% endfor %}
+                            </ul>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="2">Nenhum checklist encontrado.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

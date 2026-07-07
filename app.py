@@ -169,8 +169,6 @@ REPORT_STAGE_DEFAULT_DAYS = {
     "processamento": 10,
     "escritorio": 9,
     "conferencia": 4,
-    "planta": 6,
-    "documentacao": 5,
     "assinaturas": 4,
     "cartorio": 14,
     "pendencia": 7,
@@ -213,23 +211,11 @@ DEFAULT_STAGES = [
         "nome": "Escritorio",
         "ordem": 6,
         "cor": "dark",
-        "checklist": ["Planta iniciada", "Memorial iniciado", "Documentacao revisada", "Conferencia interna"],
-    },
-    {
-        "nome": "Planta",
-        "ordem": 7,
-        "cor": "primary",
-        "checklist": ["Planta PDF", "Planta DWG/DXF", "Camadas conferidas", "Arquivo final validado"],
-    },
-    {
-        "nome": "Documentacao",
-        "ordem": 8,
-        "cor": "info",
-        "checklist": ["Memorial descritivo", "ART/RRT", "Requerimento", "Anexos conferidos"],
+        "checklist": ["Planta iniciada", "Memorial iniciado", "Documentacao revisada", "Conferencia interna", "Planta PDF", "Planta DWG/DXF", "Camadas conferidas", "Arquivo final validado", "Memorial descritivo", "ART/RRT", "Requerimento", "Anexos conferidos"],
     },
     {
         "nome": "Assinaturas",
-        "ordem": 9,
+        "ordem": 7,
         "cor": "warning",
         "checklist": ["Cliente notificado", "Assinaturas coletadas", "Reconhecimentos conferidos"],
     },
@@ -256,6 +242,8 @@ DEFAULT_STAGES = [
 STAGE_ALIASES = {
     "campo": "medicao",
     "medicao": "medicao",
+    "planta": "escritorio",
+    "documentacao": "escritorio",
     "finalizacao": "finalizado",
     "finalizado": "finalizado",
 }
@@ -7573,6 +7561,37 @@ def cartorios():
         """
     )
     return render_template("cartorios.html", cartorios=rows)
+
+
+@app.route("/cartorios/checklist")
+@login_required
+def cartorios_checklist():
+    if not can_manage():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("cartorios"))
+
+    process_types = query_db(
+        """
+        SELECT chave, nome
+        FROM tipos_processo
+        WHERE ativo = 1
+        ORDER BY ordem, nome
+        """
+    )
+    checklist_by_process = []
+    for process_type in process_types:
+        items = get_checklist_template_for_process_stage(process_type["chave"], "ESCRITORIO")
+        if not items:
+            continue
+        checklist_by_process.append(
+            {
+                "process_type_key": process_type["chave"],
+                "process_type_name": process_type["nome"],
+                "items": items,
+            }
+        )
+
+    return render_template("cartorios_checklist.html", checklist_by_process=checklist_by_process)
 
 
 @app.route("/users", methods=["GET", "POST"])
