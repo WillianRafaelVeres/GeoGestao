@@ -172,7 +172,7 @@
                         <button class="btn btn-outline-primary" type="button" id="btnAbrirPasta" onclick="abrirPasta()">📂 Abrir</button>
                     </div>
                     <small class="form-text">
-                        Clique em <strong>Procurar</strong> para escolher a pasta no computador, ou em <strong>Abrir</strong> para abri-la no Windows Explorer.
+                        Clique em <strong>Procurar</strong> para escolher a pasta no computador, ou em <strong>Abrir</strong> para abri-la no Explorer ou no Dropbox.
                         Lembre de salvar o projeto depois de escolher uma nova pasta.
                     </small>
                 </div>
@@ -476,7 +476,7 @@ async function selecionarPasta() {
     }
 }
 
-// Abre a pasta cadastrada no Windows Explorer.
+// Abre a pasta cadastrada: Explorer quando o app roda local, senao Dropbox (web/desktop).
 function abrirPasta() {
     const input = document.getElementById('caminhoInput');
     const path = input ? input.value.trim() : '';
@@ -493,7 +493,10 @@ function abrirPasta() {
         body: JSON.stringify({ path })
     })
         .then(r => r.json())
-        .then(data => { if (data.error) alert(data.error); })
+        .then(data => {
+            if (data.url) window.open(data.url, '_blank', 'noopener');
+            else if (data.error) alert(data.error);
+        })
         .catch(() => alert('Nao foi possivel abrir a pasta.'))
         .finally(() => { if (btn) { btn.disabled = false; btn.textContent = original; } });
 }

@@ -19,9 +19,11 @@ import psycopg2.extras
 import psycopg2.errors
 import psycopg2.pool
 import unicodedata
+import urllib.error
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, Response, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
@@ -98,6 +100,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 SECRET_KEY = os.environ.get("GEOGESTAO_SECRET_KEY", "dev-change-this-secret-key")
 APP_PUBLIC_URL = os.environ.get("GEOGESTAO_PUBLIC_URL", "").strip().rstrip("/")
+DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY", "").strip()
+DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET", "").strip()
+DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN", "").strip()
 try:
     APP_TIMEZONE = ZoneInfo(os.environ.get("GEOGESTAO_TIMEZONE", "America/Sao_Paulo"))
 except ZoneInfoNotFoundError:
@@ -5360,6 +5365,123 @@ def api_select_folder():
         return jsonify({"error": str(e)}), 500
 
 
+# --- Integracao Dropbox: abre a pasta do projeto pelo Dropbox (web ou app desktop) ---
+# O app usa um refresh token unico da empresa (env: DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN)
+# com escopos somente de metadados e links; sem acesso ao conteudo dos arquivos.
+
+_dropbox_lock = threading.Lock()
+_dropbox_cache = {"access_token": None, "expires_at": 0.0, "root_namespace_id": None}
+
+
+def dropbox_enabled():
+    return bool(DROPBOX_APP_KEY and DROPBOX_APP_SECRET and DROPBOX_REFRESH_TOKEN)
+
+
+def _dropbox_access_token():
+    with _dropbox_lock:
+        if _dropbox_cache["access_token"] and time.time() < _dropbox_cache["expires_at"] - 300:
+            return _dropbox_cache["access_token"]
+    body = urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": DROPBOX_REFRESH_TOKEN,
+        "client_id": DROPBOX_APP_KEY,
+        "client_secret": DROPBOX_APP_SECRET,
+    }).encode()
+    req = urllib.request.Request("https://api.dropboxapi.com/oauth2/token", data=body, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode())
+    with _dropbox_lock:
+        _dropbox_cache["access_token"] = data["access_token"]
+        _dropbox_cache["expires_at"] = time.time() + int(data.get("expires_in", 14400))
+    return data["access_token"]
+
+
+def _dropbox_api(endpoint, payload, use_path_root=True):
+    """Chama a API do Dropbox. Retorna (json, None) ou (None, error_summary)."""
+    token = _dropbox_access_token()
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    if use_path_root:
+        # Conta Business: sem este header os caminhos resolvem na pasta do membro,
+        # nao no espaco da equipe (onde ficam /SC/Pastas/...).
+        headers["Dropbox-API-Path-Root"] = json.dumps({".tag": "root", "root": _dropbox_root_namespace()})
+    req = urllib.request.Request(
+        "https://api.dropboxapi.com/2/" + endpoint,
+        data=json.dumps(payload).encode(),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode()), None
+    except urllib.error.HTTPError as err:
+        try:
+            detail = json.loads(err.read().decode()).get("error_summary", "")
+        except Exception:
+            detail = ""
+        return None, detail or f"http_{err.code}"
+
+
+def _dropbox_root_namespace():
+    with _dropbox_lock:
+        if _dropbox_cache["root_namespace_id"]:
+            return _dropbox_cache["root_namespace_id"]
+    account, error = _dropbox_api("users/get_current_account", None, use_path_root=False)
+    if not account:
+        raise RuntimeError(f"Dropbox get_current_account falhou: {error}")
+    namespace_id = account["root_info"]["root_namespace_id"]
+    with _dropbox_lock:
+        _dropbox_cache["root_namespace_id"] = namespace_id
+    return namespace_id
+
+
+def dropbox_path_from_raw(raw_path):
+    """Extrai o caminho Dropbox de um caminho cadastrado.
+
+    Aceita '/SC/Pastas/X' (ja no formato Dropbox) ou um caminho local sincronizado
+    como 'C:\\SC Dropbox\\SC\\Pastas\\X' (tudo apos a pasta '* Dropbox').
+    Retorna None quando o caminho nao tem relacao com o Dropbox (ex.: X:\\, \\\\wdserver).
+    """
+    path = (raw_path or "").strip().strip('"')
+    if not path:
+        return None
+    if path.startswith("/"):
+        return path.rstrip("/") or None
+    parts = [part for part in path.replace("/", "\\").split("\\") if part]
+    for index, part in enumerate(parts):
+        if part.lower().endswith(" dropbox"):
+            rest = parts[index + 1:]
+            return "/" + "/".join(rest) if rest else None
+    return None
+
+
+def dropbox_web_url(dropbox_path):
+    """URL da pasta no dropbox.com. Quem tem o app desktop abre de la no Explorer."""
+    return "https://www.dropbox.com/home" + quote(dropbox_path, safe="/")
+
+
+def local_dropbox_candidates(dropbox_path):
+    """Caminhos locais possiveis da pasta sincronizada, via info.json oficial do Dropbox."""
+    candidates = []
+    for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):
+        if not base:
+            continue
+        try:
+            with open(os.path.join(base, "Dropbox", "info.json"), encoding="utf-8") as fh:
+                info = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        for entry in info.values():
+            if not isinstance(entry, dict):
+                continue
+            for key in ("root_path", "path"):
+                root = entry.get(key)
+                if root:
+                    candidate = os.path.join(root, dropbox_path.strip("/").replace("/", "\\"))
+                    if candidate not in candidates:
+                        candidates.append(candidate)
+    return candidates
+
+
 def folder_path_candidates(raw_path):
     path = (raw_path or "").strip().strip('"')
     if not path:
@@ -5387,26 +5509,56 @@ def folder_path_candidates(raw_path):
 @app.route("/api/open-folder", methods=["POST"])
 @login_required
 def api_open_folder():
-    """Abre a pasta do projeto no Windows Explorer (app roda na maquina do usuario)."""
+    """Abre a pasta do projeto.
+
+    - App rodando na maquina do usuario (Windows): abre direto no Explorer,
+      inclusive a pasta sincronizada do Dropbox.
+    - App hospedado (Render): devolve a URL da pasta no dropbox.com; quem tem o
+      app desktop abre no Explorer a partir de la, quem nao tem navega online.
+    """
     data = request.get_json(silent=True) or {}
     path = (data.get("path") or "").strip()
     if not path:
         return jsonify({"error": "Caminho nao informado"}), 400
-    candidates = folder_path_candidates(path)
-    resolved_path = next((candidate for candidate in candidates if os.path.isdir(candidate)), None)
-    if not resolved_path:
-        tried = "; ".join(candidates[:4])
-        return jsonify({
-            "error": f"Pasta nao encontrada. Verifique o caminho cadastrado. Tentativas: {tried}",
-        }), 404
-    try:
-        os.startfile(resolved_path)  # type: ignore[attr-defined]  # disponivel apenas no Windows
-        return jsonify({"ok": True, "path": resolved_path})
-    except AttributeError:
-        # Ambiente nao-Windows (ex.: servidor): nao ha explorer para abrir.
-        return jsonify({"error": "Abrir pasta so funciona no aplicativo instalado no Windows."}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+
+    stripped = path.strip('"').strip()
+    if stripped.lower().startswith(("https://www.dropbox.com/", "https://dropbox.com/")):
+        return jsonify({"url": stripped})
+
+    dropbox_path = dropbox_path_from_raw(path)
+
+    # 1) Instalacao local no Windows: tenta abrir no Explorer.
+    if hasattr(os, "startfile"):
+        candidates = folder_path_candidates(path)
+        if dropbox_path:
+            candidates.extend(local_dropbox_candidates(dropbox_path))
+        resolved_path = next((candidate for candidate in candidates if os.path.isdir(candidate)), None)
+        if resolved_path:
+            try:
+                os.startfile(resolved_path)  # type: ignore[attr-defined]
+                return jsonify({"ok": True, "path": resolved_path})
+            except Exception:
+                pass  # cai para o Dropbox web
+
+    # 2) Hospedado ou pasta local indisponivel: abre pelo Dropbox.
+    if dropbox_path:
+        if dropbox_enabled():
+            try:
+                meta, error = _dropbox_api("files/get_metadata", {"path": dropbox_path})
+            except Exception:
+                meta, error = None, "api_indisponivel"
+            if meta:
+                return jsonify({"url": dropbox_web_url(meta.get("path_display") or dropbox_path)})
+            if error and error.startswith("path/not_found"):
+                return jsonify({
+                    "error": f"Pasta nao encontrada no Dropbox: {dropbox_path}. Verifique o caminho cadastrado.",
+                }), 404
+        # Sem credenciais ou API fora do ar: abre a URL construida mesmo assim.
+        return jsonify({"url": dropbox_web_url(dropbox_path)})
+
+    return jsonify({
+        "error": "Pasta nao encontrada. Cadastre o caminho da pasta no Dropbox (ex.: C:\\SC Dropbox\\SC\\Pastas\\...).",
+    }), 404
 
 
 @app.route("/api/add-cliente", methods=["POST"])

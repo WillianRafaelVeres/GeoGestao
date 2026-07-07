@@ -16,3 +16,10 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
+      # Integracao Dropbox (abrir pasta do projeto). Valores no dashboard do Render.
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false

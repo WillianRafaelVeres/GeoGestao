@@ -95,7 +95,7 @@ window.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    // Abre a pasta do projeto no Windows Explorer (app local).
+    // Abre a pasta do projeto: Explorer quando o app roda local, senao Dropbox (web/desktop).
     document.querySelectorAll("[data-open-folder]").forEach((button) => {
         button.addEventListener("click", async () => {
             const path = button.dataset.openFolder;
@@ -110,7 +110,11 @@ window.addEventListener("DOMContentLoaded", () => {
                     body: JSON.stringify({ path }),
                 });
                 const data = await resp.json();
-                if (data.error) alert(data.error);
+                if (data.url) {
+                    window.open(data.url, "_blank", "noopener");
+                } else if (data.error) {
+                    alert(data.error);
+                }
             } catch {
                 alert("Nao foi possivel abrir a pasta.");
             } finally {

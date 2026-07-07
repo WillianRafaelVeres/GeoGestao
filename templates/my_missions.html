@@ -57,7 +57,7 @@
                                     <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Resolver</button></form>
                                 {% endif %}
                                 {% if mission.folder %}
-                                    <button class="btn btn-outline-primary btn-sm" type="button" data-open-folder="{{ mission.folder }}" title="Abrir a pasta no Windows Explorer">Abrir pasta</button>
+                                    <button class="btn btn-outline-primary btn-sm" type="button" data-open-folder="{{ mission.folder }}" title="Abrir a pasta do projeto (Explorer ou Dropbox)">Abrir pasta</button>
                                 {% endif %}
                             </div>
                         </td>
