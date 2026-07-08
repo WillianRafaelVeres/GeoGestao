@@ -1228,7 +1228,9 @@ a:hover { color: #1d4ed8; }
 .matrix-shell {
     height: calc(100vh - 286px);
     min-height: 360px;
-    overflow: auto;
+    overflow-x: scroll;
+    overflow-y: auto;
+    scrollbar-gutter: stable both-edges;
     border: 1px solid var(--border);
     border-radius: 0 0 7px 7px;
     background: #fff;
