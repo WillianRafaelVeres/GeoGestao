@@ -2100,7 +2100,7 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
                     None,
                     None,
                     None,
-                    0,
+                    1,
                     0,
                     0,
                     1,
@@ -3458,6 +3458,28 @@ def project_checklist_stage_counts(stage_id):
     done = row["done"] or 0
     progress = int((done / total) * 100) if total else 0
     return done, total, progress
+
+
+def count_blocking_checklist_pending(stage_id):
+    """Itens obrigatorios do checklist que bloqueiam a conclusao da etapa e ainda estao pendentes.
+
+    Mesma regra do required_pending exibido na matriz: obrigatorio + bloqueia etapa +
+    nao concluido/nao aplicavel. Enquanto houver item assim, a etapa nao pode avancar.
+    """
+    row = query_db(
+        """
+        SELECT COUNT(*) AS pendentes
+        FROM project_checklist_items
+        WHERE project_stage_id = %s
+          AND active = 1
+          AND requirement_level = %s
+          AND blocks_stage_completion = 1
+          AND status NOT IN (%s, %s)
+        """,
+        (stage_id, REQUIREMENT_REQUIRED, CHECKLIST_STATUS_DONE, CHECKLIST_STATUS_NOT_APPLICABLE),
+        one=True,
+    )
+    return row["pendentes"] or 0
 
 
 def load_stage_rows(project_id):
@@ -6053,6 +6075,9 @@ def project_action(project_id):
         if status == "em andamento" and not data_inicio:
             data_inicio = app_now_iso()
         if status == "concluido":
+            if count_blocking_checklist_pending(old_stage["id"]):
+                flash("Conclua os documentos obrigatorios do checklist antes de concluir esta etapa.", "danger")
+                return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
             data_fim = app_now_iso()
             progress = 100
         execute_db(
@@ -6112,6 +6137,15 @@ def project_action(project_id):
             new_col = new_stage["legacy_etapa_ordem"]
             is_advance = new_col > old_col
             is_return = new_col < old_col
+            # Avanco na sequencia real do projeto (stage_order), que enxerga tambem
+            # movimentos dentro da mesma coluna global (ex.: Escritorio -> Conferencia).
+            is_forward = (new_stage["etapa_ordem"] or 0) > (old_stage["etapa_ordem"] or 0)
+
+            if is_forward:
+                blocking_pending = count_blocking_checklist_pending(old_stage["id"])
+                if blocking_pending:
+                    flash("Conclua os documentos obrigatorios do checklist desta etapa antes de avancar.", "danger")
+                    return redirect(redirect_url)
 
             if is_advance:
                 # Bloqueia o avanco enquanto houver pendencia aberta no projeto.
@@ -6602,10 +6636,19 @@ def api_toggle_project_checklist(item_id):
         ),
     )
     done = total = progress = 0
+    required_pending = 0
     if item["project_stage_id"]:
         done, total, progress = project_checklist_stage_counts(item["project_stage_id"])
+        required_pending = count_blocking_checklist_pending(item["project_stage_id"])
         execute_db("UPDATE projeto_etapas SET progresso = %s WHERE id = %s", (progress, item["project_stage_id"]))
-    return jsonify({"ok": True, "concluido": new_status == CHECKLIST_STATUS_DONE, "progress": progress, "done": done, "total": total})
+    return jsonify({
+        "ok": True,
+        "concluido": new_status == CHECKLIST_STATUS_DONE,
+        "progress": progress,
+        "done": done,
+        "total": total,
+        "required_pending": required_pending,
+    })
 
 
 @app.route("/api/project-checklist/add", methods=["POST"])
@@ -6676,6 +6719,9 @@ def stage_quick(stage_id):
     elif action == "pause":
         status = "atencao"
     elif action == "finish":
+        if count_blocking_checklist_pending(stage_id):
+            flash("Conclua os documentos obrigatorios do checklist antes de concluir esta etapa.", "danger")
+            return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
         status = "concluido"
         progress = 100
         data_fim = app_now_iso()
