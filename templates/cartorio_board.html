@@ -3,7 +3,7 @@
 <div class="page-heading">
     <div>
         <h1>Cartorio e orgaos externos</h1>
-        <p>Controle central de exigencias, prazos de resposta e responsaveis.</p>
+        <p>Controle central de protocolos, exigencias, prazos e retiradas.</p>
     </div>
     <div class="heading-actions">
         <a class="btn btn-outline-secondary" href="{{ url_for('projects') }}">Matriz</a>
@@ -11,16 +11,18 @@
 </div>
 
 <section class="panel">
-    <div class="panel-header"><h2>Exigencias abertas e historicas</h2></div>
+    <div class="panel-header"><h2>Protocolos e exigencias</h2></div>
     <div class="table-responsive">
         <table class="table compact-table">
             <thead>
                 <tr>
                     <th>Projeto</th>
-                    <th>Cartorio/orgao</th>
+                    <th>Orgao</th>
+                    <th>Registro</th>
                     <th>Descricao</th>
                     <th>Responsavel</th>
                     <th>Prazo</th>
+                    <th>Retirada</th>
                     <th>Status</th>
                 </tr>
             </thead>
@@ -29,14 +31,16 @@
                     {% set status_key = item.status|lower %}
                     <tr class="{{ 'table-danger' if is_overdue(item.prazo_resposta, item.status) or item.status == 'atrasado' else '' }}">
                         <td><a class="table-link" href="{{ url_for('project_detail', project_id=item.projeto_id) }}#cartorio">{{ item.projeto_nome }}</a></td>
-                        <td>{{ item.cartorio_nome or '-' }}</td>
+                        <td>{{ 'Prefeitura' if item.tipo_orgao == 'PREFEITURA' else 'Cartorio' }}</td>
+                        <td>{{ 'Protocolo' if item.tipo_registro == 'protocolo' else 'Exigencia' }}</td>
                         <td>{{ item.descricao }}</td>
                         <td>{{ item.responsavel_nome or '-' }}</td>
                         <td>{{ format_date(item.prazo_resposta) }}</td>
+                        <td>{{ format_date(item.data_retirada) if item.data_retirada else '-' }}</td>
                         <td><span class="badge bg-{{ status_meta[status_key].color if status_key in status_meta else 'secondary' }}">{{ status_meta[status_key].label if status_key in status_meta else item.status }}</span></td>
                     </tr>
                 {% else %}
-                    <tr><td colspan="6">Nenhuma exigencia registrada.</td></tr>
+                    <tr><td colspan="8">Nenhum protocolo ou exigencia registrado.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

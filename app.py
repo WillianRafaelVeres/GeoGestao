@@ -116,6 +116,7 @@ STATUS_META = {
     "atencao": {"label": "Atencao", "color": "warning", "tone": "amber"},
     "atrasado": {"label": "Atrasado", "color": "danger", "tone": "red"},
     "aguardando externo": {"label": "Aguardando externo", "color": "purple", "tone": "purple"},
+    "pronto para retirada": {"label": "Pronto para retirada", "color": "info", "tone": "blue"},
     "retrabalho": {"label": "Retrabalho", "color": "purple", "tone": "purple"},
     "nao aplicavel": {"label": "Nao aplicavel", "color": "secondary", "tone": "muted"},
     "cancelado": {"label": "Cancelado", "color": "dark", "tone": "dark"},
@@ -221,25 +222,31 @@ DEFAULT_STAGES = [
     },
     {
         "nome": "Assinaturas",
-        "ordem": 7,
+        "ordem": 9,
         "cor": "warning",
         "checklist": ["Cliente notificado", "Assinaturas coletadas", "Reconhecimentos conferidos"],
     },
     {
-        "nome": "Cartorio",
+        "nome": "Prefeitura",
         "ordem": 10,
+        "cor": "info",
+        "checklist": ["Protocolo registrado", "Exigencias acompanhadas", "Pronto para retirada", "Retirada concluida"],
+    },
+    {
+        "nome": "Cartorio",
+        "ordem": 11,
         "cor": "danger",
-        "checklist": ["Protocolo registrado", "Exigencias acompanhadas", "Resposta preparada", "Deferimento conferido"],
+        "checklist": ["Protocolo registrado", "Exigencias acompanhadas", "Pronto para retirada", "Retirada concluida"],
     },
     {
         "nome": "Pendencia",
-        "ordem": 11,
+        "ordem": 12,
         "cor": "warning",
         "checklist": ["Pendencia classificada", "Responsavel definido", "Prazo acompanhado", "Resolucao conferida"],
     },
     {
         "nome": "Finalizado",
-        "ordem": 12,
+        "ordem": 13,
         "cor": "success",
         "checklist": ["Entrega ao cliente", "Saldo recebido", "Pasta final organizada", "Backup realizado"],
     },
@@ -264,6 +271,7 @@ PROCESS_STAGE_TO_LEGACY_STAGE = {
     "ESCRITORIO": "escritorio",
     "CONFERENCIA": "escritorio",
     "ASSINATURAS": "assinaturas",
+    "PREFEITURA": "prefeitura",
     "ORGAO_EXTERNO": "cartorio",
     "PENDENCIAS": "pendencia",
     "ENTREGA": "finalizado",
@@ -280,10 +288,11 @@ PROCESS_CHECKLIST_STAGE_ORDER = {
     "ESCRITORIO": 7,
     "CONFERENCIA": 8,
     "ASSINATURAS": 9,
-    "ORGAO_EXTERNO": 10,
-    "PENDENCIAS": 11,
-    "ENTREGA": 12,
-    "FINALIZADO": 13,
+    "PREFEITURA": 10,
+    "ORGAO_EXTERNO": 11,
+    "PENDENCIAS": 12,
+    "ENTREGA": 13,
+    "FINALIZADO": 14,
 }
 
 PROCESS_CHECKLIST_STAGE_NAMES = {
@@ -296,7 +305,8 @@ PROCESS_CHECKLIST_STAGE_NAMES = {
     "ESCRITORIO": "Escritorio",
     "CONFERENCIA": "Conferencia",
     "ASSINATURAS": "Assinaturas / Anuencias",
-    "ORGAO_EXTERNO": "Orgao externo",
+    "PREFEITURA": "Prefeitura",
+    "ORGAO_EXTERNO": "Cartorio",
     "PENDENCIAS": "Pendencias / Exigencias",
     "ENTREGA": "Entrega / Encerramento",
     "FINALIZADO": "Finalizado",
@@ -756,6 +766,8 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_eventos_projeto_tipo_criado ON eventos_historico (projeto_id, tipo_evento, criado_em DESC)",
         "CREATE INDEX IF NOT EXISTS idx_exigencias_projeto_status_prazo ON exigencias_cartorio (projeto_id, status, prazo_resposta)",
         "CREATE INDEX IF NOT EXISTS idx_exigencias_status_prazo ON exigencias_cartorio (status, prazo_resposta)",
+        "CREATE INDEX IF NOT EXISTS idx_exigencias_projeto_orgao_status ON exigencias_cartorio (projeto_id, tipo_orgao, tipo_registro, status)",
+        "CREATE INDEX IF NOT EXISTS idx_exigencias_etapa_status ON exigencias_cartorio (etapa_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_usuario_criado ON senha_reset_tokens (usuario_id, criado_em DESC)",
         "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_expires ON senha_reset_tokens (expires_at)",
         "CREATE INDEX IF NOT EXISTS idx_projeto_pagamentos_projeto ON projeto_pagamentos (projeto_id, data_pagamento DESC, id DESC)",
@@ -1266,15 +1278,24 @@ def init_db():
             id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
             cartorio_id INTEGER,
+            etapa_id INTEGER,
+            tipo_orgao TEXT NOT NULL DEFAULT 'CARTORIO',
+            tipo_registro TEXT NOT NULL DEFAULT 'exigencia',
+            data_protocolo TEXT,
+            numero_protocolo TEXT,
             data_recebimento TEXT,
             prazo_resposta TEXT,
             descricao TEXT NOT NULL,
             status TEXT NOT NULL,
             responsavel_id INTEGER,
+            data_pronto_retirada TEXT,
+            data_retirada TEXT,
+            observacoes TEXT,
             criado_em TEXT,
             atualizado_em TEXT,
             FOREIGN KEY(projeto_id) REFERENCES projetos(id),
             FOREIGN KEY(cartorio_id) REFERENCES cartorios(id),
+            FOREIGN KEY(etapa_id) REFERENCES projeto_etapas(id),
             FOREIGN KEY(responsavel_id) REFERENCES usuarios(id)
         );
 
@@ -1442,6 +1463,14 @@ def init_db():
     add_column_if_missing(db, "project_stage_history", "stage_key", "TEXT")
     add_column_if_missing(db, "project_stage_history", "responsible_name", "TEXT")
     add_column_if_missing(db, "project_stage_history", "reason", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "etapa_id", "INTEGER")
+    add_column_if_missing(db, "exigencias_cartorio", "tipo_orgao", "TEXT NOT NULL DEFAULT 'CARTORIO'")
+    add_column_if_missing(db, "exigencias_cartorio", "tipo_registro", "TEXT NOT NULL DEFAULT 'exigencia'")
+    add_column_if_missing(db, "exigencias_cartorio", "data_protocolo", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "numero_protocolo", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "data_pronto_retirada", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "data_retirada", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "observacoes", "TEXT")
     seed_process_types(db)
     seed_process_stage_templates(db)
     seed_process_checklist_templates(db)
@@ -3485,6 +3514,146 @@ def is_office_elaboration_stage(stage):
     return stage_key(stage["etapa_nome"] or "") == "escritorio"
 
 
+def external_stage_type(stage):
+    if not stage:
+        return None
+    key = (stage["stage_key"] if "stage_key" in stage else "") or ""
+    name_key = stage_key(stage["etapa_nome"] or "")
+    if key == "PREFEITURA" or name_key == "prefeitura":
+        return "PREFEITURA"
+    if key == "ORGAO_EXTERNO" or name_key == "cartorio":
+        return "CARTORIO"
+    return None
+
+
+def external_stage_label(tipo_orgao):
+    return "Prefeitura" if tipo_orgao == "PREFEITURA" else "Cartorio"
+
+
+def find_project_stage_by_external_type(db, project_id, tipo_orgao):
+    stage_key_value = "PREFEITURA" if tipo_orgao == "PREFEITURA" else "ORGAO_EXTERNO"
+    row = db.execute(
+        """
+        SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s
+          AND pe.stage_key = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        LIMIT 1
+        """,
+        (project_id, stage_key_value),
+    ).fetchone()
+    if row:
+        return row
+    legacy_name = "prefeitura" if tipo_orgao == "PREFEITURA" else "cartorio"
+    return db.execute(
+        """
+        SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s
+          AND lower(em.nome) = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        LIMIT 1
+        """,
+        (project_id, legacy_name),
+    ).fetchone()
+
+
+def external_stage_has_open_requirements(project_id, tipo_orgao):
+    return scalar(
+        get_db(),
+        """
+        SELECT COUNT(*)
+        FROM exigencias_cartorio
+        WHERE projeto_id = %s
+          AND tipo_orgao = %s
+          AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+          AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+        """,
+        (project_id, tipo_orgao),
+    )
+
+
+def external_stage_has_retirada(project_id, tipo_orgao):
+    return bool(
+        query_db(
+            """
+            SELECT id
+            FROM exigencias_cartorio
+            WHERE projeto_id = %s
+              AND tipo_orgao = %s
+              AND COALESCE(tipo_registro, 'exigencia') = 'protocolo'
+              AND COALESCE(data_retirada, '') != ''
+              AND lower(COALESCE(status, '')) = 'concluido'
+            ORDER BY data_retirada DESC, id DESC
+            LIMIT 1
+            """,
+            (project_id, tipo_orgao),
+            one=True,
+        )
+    )
+
+
+def external_stage_has_any_records(project_id, tipo_orgao):
+    return bool(
+        scalar(
+            get_db(),
+            """
+            SELECT COUNT(*)
+            FROM exigencias_cartorio
+            WHERE projeto_id = %s
+              AND tipo_orgao = %s
+            """,
+            (project_id, tipo_orgao),
+        )
+    )
+
+
+def can_finish_external_stage(project_id, stage):
+    tipo_orgao = external_stage_type(stage)
+    if not tipo_orgao:
+        return True, None
+    status = ((stage["status"] if "status" in stage else "") or "").lower()
+    if status == "nao aplicavel":
+        return True, None
+    applicability = (stage["applicability"] if "applicability" in stage else "") or ""
+    if applicability in (APPLICABILITY_CONDITIONAL, APPLICABILITY_OPTIONAL) and not external_stage_has_any_records(project_id, tipo_orgao):
+        return True, None
+    if external_stage_has_open_requirements(project_id, tipo_orgao):
+        return False, f"Resolva as exigencias de {external_stage_label(tipo_orgao)} antes de concluir esta etapa."
+    if not external_stage_has_retirada(project_id, tipo_orgao):
+        return False, f"Registre a retirada em {external_stage_label(tipo_orgao)} antes de concluir esta etapa."
+    return True, None
+
+
+def maybe_advance_external_stage_after_withdrawal(project_id, tipo_orgao, responsible_id=None):
+    db = get_db()
+    project = db.execute("SELECT * FROM projetos WHERE id = %s", (project_id,)).fetchone()
+    if not project:
+        return None
+    current_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project_id)
+    current_stage = load_project_stage_for_action(current_stage_id, project_id) if current_stage_id else None
+    if external_stage_type(current_stage) != tipo_orgao:
+        return None
+    can_finish, _message = can_finish_external_stage(project_id, current_stage)
+    if not can_finish:
+        return None
+    now = app_now_iso()
+    db.execute(
+        "UPDATE projeto_etapas SET status = 'concluido', progresso = 100, data_fim = COALESCE(data_fim, %s) WHERE id = %s",
+        (now, current_stage["id"]),
+    )
+    db.commit()
+    completed_stage = load_project_stage_for_action(current_stage["id"], project_id)
+    next_stage = advance_project_after_stage_completion(project_id, completed_stage, responsible_id, reason="retirada_orgao_externo")
+    record_event(project_id, "retirada_orgao_externo", f"{external_stage_label(tipo_orgao)} retirado; etapa concluida.")
+    return next_stage
+
+
 def count_blocking_checklist_pending(stage_id):
     """Itens obrigatorios do checklist que bloqueiam a conclusao da etapa e ainda estao pendentes.
 
@@ -4563,10 +4732,11 @@ def load_project_checklist_items(project_id):
                 WHEN 'ESCRITORIO' THEN 7
                 WHEN 'CONFERENCIA' THEN 8
                 WHEN 'ASSINATURAS' THEN 9
-                WHEN 'ORGAO_EXTERNO' THEN 10
-                WHEN 'PENDENCIAS' THEN 11
-                WHEN 'ENTREGA' THEN 12
-                WHEN 'FINALIZADO' THEN 13
+                WHEN 'PREFEITURA' THEN 10
+                WHEN 'ORGAO_EXTERNO' THEN 11
+                WHEN 'PENDENCIAS' THEN 12
+                WHEN 'ENTREGA' THEN 13
+                WHEN 'FINALIZADO' THEN 14
                 ELSE 999
             END,
             pci.order_index,
@@ -5899,7 +6069,11 @@ def project_detail(project_id):
         LEFT JOIN cartorios c ON c.id = e.cartorio_id
         LEFT JOIN usuarios u ON u.id = e.responsavel_id
         WHERE e.projeto_id = %s
-        ORDER BY COALESCE(e.prazo_resposta, '9999-12-31')
+        ORDER BY
+            CASE COALESCE(e.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
+            CASE COALESCE(e.tipo_registro, 'exigencia') WHEN 'protocolo' THEN 0 ELSE 1 END,
+            COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
+            e.id
         """,
         (project_id,),
     )
@@ -6103,6 +6277,10 @@ def project_action(project_id):
             if is_office_elaboration_stage(old_stage) and count_blocking_checklist_pending(old_stage["id"]):
                 flash("Conclua os documentos do cartorio antes de concluir a etapa Escritorio.", "danger")
                 return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
+            can_finish_external, external_message = can_finish_external_stage(project_id, old_stage)
+            if not can_finish_external:
+                flash(external_message, "danger")
+                return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
             data_fim = app_now_iso()
             progress = 100
         execute_db(
@@ -6170,6 +6348,11 @@ def project_action(project_id):
                 blocking_pending = count_blocking_checklist_pending(old_stage["id"])
                 if blocking_pending:
                     flash("Conclua os documentos do cartorio antes de avancar da etapa Escritorio.", "danger")
+                    return redirect(redirect_url)
+            if is_forward and external_stage_type(old_stage):
+                can_finish_external, external_message = can_finish_external_stage(project_id, old_stage)
+                if not can_finish_external:
+                    flash(external_message, "danger")
                     return redirect(redirect_url)
 
             if is_advance:
@@ -6450,7 +6633,47 @@ def project_action(project_id):
         record_event(project_id, "pendencia_resolvida", f"Pendencia #{pending_id} resolvida.")
         flash("Pendencia resolvida.", "success")
 
+    elif action == "add_external_protocol":
+        tipo_orgao = request.form.get("tipo_orgao", "CARTORIO")
+        if tipo_orgao not in ("PREFEITURA", "CARTORIO"):
+            tipo_orgao = "CARTORIO"
+        stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
+        data_protocolo = request.form.get("data_protocolo") or app_today().isoformat()
+        numero_protocolo = request.form.get("numero_protocolo", "").strip()
+        descricao = request.form.get("descricao", "").strip() or f"Protocolo em {external_stage_label(tipo_orgao)}"
+        protocolo_id = execute_db(
+            """
+            INSERT INTO exigencias_cartorio
+                (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_protocolo, numero_protocolo,
+                 data_recebimento, prazo_resposta, descricao, status, responsavel_id, observacoes, criado_em, atualizado_em)
+            VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, NULL, NULL, %s, 'aguardando externo', %s, %s, %s, %s)
+            """,
+            (
+                project_id,
+                request.form.get("cartorio_id") or project["cartorio_id"],
+                stage["id"] if stage else None,
+                tipo_orgao,
+                data_protocolo,
+                numero_protocolo,
+                descricao,
+                request.form.get("responsavel_id") or project["responsavel_geral_id"],
+                request.form.get("observacoes", "").strip(),
+                app_now_iso(),
+                app_now_iso(),
+            ),
+        )
+        if stage and project["etapa_atual_id"] == stage["id"]:
+            execute_db(
+                "UPDATE projeto_etapas SET status = 'aguardando externo', subetapa_ativa = %s WHERE id = %s",
+                (f"Protocolado em {external_stage_label(tipo_orgao)}", stage["id"]),
+            )
+        record_event(project_id, "protocolo_externo", f"Protocolo #{protocolo_id} registrado em {external_stage_label(tipo_orgao)}.")
+        flash("Protocolo registrado.", "success")
+
     elif action == "add_exigencia":
+        tipo_orgao = request.form.get("tipo_orgao", "CARTORIO")
+        if tipo_orgao not in ("PREFEITURA", "CARTORIO"):
+            tipo_orgao = "CARTORIO"
         description = request.form.get("descricao", "").strip()
         prazo_resposta = request.form.get("prazo_resposta") or None
         if not description:
@@ -6458,37 +6681,31 @@ def project_action(project_id):
         elif not prazo_resposta:
             flash("Informe o prazo de resposta da exigencia.", "danger")
         else:
+            external_stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
             exigencia_id = execute_db(
                 """
                 INSERT INTO exigencias_cartorio
-                    (projeto_id, cartorio_id, data_recebimento, prazo_resposta, descricao, status, responsavel_id, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_recebimento, prazo_resposta,
+                     descricao, status, responsavel_id, observacoes, criado_em, atualizado_em)
+                VALUES (%s, %s, %s, %s, 'exigencia', %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
                     request.form.get("cartorio_id") or project["cartorio_id"],
+                    external_stage["id"] if external_stage else None,
+                    tipo_orgao,
                     request.form.get("data_recebimento") or app_today().isoformat(),
                     prazo_resposta,
                     description,
                     request.form.get("status", "em andamento"),
                     request.form.get("responsavel_id") or None,
+                    request.form.get("observacoes", "").strip(),
                     app_now_iso(),
                     app_now_iso(),
                 ),
             )
-            cartorio_stage = query_db(
-                """
-                SELECT pe.id
-                FROM projeto_etapas pe
-                JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                WHERE pe.projeto_id = %s AND lower(em.nome) = 'cartorio' AND em.ativa = 1
-                LIMIT 1
-                """,
-                (project_id,),
-                one=True,
-            )
-            if cartorio_stage:
-                execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", cartorio_stage["id"]))
+            if external_stage:
+                execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", external_stage["id"]))
             execute_db(
                 """
                 INSERT INTO pendencias
@@ -6497,7 +6714,7 @@ def project_action(project_id):
                 """,
                 (
                     project_id,
-                    cartorio_stage["id"] if cartorio_stage else None,
+                    external_stage["id"] if external_stage else None,
                     description,
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                     prazo_resposta,
@@ -6514,8 +6731,8 @@ def project_action(project_id):
                 """,
                 (
                     project_id,
-                    cartorio_stage["id"] if cartorio_stage else None,
-                    "Responder exigencia de cartorio",
+                    external_stage["id"] if external_stage else None,
+                    f"Responder exigencia de {external_stage_label(tipo_orgao)}",
                     description,
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                     "Alta",
@@ -6530,26 +6747,48 @@ def project_action(project_id):
     elif action == "update_exigencia":
         exigencia_id = request.form.get("exigencia_id")
         prazo_resposta = request.form.get("prazo_resposta") or None
-        if not prazo_resposta:
+        tipo_registro = request.form.get("tipo_registro", "exigencia")
+        data_retirada = request.form.get("data_retirada") or None
+        data_pronto_retirada = request.form.get("data_pronto_retirada") or None
+        status = request.form.get("status", "em andamento")
+        if data_retirada:
+            status = "concluido"
+        elif data_pronto_retirada and status not in ("concluido", "cancelado"):
+            status = "pronto para retirada"
+        if tipo_registro == "exigencia" and not prazo_resposta:
             flash("Informe o prazo de resposta da exigencia.", "danger")
         else:
+            exigencia_row = query_db("SELECT * FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (exigencia_id, project_id), one=True)
             execute_db(
                 """
                 UPDATE exigencias_cartorio
-                SET status = %s, responsavel_id = %s, prazo_resposta = %s, atualizado_em = %s
+                SET status = %s, responsavel_id = %s, prazo_resposta = %s,
+                    data_pronto_retirada = %s, data_retirada = %s, atualizado_em = %s
                 WHERE id = %s AND projeto_id = %s
                 """,
                 (
-                    request.form.get("status", "em andamento"),
+                    status,
                     request.form.get("responsavel_id") or None,
                     prazo_resposta,
+                    data_pronto_retirada,
+                    data_retirada,
                     app_now_iso(),
                     exigencia_id,
                     project_id,
                 ),
             )
             record_event(project_id, "exigencia_atualizada", f"Exigencia #{exigencia_id} atualizada.")
-            flash("Exigencia atualizada.", "success")
+            next_stage = None
+            if data_retirada and exigencia_row:
+                next_stage = maybe_advance_external_stage_after_withdrawal(
+                    project_id,
+                    exigencia_row["tipo_orgao"] or "CARTORIO",
+                    request.form.get("responsavel_id") or project["responsavel_geral_id"],
+                )
+            if next_stage:
+                flash(f"Registro atualizado. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+            else:
+                flash("Registro atualizado.", "success")
 
     elif action == "add_time":
         minutes = int(request.form.get("duracao_minutos") or 0)
@@ -6746,6 +6985,10 @@ def stage_quick(stage_id):
     elif action == "finish":
         if is_office_elaboration_stage(stage) and count_blocking_checklist_pending(stage_id):
             flash("Conclua os documentos do cartorio antes de concluir a etapa Escritorio.", "danger")
+            return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
+        can_finish_external, external_message = can_finish_external_stage(stage["projeto_id"], stage)
+        if not can_finish_external:
+            flash(external_message, "danger")
             return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
         status = "concluido"
         progress = 100
@@ -8593,7 +8836,9 @@ def cartorio_board():
         LEFT JOIN usuarios u ON u.id = e.responsavel_id
         ORDER BY
             CASE WHEN lower(e.status) = 'atrasado' THEN 0 ELSE 1 END,
-            COALESCE(e.prazo_resposta, '9999-12-31')
+            CASE COALESCE(e.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
+            COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
+            e.id
         """
     )
     return render_template("cartorio_board.html", exigencias=exigencias)
