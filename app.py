@@ -5552,6 +5552,27 @@ def projects():
             project_ids,
         ):
             notes_by_project.setdefault(note["projeto_id"], []).append(note)
+    external_controls_by_project = {}
+    if project_ids:
+        project_placeholders = ",".join("%s" for _ in project_ids)
+        for item in query_db(
+            f"""
+            SELECT e.*, u.nome AS responsavel_nome
+            FROM exigencias_cartorio e
+            LEFT JOIN usuarios u ON u.id = e.responsavel_id
+            WHERE e.projeto_id IN ({project_placeholders})
+              AND COALESCE(e.tipo_orgao, 'CARTORIO') IN ('PREFEITURA', 'CARTORIO')
+            ORDER BY
+                e.projeto_id,
+                CASE COALESCE(e.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
+                CASE COALESCE(e.tipo_registro, 'exigencia') WHEN 'protocolo' THEN 0 ELSE 1 END,
+                COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
+                e.id
+            """,
+            project_ids,
+        ):
+            tipo_orgao = item["tipo_orgao"] or "CARTORIO"
+            external_controls_by_project.setdefault(item["projeto_id"], {}).setdefault(tipo_orgao, []).append(item)
     summary_counts = get_matrix_summary_counts(today_iso, in_7)
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
@@ -5568,12 +5589,14 @@ def projects():
         pending_by_project=pending_by_project,
         next_stage_by_project=next_stage_by_project,
         notes_by_project=notes_by_project,
+        external_controls_by_project=external_controls_by_project,
         summary=summary,
         etapas=etapas,
         usuarios=matrix_options["usuarios"],
         cartorios=matrix_options["cartorios"],
         process_types=matrix_options["process_types"],
         filters=filters,
+        today_iso=today_iso,
     )
 
 
@@ -6706,16 +6729,18 @@ def project_action(project_id):
             )
             if external_stage:
                 execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", external_stage["id"]))
+            origem_externa = "prefeitura" if tipo_orgao == "PREFEITURA" else "cartorio"
             execute_db(
                 """
                 INSERT INTO pendencias
                     (projeto_id, etapa_id, descricao, origem, responsavel_id, prazo, status, data_abertura, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, 'cartorio', %s, %s, 'aberta', %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, 'aberta', %s, %s, %s)
                 """,
                 (
                     project_id,
                     external_stage["id"] if external_stage else None,
                     description,
+                    origem_externa,
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                     prazo_resposta,
                     app_today().isoformat(),
@@ -6778,6 +6803,25 @@ def project_action(project_id):
                 ),
             )
             record_event(project_id, "exigencia_atualizada", f"Exigencia #{exigencia_id} atualizada.")
+            if exigencia_row and status in ("concluido", "cancelado"):
+                execute_db(
+                    """
+                    UPDATE pendencias
+                    SET status = 'resolvida', data_resolucao = COALESCE(data_resolucao, %s), atualizado_em = %s
+                    WHERE projeto_id = %s
+                      AND descricao = %s
+                      AND (%s IS NULL OR etapa_id = %s)
+                      AND lower(COALESCE(status, '')) NOT IN ('resolvida', 'cancelada')
+                    """,
+                    (
+                        app_today().isoformat(),
+                        app_now_iso(),
+                        project_id,
+                        exigencia_row["descricao"],
+                        exigencia_row["etapa_id"],
+                        exigencia_row["etapa_id"],
+                    ),
+                )
             next_stage = None
             if data_retirada and exigencia_row:
                 next_stage = maybe_advance_external_stage_after_withdrawal(
