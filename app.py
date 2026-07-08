@@ -5274,6 +5274,33 @@ def projects():
         ):
             pending_by_stage.setdefault(pending["etapa_id"], []).append(pending)
             pending_by_project.setdefault(pending["projeto_id"], []).append(pending)
+    # Proxima etapa real de cada projeto (mesma regra de get_next_applicable_stage),
+    # em lote. A matriz nao serve para isso: ela colapsa etapas por modelo global e
+    # a ordem global pode ter saltos (modelos desativados), escondendo a proxima etapa.
+    next_stage_by_project = {}
+    if project_ids:
+        placeholders = ",".join("%s" for _ in project_ids)
+        for stage in query_db(
+            f"""
+            SELECT DISTINCT ON (pe.projeto_id)
+                pe.projeto_id,
+                pe.id,
+                COALESCE(pe.stage_name, em.nome) AS etapa_nome
+            FROM projetos p
+            JOIN projeto_etapas cur ON cur.id = p.etapa_atual_id
+            JOIN etapas_modelo cem ON cem.id = cur.etapa_modelo_id
+            JOIN projeto_etapas pe ON pe.projeto_id = p.id
+            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            WHERE p.id IN ({placeholders})
+              AND COALESCE(pe.show_in_project, 1) = 1
+              AND COALESCE(pe.workflow_active, 1) = 1
+              AND lower(pe.status) NOT IN ('concluido', 'cancelado', 'nao aplicavel')
+              AND COALESCE(pe.stage_order, em.ordem) > COALESCE(cur.stage_order, cem.ordem)
+            ORDER BY pe.projeto_id, COALESCE(pe.stage_order, em.ordem), pe.id
+            """,
+            project_ids,
+        ):
+            next_stage_by_project[stage["projeto_id"]] = stage
     notes_by_project = {}
     if project_ids:
         project_placeholders = ",".join("%s" for _ in project_ids)
@@ -5302,6 +5329,7 @@ def projects():
         matrix_checklists=matrix_checklists,
         pending_by_stage=pending_by_stage,
         pending_by_project=pending_by_project,
+        next_stage_by_project=next_stage_by_project,
         notes_by_project=notes_by_project,
         summary=summary,
         etapas=etapas,

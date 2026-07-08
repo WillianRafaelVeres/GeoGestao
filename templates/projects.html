@@ -249,11 +249,10 @@
     {% set active_stage = ns.active_stage or etapas_projeto[0] %}
     {% set active_status = active_stage.status|lower %}
     {% set project_pendings = pending_by_project.get(project.id, []) %}
-    {% set ns_next = namespace(proxima=None, anteriores=[]) %}
+    {% set proxima_etapa = next_stage_by_project.get(project.id) %}
+    {% set ns_next = namespace(anteriores=[]) %}
     {% for etapa in etapas_projeto %}
-        {% if etapa.etapa_ordem == active_stage.etapa_ordem + 1 %}
-            {% set ns_next.proxima = etapa %}
-        {% elif etapa.etapa_ordem < active_stage.etapa_ordem %}
+        {% if etapa.etapa_ordem < active_stage.etapa_ordem and etapa.id %}
             {% set ns_next.anteriores = ns_next.anteriores + [etapa] %}
         {% endif %}
     {% endfor %}
@@ -334,10 +333,10 @@
                         <span class="pmodal-advance-blocked" title="Resolva as pendencias abertas para liberar o avanco">
                             🔒 Resolva as pendencias para avancar
                         </span>
-                        {% elif ns_next.proxima %}
+                        {% elif proxima_etapa %}
                         <button class="pmodal-btn-advance" type="button"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-avancar-{{ project.id }}')">
-                            Avancar → {{ ns_next.proxima.etapa_nome }}
+                            Avancar → {{ proxima_etapa.etapa_nome }}
                         </button>
                         {% endif %}
                         <button class="pmodal-btn-set-top" type="button"
@@ -466,21 +465,21 @@
     </div>
 
     {# ===== MODAL AVANCAR ===== #}
-    {% if ns_next.proxima %}
+    {% if proxima_etapa %}
     <div class="modal fade" id="modal-avancar-{{ project.id }}" tabindex="-1">
         <div class="modal-dialog modal-sm">
             <div class="modal-content stage-modal">
                 <div class="stage-modal-header stage-modal-header--advance">
                     <div>
                         <div class="stage-modal-label">Avancar etapa</div>
-                        <div class="stage-modal-title">{{ active_stage.etapa_nome }} → {{ ns_next.proxima.etapa_nome }}</div>
+                        <div class="stage-modal-title">{{ active_stage.etapa_nome }} → {{ proxima_etapa.etapa_nome }}</div>
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
                     <input type="hidden" name="action" value="move_stage">
                     <input type="hidden" name="next" value="{{ request.full_path }}">
-                    <input type="hidden" name="nova_etapa_id" value="{{ ns_next.proxima.id }}">
+                    <input type="hidden" name="nova_etapa_id" value="{{ proxima_etapa.id }}">
                     <input type="hidden" name="motivo" value="avanco">
                     <div class="stage-modal-body">
                         <div class="stage-modal-field">
