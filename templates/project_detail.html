@@ -315,7 +315,7 @@
 
     <div class="tab-pane fade" id="cartorio">
         <section class="panel">
-            <div class="panel-header"><h2>Controle Prefeitura / Cartorio</h2><small>Protocolo, exigencias, pronto para retirada e retirada.</small></div>
+            <div class="panel-header"><h2>Controle Prefeitura / Cartorio</h2><small>Protocolos, verificacao de pronto e retirada.</small></div>
             <div class="table-responsive">
                 <table class="table compact-table">
                     <thead><tr><th>Tipo</th><th>Registro</th><th>Descricao</th><th>Protocolo</th><th>Responsavel</th><th>Prazo</th><th>Pronto</th><th>Retirado</th><th>Status</th><th>Salvar</th></tr></thead>
@@ -338,21 +338,31 @@
                                         <input type="hidden" name="action" value="update_exigencia" />
                                         <input type="hidden" name="exigencia_id" value="{{ exigencia.id }}" />
                                         <input type="hidden" name="tipo_registro" value="{{ exigencia.tipo_registro or 'exigencia' }}" />
-                                        <select class="form-select form-select-sm" name="responsavel_id">
-                                            <option value="">Sem responsavel</option>
-                                            {% for usuario in usuarios %}
-                                                <option value="{{ usuario.id }}" {% if exigencia.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
-                                            {% endfor %}
-                                        </select>
-                                        <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ exigencia.prazo_resposta or '' }}" {% if exigencia.tipo_registro != 'protocolo' %}required{% endif %} />
-                                        <input class="form-control form-control-sm" type="date" name="data_pronto_retirada" value="{{ exigencia.data_pronto_retirada or '' }}" />
-                                        <input class="form-control form-control-sm" type="date" name="data_retirada" value="{{ exigencia.data_retirada or '' }}" />
-                                        <select class="form-select form-select-sm" name="status">
-                                            {% for key, info in status_meta.items() %}
-                                                <option value="{{ key }}" {% if status_key == key %}selected{% endif %}>{{ info.label }}</option>
-                                            {% endfor %}
-                                        </select>
-                                        <button class="btn btn-primary btn-sm" type="submit">Salvar</button>
+                                        {% if exigencia.tipo_registro == 'protocolo' %}
+                                            <select class="form-select form-select-sm" name="responsavel_id">
+                                                <option value="">Responsavel pela retirada</option>
+                                                {% for usuario in usuarios %}
+                                                    <option value="{{ usuario.id }}" {% if exigencia.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                                                {% endfor %}
+                                            </select>
+                                            <span class="text-muted small">Verificar em {{ format_date(exigencia.prazo_resposta) or '-' }}</span>
+                                            <button class="btn btn-outline-primary btn-sm" name="protocol_action" value="ready" type="submit" {% if exigencia.data_retirada %}disabled{% endif %}>Pronto</button>
+                                            <button class="btn btn-outline-success btn-sm" name="protocol_action" value="withdrawn" type="submit" {% if exigencia.data_retirada %}disabled{% endif %}>Retirado</button>
+                                        {% else %}
+                                            <select class="form-select form-select-sm" name="responsavel_id">
+                                                <option value="">Sem responsavel</option>
+                                                {% for usuario in usuarios %}
+                                                    <option value="{{ usuario.id }}" {% if exigencia.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                                                {% endfor %}
+                                            </select>
+                                            <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ exigencia.prazo_resposta or '' }}" required />
+                                            <select class="form-select form-select-sm" name="status">
+                                                {% for key, info in status_meta.items() %}
+                                                    <option value="{{ key }}" {% if status_key == key %}selected{% endif %}>{{ info.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                            <button class="btn btn-primary btn-sm" type="submit">Salvar</button>
+                                        {% endif %}
                                     </form>
                                 </td>
                             </tr>
@@ -371,9 +381,9 @@
                     <div class="row g-2">
                         <div class="col-md-4"><label class="form-label">Orgao</label><select class="form-select" name="tipo_orgao"><option value="PREFEITURA">Prefeitura</option><option value="CARTORIO">Cartorio</option></select></div>
                         <div class="col-md-4"><label class="form-label">Data protocolo</label><input class="form-control" type="date" name="data_protocolo" value="{{ today_iso }}" /></div>
-                        <div class="col-md-4"><label class="form-label">Data limite</label><input class="form-control" type="date" name="prazo_resposta" required /></div>
                         <div class="col-md-4"><label class="form-label">Numero</label><input class="form-control" name="numero_protocolo" required /></div>
                         <div class="col-12"><label class="form-label">Descricao</label><input class="form-control" name="descricao" placeholder="Ex.: Protocolo de aprovacao municipal" /></div>
+                        <div class="col-12"><small class="text-muted">A data para verificar se esta pronto e calculada automaticamente: 15 dias uteis apos o protocolo.</small></div>
                         <div class="col-md-4 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Registrar protocolo</button></div>
                     </div>
                 </form>

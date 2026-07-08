@@ -3567,6 +3567,31 @@ def protocol_withdrawal_task_marker(protocol_id):
     return f"RETIRAR_PROTOCOLO:{protocol_id}"
 
 
+def parse_iso_date_or_today(value):
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return app_today()
+
+
+def add_business_days(start_date, days):
+    current = start_date
+    added = 0
+    while added < days:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            added += 1
+    return current
+
+
+def external_protocol_check_date(data_protocolo):
+    return add_business_days(parse_iso_date_or_today(data_protocolo), 15).isoformat()
+
+
+def normalize_external_orgao(value):
+    return value if value in ("PREFEITURA", "CARTORIO") else "CARTORIO"
+
+
 def ensure_protocol_withdrawal_task(project_id, stage_id, protocol_id, tipo_orgao, responsible_id, due_date=None):
     if not responsible_id:
         return None
@@ -3622,24 +3647,97 @@ def complete_protocol_withdrawal_tasks(project_id, protocol_id):
     )
 
 
-def external_stage_has_retirada(project_id, tipo_orgao):
-    return bool(
-        query_db(
-            """
-            SELECT id
-            FROM exigencias_cartorio
-            WHERE projeto_id = %s
-              AND tipo_orgao = %s
-              AND COALESCE(tipo_registro, 'exigencia') = 'protocolo'
-              AND COALESCE(data_retirada, '') != ''
-              AND lower(COALESCE(status, '')) = 'concluido'
-            ORDER BY data_retirada DESC, id DESC
-            LIMIT 1
-            """,
-            (project_id, tipo_orgao),
-            one=True,
-        )
+def cancel_protocol_withdrawal_tasks(project_id, protocol_id):
+    marker = protocol_withdrawal_task_marker(protocol_id)
+    execute_db(
+        """
+        UPDATE tarefas
+        SET status = 'cancelado'
+        WHERE projeto_id = %s
+          AND descricao LIKE %s
+          AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+        """,
+        (project_id, f"{marker}%"),
     )
+
+
+def external_stage_protocol_summary(project_id, tipo_orgao):
+    rows = query_db(
+        """
+        SELECT e.*, u.nome AS responsavel_nome
+        FROM exigencias_cartorio e
+        LEFT JOIN usuarios u ON u.id = e.responsavel_id
+        WHERE e.projeto_id = %s
+          AND e.tipo_orgao = %s
+          AND COALESCE(e.tipo_registro, 'exigencia') = 'protocolo'
+        ORDER BY COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'), e.id
+        """,
+        (project_id, tipo_orgao),
+    )
+    withdrawn = [row for row in rows if row["data_retirada"] and (row["status"] or "").lower() == "concluido"]
+    ready = [row for row in rows if row["data_pronto_retirada"] and not row["data_retirada"]]
+    pending_deadlines = [row["prazo_resposta"] for row in rows if row["prazo_resposta"] and not row["data_retirada"]]
+    protocol_count = len(rows)
+    withdrawn_count = len(withdrawn)
+    pending_count = protocol_count - withdrawn_count
+    all_withdrawn = protocol_count > 0 and pending_count == 0
+    if not protocol_count:
+        state = "Aguardando protocolo"
+    elif all_withdrawn:
+        state = "Retirado"
+    elif ready:
+        state = "Pronto para retirada"
+    else:
+        state = "Protocolado"
+    return {
+        "protocol_count": protocol_count,
+        "withdrawn_count": withdrawn_count,
+        "pending_count": pending_count,
+        "ready_count": len(ready),
+        "all_withdrawn": all_withdrawn,
+        "check_date": min(pending_deadlines) if pending_deadlines else "",
+        "check_date_label": format_date(min(pending_deadlines)) if pending_deadlines else "-",
+        "withdrawal_label": f"{withdrawn_count}/{protocol_count} retirados" if protocol_count else "Pendente",
+        "state": state,
+        "state_ok": all_withdrawn,
+    }
+
+
+def external_protocol_payload(protocol):
+    return {
+        "id": protocol["id"],
+        "descricao": protocol["descricao"],
+        "numero_protocolo": protocol["numero_protocolo"] or "",
+        "data_protocolo": protocol["data_protocolo"] or "",
+        "data_protocolo_label": format_date(protocol["data_protocolo"]) if protocol["data_protocolo"] else "-",
+        "prazo_resposta": protocol["prazo_resposta"] or "",
+        "prazo_resposta_label": format_date(protocol["prazo_resposta"]) if protocol["prazo_resposta"] else "-",
+        "status": protocol["status"] or "",
+        "responsavel_id": protocol["responsavel_id"],
+        "responsavel_nome": protocol["responsavel_nome"] if "responsavel_nome" in protocol.keys() else "",
+        "data_pronto_retirada": protocol["data_pronto_retirada"] or "",
+        "data_retirada": protocol["data_retirada"] or "",
+        "is_ready": bool(protocol["data_pronto_retirada"] and not protocol["data_retirada"]),
+        "is_withdrawn": bool(protocol["data_retirada"] and (protocol["status"] or "").lower() == "concluido"),
+    }
+
+
+def load_external_protocol(project_id, protocol_id):
+    return query_db(
+        """
+        SELECT e.*, u.nome AS responsavel_nome
+        FROM exigencias_cartorio e
+        LEFT JOIN usuarios u ON u.id = e.responsavel_id
+        WHERE e.id = %s AND e.projeto_id = %s
+        """,
+        (protocol_id, project_id),
+        one=True,
+    )
+
+
+def external_stage_all_protocols_withdrawn(project_id, tipo_orgao):
+    summary = external_stage_protocol_summary(project_id, tipo_orgao)
+    return summary["all_withdrawn"]
 
 
 def external_stage_has_any_records(project_id, tipo_orgao):
@@ -3668,8 +3766,8 @@ def can_finish_external_stage(project_id, stage):
     applicability = (stage["applicability"] if "applicability" in stage else "") or ""
     if applicability in (APPLICABILITY_CONDITIONAL, APPLICABILITY_OPTIONAL) and not external_stage_has_any_records(project_id, tipo_orgao):
         return True, None
-    if not external_stage_has_retirada(project_id, tipo_orgao):
-        return False, f"Registre a retirada em {external_stage_label(tipo_orgao)} antes de concluir esta etapa."
+    if not external_stage_all_protocols_withdrawn(project_id, tipo_orgao):
+        return False, f"Registre a retirada de todos os protocolos em {external_stage_label(tipo_orgao)} antes de concluir esta etapa."
     return True, None
 
 
@@ -6700,15 +6798,13 @@ def project_action(project_id):
         flash("Pendencia resolvida.", "success")
 
     elif action == "add_external_protocol":
-        tipo_orgao = request.form.get("tipo_orgao", "CARTORIO")
-        if tipo_orgao not in ("PREFEITURA", "CARTORIO"):
-            tipo_orgao = "CARTORIO"
+        tipo_orgao = normalize_external_orgao(request.form.get("tipo_orgao", "CARTORIO"))
         stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
         data_protocolo = request.form.get("data_protocolo") or app_today().isoformat()
-        data_limite = request.form.get("prazo_resposta") or None
+        data_limite = external_protocol_check_date(data_protocolo)
         numero_protocolo = request.form.get("numero_protocolo", "").strip()
-        if not numero_protocolo or not data_limite:
-            flash("Informe o numero do protocolo e a data limite.", "danger")
+        if not numero_protocolo:
+            flash("Informe o numero do protocolo.", "danger")
             return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
         descricao = request.form.get("descricao", "").strip() or f"Protocolo em {external_stage_label(tipo_orgao)}"
         protocolo_id = execute_db(
@@ -6849,6 +6945,8 @@ def project_action(project_id):
             flash("Informe o prazo de resposta da exigencia.", "danger")
         else:
             exigencia_row = query_db("SELECT * FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (exigencia_id, project_id), one=True)
+            if exigencia_row and tipo_registro == "protocolo":
+                prazo_resposta = prazo_resposta or exigencia_row["prazo_resposta"] or external_protocol_check_date(exigencia_row["data_protocolo"])
             execute_db(
                 """
                 UPDATE exigencias_cartorio
@@ -6944,6 +7042,140 @@ def project_action(project_id):
 
     next_url = request.form.get("next") or url_for("project_detail", project_id=project_id)
     return redirect(next_url)
+
+
+@app.route("/api/project/<int:project_id>/external-protocol", methods=["POST"])
+@login_required
+def api_add_external_protocol(project_id):
+    data = request.get_json() or {}
+    project = query_db("SELECT * FROM projetos WHERE id = %s", (project_id,), one=True)
+    if not project:
+        return jsonify({"ok": False, "error": "Projeto nao encontrado."}), 404
+    tipo_orgao = normalize_external_orgao(data.get("tipo_orgao") or "CARTORIO")
+    numero_protocolo = (data.get("numero_protocolo") or "").strip()
+    if not numero_protocolo:
+        return jsonify({"ok": False, "error": "Informe o numero do protocolo."}), 400
+    data_protocolo = data.get("data_protocolo") or app_today().isoformat()
+    data_limite = external_protocol_check_date(data_protocolo)
+    descricao = (data.get("descricao") or "").strip() or f"Protocolo em {external_stage_label(tipo_orgao)}"
+    stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
+    protocolo_id = execute_db(
+        """
+        INSERT INTO exigencias_cartorio
+            (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_protocolo, numero_protocolo,
+             data_recebimento, prazo_resposta, descricao, status, responsavel_id, observacoes, criado_em, atualizado_em)
+        VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, NULL, %s, %s, 'aguardando externo', NULL, %s, %s, %s)
+        """,
+        (
+            project_id,
+            data.get("cartorio_id") or project["cartorio_id"],
+            stage["id"] if stage else None,
+            tipo_orgao,
+            data_protocolo,
+            numero_protocolo,
+            data_limite,
+            descricao,
+            (data.get("observacoes") or "").strip(),
+            app_now_iso(),
+            app_now_iso(),
+        ),
+    )
+    if stage and project["etapa_atual_id"] == stage["id"]:
+        execute_db(
+            "UPDATE projeto_etapas SET status = 'aguardando externo', subetapa_ativa = %s WHERE id = %s",
+            (f"Protocolado em {external_stage_label(tipo_orgao)}", stage["id"]),
+        )
+    record_event(project_id, "protocolo_externo", f"Protocolo #{protocolo_id} registrado em {external_stage_label(tipo_orgao)}.")
+    protocol = load_external_protocol(project_id, protocolo_id)
+    return jsonify({
+        "ok": True,
+        "protocol": external_protocol_payload(protocol),
+        "summary": external_stage_protocol_summary(project_id, tipo_orgao),
+    })
+
+
+@app.route("/api/project/<int:project_id>/external-protocol/<int:protocol_id>", methods=["POST"])
+@login_required
+def api_update_external_protocol(project_id, protocol_id):
+    data = request.get_json() or {}
+    action = (data.get("action") or "").strip()
+    protocol = load_external_protocol(project_id, protocol_id)
+    if not protocol or (protocol["tipo_registro"] or "exigencia") != "protocolo":
+        return jsonify({"ok": False, "error": "Protocolo nao encontrado."}), 404
+    tipo_orgao = normalize_external_orgao(protocol["tipo_orgao"] or "CARTORIO")
+
+    if action == "delete":
+        cancel_protocol_withdrawal_tasks(project_id, protocol_id)
+        execute_db("DELETE FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (protocol_id, project_id))
+        record_event(project_id, "protocolo_excluido", f"Protocolo #{protocol_id} excluido.")
+        summary = external_stage_protocol_summary(project_id, tipo_orgao)
+        project = query_db("SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,), one=True)
+        if summary["protocol_count"] == 0 and project and project["etapa_atual_id"] == protocol["etapa_id"]:
+            execute_db(
+                "UPDATE projeto_etapas SET status = 'em andamento', subetapa_ativa = NULL WHERE id = %s",
+                (protocol["etapa_id"],),
+            )
+        return jsonify({
+            "ok": True,
+            "deleted": True,
+            "protocol_id": protocol_id,
+            "summary": summary,
+        })
+
+    responsible_id = data.get("responsavel_id") or protocol["responsavel_id"]
+    today = app_today().isoformat()
+    next_stage = None
+    if action == "ready":
+        if not responsible_id:
+            return jsonify({"ok": False, "error": "Escolha o responsavel pela retirada."}), 400
+        execute_db(
+            """
+            UPDATE exigencias_cartorio
+            SET status = 'pronto para retirada',
+                responsavel_id = %s,
+                data_pronto_retirada = COALESCE(data_pronto_retirada, %s),
+                atualizado_em = %s
+            WHERE id = %s AND projeto_id = %s
+            """,
+            (responsible_id, today, app_now_iso(), protocol_id, project_id),
+        )
+        ensure_protocol_withdrawal_task(
+            project_id,
+            protocol["etapa_id"],
+            protocol_id,
+            tipo_orgao,
+            responsible_id,
+            today,
+        )
+        record_event(project_id, "protocolo_pronto_retirada", f"Protocolo #{protocol_id} pronto para retirada.")
+    elif action == "withdrawn":
+        execute_db(
+            """
+            UPDATE exigencias_cartorio
+            SET status = 'concluido',
+                responsavel_id = COALESCE(%s, responsavel_id),
+                data_pronto_retirada = COALESCE(data_pronto_retirada, %s),
+                data_retirada = COALESCE(data_retirada, %s),
+                atualizado_em = %s
+            WHERE id = %s AND projeto_id = %s
+            """,
+            (responsible_id, today, today, app_now_iso(), protocol_id, project_id),
+        )
+        complete_protocol_withdrawal_tasks(project_id, protocol_id)
+        next_stage = maybe_advance_external_stage_after_withdrawal(project_id, tipo_orgao, responsible_id)
+        record_event(project_id, "retirada_orgao_externo", f"Protocolo #{protocol_id} retirado.")
+    else:
+        return jsonify({"ok": False, "error": "Acao invalida."}), 400
+
+    protocol = load_external_protocol(project_id, protocol_id)
+    payload = {
+        "ok": True,
+        "protocol": external_protocol_payload(protocol),
+        "summary": external_stage_protocol_summary(project_id, tipo_orgao),
+    }
+    if next_stage:
+        payload["next_stage"] = {"id": next_stage["id"], "nome": next_stage["etapa_nome"]}
+    return jsonify(payload)
 
 
 @app.route("/api/checklist/add", methods=["POST"])
