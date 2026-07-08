@@ -334,12 +334,15 @@
                             🔒 Resolva as pendencias para avancar
                         </span>
                         {% elif proxima_etapa %}
-                        {% set docs_travados = (active_stage.required_pending or 0) > 0 %}
+                        {% set etapa_escritorio = (active_stage.stage_key or '') == 'ESCRITORIO' %}
+                        {% set docs_travados = etapa_escritorio and (active_stage.required_pending or 0) > 0 %}
+                        {% if etapa_escritorio %}
                         <span class="pmodal-advance-blocked" id="advance-lock-{{ active_stage.id }}"
-                            title="Marque todos os documentos obrigatorios do checklist para liberar o avanco"
+                            title="Marque todos os documentos do cartorio para liberar o avanco"
                             {% if not docs_travados %}style="display:none"{% endif %}>
                             🔒 Conclua os documentos para avancar
                         </span>
+                        {% endif %}
                         <button class="pmodal-btn-advance" type="button" id="advance-btn-{{ active_stage.id }}"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-avancar-{{ project.id }}')"
                             {% if docs_travados %}style="display:none"{% endif %}>

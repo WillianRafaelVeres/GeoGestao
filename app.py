@@ -2023,6 +2023,18 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
     )
     templates = [template for template in templates if template["stage_key"] != "ESCRITORIO"]
     now = app_now_iso()
+    # O checklist da etapa Escritorio e composto somente pelos documentos do cartorio
+    # (definidos em /cartorios/checklist). Itens herdados dos modelos de processo sao
+    # aposentados a cada sincronizacao para nao se misturarem a lista de documentos.
+    db.execute(
+        """
+        UPDATE project_checklist_items
+        SET active = 0, updated_at = %s
+        WHERE project_id = %s AND stage_key = 'ESCRITORIO'
+          AND template_id IS NOT NULL AND active = 1
+        """,
+        (now, project_id),
+    )
     stages = db.execute(
         """
         SELECT pe.id, pe.stage_key, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
@@ -3458,6 +3470,19 @@ def project_checklist_stage_counts(stage_id):
     done = row["done"] or 0
     progress = int((done / total) * 100) if total else 0
     return done, total, progress
+
+
+def is_office_elaboration_stage(stage):
+    """A trava de documentos do cartorio vale somente na etapa Escritorio (elaboracao).
+
+    Conferencia e as demais etapas avancam livres, mesmo com checklist pendente.
+    """
+    if not stage:
+        return False
+    key = stage["stage_key"] if "stage_key" in stage else None
+    if key:
+        return key == "ESCRITORIO"
+    return stage_key(stage["etapa_nome"] or "") == "escritorio"
 
 
 def count_blocking_checklist_pending(stage_id):
@@ -6075,8 +6100,8 @@ def project_action(project_id):
         if status == "em andamento" and not data_inicio:
             data_inicio = app_now_iso()
         if status == "concluido":
-            if count_blocking_checklist_pending(old_stage["id"]):
-                flash("Conclua os documentos obrigatorios do checklist antes de concluir esta etapa.", "danger")
+            if is_office_elaboration_stage(old_stage) and count_blocking_checklist_pending(old_stage["id"]):
+                flash("Conclua os documentos do cartorio antes de concluir a etapa Escritorio.", "danger")
                 return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
             data_fim = app_now_iso()
             progress = 100
@@ -6141,10 +6166,10 @@ def project_action(project_id):
             # movimentos dentro da mesma coluna global (ex.: Escritorio -> Conferencia).
             is_forward = (new_stage["etapa_ordem"] or 0) > (old_stage["etapa_ordem"] or 0)
 
-            if is_forward:
+            if is_forward and is_office_elaboration_stage(old_stage):
                 blocking_pending = count_blocking_checklist_pending(old_stage["id"])
                 if blocking_pending:
-                    flash("Conclua os documentos obrigatorios do checklist desta etapa antes de avancar.", "danger")
+                    flash("Conclua os documentos do cartorio antes de avancar da etapa Escritorio.", "danger")
                     return redirect(redirect_url)
 
             if is_advance:
@@ -6719,8 +6744,8 @@ def stage_quick(stage_id):
     elif action == "pause":
         status = "atencao"
     elif action == "finish":
-        if count_blocking_checklist_pending(stage_id):
-            flash("Conclua os documentos obrigatorios do checklist antes de concluir esta etapa.", "danger")
+        if is_office_elaboration_stage(stage) and count_blocking_checklist_pending(stage_id):
+            flash("Conclua os documentos do cartorio antes de concluir a etapa Escritorio.", "danger")
             return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
         status = "concluido"
         progress = 100
