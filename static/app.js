@@ -638,6 +638,7 @@ function initDocumentalClientForm() {
     if (!forms.length) return;
 
     const spouseRequiredRegimes = [
+        "COMUNHAO_BENS",
         "COMUNHAO_PARCIAL",
         "COMUNHAO_PARCIAL_APOS_6515",
         "COMUNHAO_UNIVERSAL",

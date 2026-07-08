@@ -28,10 +28,11 @@ ESTADOS_CIVIS = {
 }
 
 REGIMES_CASAMENTO = {
+    "COMUNHAO_BENS": "Comunhao de bens",
     "COMUNHAO_PARCIAL": "Comunhao parcial de bens",
     "COMUNHAO_PARCIAL_APOS_6515": "Comunhao parcial de bens (regime legal apos Lei 6.515/77)",
     "COMUNHAO_UNIVERSAL": "Comunhao universal de bens",
-    "COMUNHAO_UNIVERSAL_ANTES_6515": "Comunhao universal de bens (anterior a Lei 6.515/77)",
+    "COMUNHAO_UNIVERSAL_ANTES_6515": "Comunhao de bens (anterior a Lei 6.515/77)",
     "SEPARACAO_TOTAL": "Separacao convencional/total de bens",
     "SEPARACAO_OBRIGATORIA": "Separacao obrigatoria/legal de bens",
     "PARTICIPACAO_FINAL_AQUESTOS": "Participacao final nos aquestos",
@@ -67,6 +68,7 @@ CIDADES_REFERENCIA_POR_UF = {
 }
 
 CONJUGE_REQUIRED_REGIMES = {
+    "COMUNHAO_BENS",
     "COMUNHAO_PARCIAL",
     "COMUNHAO_PARCIAL_APOS_6515",
     "COMUNHAO_UNIVERSAL",
