@@ -746,6 +746,7 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_checklist_itens_etapa_concluido ON checklist_itens (projeto_etapa_id, concluido, id)",
         "CREATE INDEX IF NOT EXISTS idx_cartorio_checklist_templates_lookup ON cartorio_checklist_templates (process_type_key, cartorio_id, active, order_index, id)",
         "CREATE INDEX IF NOT EXISTS idx_cartorio_checklist_templates_cartorio_id ON cartorio_checklist_templates (cartorio_id)",
+        "CREATE INDEX IF NOT EXISTS idx_cartorio_checklist_exclusions_lookup ON cartorio_checklist_exclusions (cartorio_id, process_type_key, template_id)",
         "CREATE INDEX IF NOT EXISTS idx_procuradores_cliente_principal ON procuradores (cliente_id, principal DESC, id)",
         "CREATE INDEX IF NOT EXISTS idx_tarefas_etapa_status_prazo ON tarefas (projeto_etapa_id, status, prazo)",
         "CREATE INDEX IF NOT EXISTS idx_process_stage_templates_process_active ON process_stage_templates (process_type_key, active, stage_order, id)",
@@ -1237,6 +1238,17 @@ def init_db():
             created_at TEXT,
             updated_at TEXT,
             FOREIGN KEY(cartorio_id) REFERENCES cartorios(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS cartorio_checklist_exclusions (
+            id SERIAL PRIMARY KEY,
+            cartorio_id INTEGER NOT NULL,
+            process_type_key TEXT NOT NULL,
+            template_id INTEGER NOT NULL,
+            created_at TEXT,
+            UNIQUE(cartorio_id, process_type_key, template_id),
+            FOREIGN KEY(cartorio_id) REFERENCES cartorios(id),
+            FOREIGN KEY(template_id) REFERENCES cartorio_checklist_templates(id)
         );
 
         CREATE TABLE IF NOT EXISTS eventos_historico (
@@ -1952,21 +1964,34 @@ def find_project_stage_id_for_template_stage(db, project_id, template_stage_key)
 def get_cartorio_checklist_rows(db, process_type_key, cartorio_id):
     """Documentacao obrigatoria (etapa Escritorio) configurada em /cartorios/checklist.
 
-    Prioridade: lista propria do cartorio do projeto; senao, padrao geral
-    (cartorio_id NULL). Lista vazia = usar o modelo padrao do codigo.
+    O padrao geral (cartorio_id NULL) vale para todos os cartorios. Um cartorio
+    pode ter itens adicionais proprios e excecoes para itens do padrao geral.
     """
     process_key = normalize_project_process_type(process_type_key)
     if cartorio_id:
-        rows = db.execute(
+        return db.execute(
             """
-            SELECT * FROM cartorio_checklist_templates
-            WHERE process_type_key = %s AND cartorio_id = %s AND active = 1
-            ORDER BY order_index, id
+            SELECT cct.*
+            FROM cartorio_checklist_templates cct
+            WHERE cct.process_type_key = %s
+              AND cct.active = 1
+              AND (
+                  cct.cartorio_id = %s
+                  OR (
+                      cct.cartorio_id IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM cartorio_checklist_exclusions cce
+                          WHERE cce.cartorio_id = %s
+                            AND cce.process_type_key = %s
+                            AND cce.template_id = cct.id
+                      )
+                  )
+              )
+            ORDER BY CASE WHEN cct.cartorio_id IS NULL THEN 0 ELSE 1 END, cct.order_index, cct.id
             """,
-            (process_key, cartorio_id),
+            (process_key, cartorio_id, cartorio_id, process_key),
         ).fetchall()
-        if rows:
-            return rows
     return db.execute(
         """
         SELECT * FROM cartorio_checklist_templates
@@ -1996,8 +2021,7 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
     custom_office_items = get_cartorio_checklist_rows(
         db, process_key, project_row["cartorio_id"] if project_row else None
     )
-    if custom_office_items:
-        templates = [template for template in templates if template["stage_key"] != "ESCRITORIO"]
+    templates = [template for template in templates if template["stage_key"] != "ESCRITORIO"]
     now = app_now_iso()
     stages = db.execute(
         """
@@ -2153,20 +2177,13 @@ def sync_cartorio_checklist_to_projects(db, process_type_key, cartorio_id):
             (process_key, cartorio_id),
         ).fetchall()
     else:
-        # Padrao geral: atinge apenas projetos cujo cartorio nao tem lista propria.
         projects = db.execute(
             """
             SELECT p.id FROM projetos p
             WHERE p.tipo_servico = %s
               AND lower(COALESCE(p.status, '')) NOT IN ('concluido', 'cancelado')
-              AND NOT EXISTS (
-                  SELECT 1 FROM cartorio_checklist_templates cct
-                  WHERE cct.cartorio_id = p.cartorio_id
-                    AND cct.process_type_key = %s
-                    AND cct.active = 1
-              )
             """,
-            (process_key, process_key),
+            (process_key,),
         ).fetchall()
     for row in projects:
         create_project_checklist_from_template(db, row["id"], process_key)
@@ -7983,12 +8000,30 @@ def cartorios_checklist():
             if not item:
                 flash("Documento nao encontrado.", "danger")
                 return manager_redirect()
+            item_cartorio_id = item["cartorio_id"] if "cartorio_id" in item.keys() else None
+            if selected_cartorio_id and item_cartorio_id is None:
+                db.execute(
+                    """
+                    INSERT INTO cartorio_checklist_exclusions
+                        (cartorio_id, process_type_key, template_id, created_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (cartorio_id, process_type_key, template_id) DO NOTHING
+                    """,
+                    (selected_cartorio_id, selected_process, item["id"], now),
+                )
+                synced = sync_cartorio_checklist_to_projects(db, selected_process, selected_cartorio_id)
+                db.commit()
+                flash(f"Documento removido apenas deste cartorio. Checklist atualizado em {synced} projeto(s) em andamento.", "success")
+                return manager_redirect()
+            if (item_cartorio_id or None) != (selected_cartorio_id or None):
+                flash("Documento nao pertence a lista selecionada.", "danger")
+                return manager_redirect()
             db.execute(
                 "UPDATE cartorio_checklist_templates SET active = 0, updated_at = %s WHERE id = %s",
                 (now, item["id"]),
             )
             db.commit()
-            flash("Documento removido do padrao (projetos existentes nao sao alterados).", "success")
+            flash("Documento removido da lista (projetos existentes nao sao alterados).", "success")
             return manager_redirect()
 
         if action in ("move_up", "move_down"):
@@ -8102,16 +8137,12 @@ def cartorios_checklist():
         return manager_redirect()
 
     db = get_db()
-    items = scope_items(db, selected_process, selected_cartorio_id)
-    inherited_items = []
-    inherited_source = None
-    if not items:
-        if selected_cartorio_id:
-            inherited_items = scope_items(db, selected_process, None)
-            inherited_source = "Padrao geral"
-        if not inherited_items:
-            inherited_items = get_checklist_template_for_process_stage(selected_process, "ESCRITORIO")
-            inherited_source = "Padrao do sistema"
+    items = get_cartorio_checklist_rows(db, selected_process, selected_cartorio_id)
+    inherited_source = (
+        "Padrao geral"
+        if selected_cartorio_id and any(item["cartorio_id"] is None for item in items)
+        else None
+    )
 
     return render_template(
         "cartorios_checklist.html",
@@ -8120,7 +8151,6 @@ def cartorios_checklist():
         selected_cartorio_id=selected_cartorio_id,
         selected_process=selected_process,
         items=items,
-        inherited_items=inherited_items,
         inherited_source=inherited_source,
     )
 
