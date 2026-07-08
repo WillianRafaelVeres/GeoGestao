@@ -145,10 +145,14 @@
 
 {# ===== MATRIZ ===== #}
 <section class="matrix-shell" data-matrix-density="compact">
-    <table class="ops-matrix">
-        <thead>
-            <tr>
-                <th class="sticky-col project-identity-col">Projeto</th>
+    <div class="matrix-scrollbar" aria-hidden="true">
+        <div class="matrix-scrollbar-inner"></div>
+    </div>
+    <div class="matrix-scroll">
+        <table class="ops-matrix">
+            <thead>
+                <tr>
+                    <th class="sticky-col project-identity-col">Projeto</th>
                 <th class="sticky-col project-process-col">Processo</th>
                 {% for etapa in etapas %}
                     <th class="stage-head">{{ etapa.nome }}</th>
@@ -1775,9 +1779,38 @@ function setProjectTop(projectId, btn) {
 }
 
 /* Inicializar Sortable quando a página carregar */
+function initMatrixScrollSync() {
+    const shell = document.querySelector('.matrix-shell');
+    if (!shell) return;
+
+    const scrollBar = shell.querySelector('.matrix-scrollbar');
+    const scrollArea = shell.querySelector('.matrix-scroll');
+    const table = shell.querySelector('.ops-matrix');
+    const inner = shell.querySelector('.matrix-scrollbar-inner');
+    if (!scrollBar || !scrollArea || !table || !inner) return;
+
+    const updateScrollWidth = () => {
+        inner.style.width = `${table.scrollWidth}px`;
+    };
+    updateScrollWidth();
+    window.addEventListener('resize', updateScrollWidth);
+
+    scrollBar.addEventListener('scroll', () => {
+        if (scrollArea.scrollLeft !== scrollBar.scrollLeft) {
+            scrollArea.scrollLeft = scrollBar.scrollLeft;
+        }
+    });
+    scrollArea.addEventListener('scroll', () => {
+        if (scrollBar.scrollLeft !== scrollArea.scrollLeft) {
+            scrollBar.scrollLeft = scrollArea.scrollLeft;
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     initMatrixSort();
     initExternalProtocolControls();
+    initMatrixScrollSync();
 });
 </script>
 

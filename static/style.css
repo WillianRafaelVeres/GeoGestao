@@ -1226,15 +1226,37 @@ a:hover { color: #1d4ed8; }
 
 /* ===== MATRIX SHELL ===== */
 .matrix-shell {
+    display: flex;
+    flex-direction: column;
     height: calc(100vh - 286px);
     min-height: 360px;
-    overflow-x: scroll;
-    overflow-y: auto;
-    scrollbar-gutter: stable both-edges;
+    overflow: hidden;
     border: 1px solid var(--border);
     border-radius: 0 0 7px 7px;
     background: #fff;
 }
+.matrix-scrollbar {
+    position: sticky;
+    top: 0;
+    z-index: 12;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-height: 18px;
+    height: 18px;
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+}
+.matrix-scrollbar-inner {
+    height: 1px;
+}
+.matrix-scroll {
+    flex: 1 1 auto;
+    overflow: auto;
+}
+.matrix-scroll::-webkit-scrollbar:horizontal {
+    height: 0;
+}
+.matrix-scroll { scrollbar-width: auto; }
 
 @media (max-width: 1360px) {
     .workspace-header {
