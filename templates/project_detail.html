@@ -363,7 +363,7 @@
                 </table>
             </div>
 
-            <div class="content-grid two-columns mt-3">
+            <div class="content-grid mt-3">
                 <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="inline-add-form">
                     <h3 class="form-section-title">Registrar protocolo</h3>
                     <input type="hidden" name="action" value="add_external_protocol" />
@@ -371,24 +371,10 @@
                     <div class="row g-2">
                         <div class="col-md-4"><label class="form-label">Orgao</label><select class="form-select" name="tipo_orgao"><option value="PREFEITURA">Prefeitura</option><option value="CARTORIO">Cartorio</option></select></div>
                         <div class="col-md-4"><label class="form-label">Data protocolo</label><input class="form-control" type="date" name="data_protocolo" value="{{ today_iso }}" /></div>
-                        <div class="col-md-4"><label class="form-label">Numero</label><input class="form-control" name="numero_protocolo" /></div>
+                        <div class="col-md-4"><label class="form-label">Data limite</label><input class="form-control" type="date" name="prazo_resposta" required /></div>
+                        <div class="col-md-4"><label class="form-label">Numero</label><input class="form-control" name="numero_protocolo" required /></div>
                         <div class="col-12"><label class="form-label">Descricao</label><input class="form-control" name="descricao" placeholder="Ex.: Protocolo de aprovacao municipal" /></div>
-                        <div class="col-md-6"><label class="form-label">Responsavel</label><select class="form-select" name="responsavel_id"><option value="">Selecione</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.nome }}</option>{% endfor %}</select></div>
-                        <div class="col-md-6 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Registrar protocolo</button></div>
-                    </div>
-                </form>
-
-                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="inline-add-form">
-                    <h3 class="form-section-title">Registrar exigencia</h3>
-                    <input type="hidden" name="action" value="add_exigencia" />
-                    <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}" />
-                    <div class="row g-2">
-                        <div class="col-md-4"><label class="form-label">Orgao</label><select class="form-select" name="tipo_orgao"><option value="PREFEITURA">Prefeitura</option><option value="CARTORIO">Cartorio</option></select></div>
-                        <div class="col-md-4"><label class="form-label">Data recebida</label><input class="form-control" type="date" name="data_recebimento" value="{{ today_iso }}" /></div>
-                        <div class="col-md-4"><label class="form-label">Prazo resposta</label><input class="form-control" type="date" name="prazo_resposta" required /></div>
-                        <div class="col-12"><label class="form-label">Descricao</label><textarea class="form-control" name="descricao" rows="2" placeholder="O que foi exigido" required></textarea></div>
-                        <div class="col-md-6"><label class="form-label">Responsavel</label><select class="form-select" name="responsavel_id"><option value="">Selecione</option>{% for usuario in usuarios %}<option value="{{ usuario.id }}">{{ usuario.nome }}</option>{% endfor %}</select></div>
-                        <div class="col-md-6 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Registrar exigencia</button></div>
+                        <div class="col-md-4 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Registrar protocolo</button></div>
                     </div>
                 </form>
             </div>

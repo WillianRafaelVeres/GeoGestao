@@ -3563,18 +3563,62 @@ def find_project_stage_by_external_type(db, project_id, tipo_orgao):
     ).fetchone()
 
 
-def external_stage_has_open_requirements(project_id, tipo_orgao):
-    return scalar(
-        get_db(),
+def protocol_withdrawal_task_marker(protocol_id):
+    return f"RETIRAR_PROTOCOLO:{protocol_id}"
+
+
+def ensure_protocol_withdrawal_task(project_id, stage_id, protocol_id, tipo_orgao, responsible_id, due_date=None):
+    if not responsible_id:
+        return None
+    marker = protocol_withdrawal_task_marker(protocol_id)
+    title = f"Retirar protocolo em {external_stage_label(tipo_orgao)}"
+    description = f"{marker}\nRetirar protocolo e registrar a retirada no sistema."
+    due = due_date or app_today().isoformat()
+    existing = query_db(
         """
-        SELECT COUNT(*)
-        FROM exigencias_cartorio
+        SELECT id
+        FROM tarefas
         WHERE projeto_id = %s
-          AND tipo_orgao = %s
-          AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+          AND descricao LIKE %s
+          AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (project_id, f"{marker}%"),
+        one=True,
+    )
+    if existing:
+        execute_db(
+            """
+            UPDATE tarefas
+            SET projeto_etapa_id = %s, titulo = %s, descricao = %s, responsavel_id = %s,
+                prioridade = 'Alta', status = 'em andamento', prazo = %s
+            WHERE id = %s
+            """,
+            (stage_id, title, description, responsible_id, due, existing["id"]),
+        )
+        return existing["id"]
+    return execute_db(
+        """
+        INSERT INTO tarefas
+            (projeto_id, projeto_etapa_id, titulo, descricao, responsavel_id, prioridade, status, prazo, criado_em)
+        VALUES (%s, %s, %s, %s, %s, 'Alta', 'em andamento', %s, %s)
+        """,
+        (project_id, stage_id, title, description, responsible_id, due, app_now_iso()),
+    )
+
+
+def complete_protocol_withdrawal_tasks(project_id, protocol_id):
+    marker = protocol_withdrawal_task_marker(protocol_id)
+    execute_db(
+        """
+        UPDATE tarefas
+        SET status = 'concluido', concluido_em = COALESCE(concluido_em, %s)
+        WHERE projeto_id = %s
+          AND descricao LIKE %s
           AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
         """,
-        (project_id, tipo_orgao),
+        (app_now_iso(), project_id, f"{marker}%"),
     )
 
 
@@ -3607,6 +3651,7 @@ def external_stage_has_any_records(project_id, tipo_orgao):
             FROM exigencias_cartorio
             WHERE projeto_id = %s
               AND tipo_orgao = %s
+              AND COALESCE(tipo_registro, 'exigencia') = 'protocolo'
             """,
             (project_id, tipo_orgao),
         )
@@ -3623,8 +3668,6 @@ def can_finish_external_stage(project_id, stage):
     applicability = (stage["applicability"] if "applicability" in stage else "") or ""
     if applicability in (APPLICABILITY_CONDITIONAL, APPLICABILITY_OPTIONAL) and not external_stage_has_any_records(project_id, tipo_orgao):
         return True, None
-    if external_stage_has_open_requirements(project_id, tipo_orgao):
-        return False, f"Resolva as exigencias de {external_stage_label(tipo_orgao)} antes de concluir esta etapa."
     if not external_stage_has_retirada(project_id, tipo_orgao):
         return False, f"Registre a retirada em {external_stage_label(tipo_orgao)} antes de concluir esta etapa."
     return True, None
@@ -5562,10 +5605,10 @@ def projects():
             LEFT JOIN usuarios u ON u.id = e.responsavel_id
             WHERE e.projeto_id IN ({project_placeholders})
               AND COALESCE(e.tipo_orgao, 'CARTORIO') IN ('PREFEITURA', 'CARTORIO')
+              AND COALESCE(e.tipo_registro, 'exigencia') = 'protocolo'
             ORDER BY
                 e.projeto_id,
                 CASE COALESCE(e.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
-                CASE COALESCE(e.tipo_registro, 'exigencia') WHEN 'protocolo' THEN 0 ELSE 1 END,
                 COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
                 e.id
             """,
@@ -6662,14 +6705,18 @@ def project_action(project_id):
             tipo_orgao = "CARTORIO"
         stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
         data_protocolo = request.form.get("data_protocolo") or app_today().isoformat()
+        data_limite = request.form.get("prazo_resposta") or None
         numero_protocolo = request.form.get("numero_protocolo", "").strip()
+        if not numero_protocolo or not data_limite:
+            flash("Informe o numero do protocolo e a data limite.", "danger")
+            return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
         descricao = request.form.get("descricao", "").strip() or f"Protocolo em {external_stage_label(tipo_orgao)}"
         protocolo_id = execute_db(
             """
             INSERT INTO exigencias_cartorio
                 (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_protocolo, numero_protocolo,
                  data_recebimento, prazo_resposta, descricao, status, responsavel_id, observacoes, criado_em, atualizado_em)
-            VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, NULL, NULL, %s, 'aguardando externo', %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, NULL, %s, %s, 'aguardando externo', NULL, %s, %s, %s)
             """,
             (
                 project_id,
@@ -6678,8 +6725,8 @@ def project_action(project_id):
                 tipo_orgao,
                 data_protocolo,
                 numero_protocolo,
+                data_limite,
                 descricao,
-                request.form.get("responsavel_id") or project["responsavel_geral_id"],
                 request.form.get("observacoes", "").strip(),
                 app_now_iso(),
                 app_now_iso(),
@@ -6773,13 +6820,31 @@ def project_action(project_id):
         exigencia_id = request.form.get("exigencia_id")
         prazo_resposta = request.form.get("prazo_resposta") or None
         tipo_registro = request.form.get("tipo_registro", "exigencia")
+        protocol_action = request.form.get("protocol_action", "")
         data_retirada = request.form.get("data_retirada") or None
         data_pronto_retirada = request.form.get("data_pronto_retirada") or None
         status = request.form.get("status", "em andamento")
-        if data_retirada:
-            status = "concluido"
-        elif data_pronto_retirada and status not in ("concluido", "cancelado"):
-            status = "pronto para retirada"
+        responsavel_id = request.form.get("responsavel_id") or None
+        if tipo_registro == "protocolo":
+            if protocol_action == "ready":
+                if not responsavel_id:
+                    flash("Escolha o responsavel pela retirada.", "danger")
+                    return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
+                data_pronto_retirada = data_pronto_retirada or app_today().isoformat()
+                status = "pronto para retirada"
+            elif protocol_action == "withdrawn":
+                data_pronto_retirada = data_pronto_retirada or app_today().isoformat()
+                data_retirada = data_retirada or app_today().isoformat()
+                status = "concluido"
+            elif data_retirada:
+                status = "concluido"
+            elif data_pronto_retirada and status not in ("concluido", "cancelado"):
+                status = "pronto para retirada"
+        else:
+            if data_retirada:
+                status = "concluido"
+            elif data_pronto_retirada and status not in ("concluido", "cancelado"):
+                status = "pronto para retirada"
         if tipo_registro == "exigencia" and not prazo_resposta:
             flash("Informe o prazo de resposta da exigencia.", "danger")
         else:
@@ -6793,7 +6858,7 @@ def project_action(project_id):
                 """,
                 (
                     status,
-                    request.form.get("responsavel_id") or None,
+                    responsavel_id,
                     prazo_resposta,
                     data_pronto_retirada,
                     data_retirada,
@@ -6803,6 +6868,16 @@ def project_action(project_id):
                 ),
             )
             record_event(project_id, "exigencia_atualizada", f"Exigencia #{exigencia_id} atualizada.")
+            if exigencia_row and tipo_registro == "protocolo" and status == "pronto para retirada":
+                ensure_protocol_withdrawal_task(
+                    project_id,
+                    exigencia_row["etapa_id"],
+                    exigencia_row["id"],
+                    exigencia_row["tipo_orgao"] or "CARTORIO",
+                    responsavel_id,
+                    data_pronto_retirada,
+                )
+                record_event(project_id, "protocolo_pronto_retirada", f"Protocolo #{exigencia_id} pronto para retirada.")
             if exigencia_row and status in ("concluido", "cancelado"):
                 execute_db(
                     """
@@ -6822,6 +6897,8 @@ def project_action(project_id):
                         exigencia_row["etapa_id"],
                     ),
                 )
+            if exigencia_row and tipo_registro == "protocolo" and status == "concluido":
+                complete_protocol_withdrawal_tasks(project_id, exigencia_row["id"])
             next_stage = None
             if data_retirada and exigencia_row:
                 next_stage = maybe_advance_external_stage_after_withdrawal(
@@ -7076,6 +7153,39 @@ def task_quick(task_id):
         "UPDATE tarefas SET status = %s, data_inicio = %s, concluido_em = %s WHERE id = %s",
         (status, data_inicio, concluido_em, task_id),
     )
+    if action == "finish" and (task["descricao"] or "").startswith("RETIRAR_PROTOCOLO:"):
+        marker_line = (task["descricao"] or "").splitlines()[0]
+        raw_protocol_id = marker_line.replace("RETIRAR_PROTOCOLO:", "", 1).strip()
+        if raw_protocol_id.isdigit():
+            protocol = query_db(
+                "SELECT * FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s",
+                (int(raw_protocol_id), task["projeto_id"]),
+                one=True,
+            )
+            if protocol:
+                today = app_today().isoformat()
+                execute_db(
+                    """
+                    UPDATE exigencias_cartorio
+                    SET status = 'concluido',
+                        data_pronto_retirada = COALESCE(data_pronto_retirada, %s),
+                        data_retirada = COALESCE(data_retirada, %s),
+                        atualizado_em = %s
+                    WHERE id = %s AND projeto_id = %s
+                    """,
+                    (today, today, app_now_iso(), protocol["id"], task["projeto_id"]),
+                )
+                next_stage = maybe_advance_external_stage_after_withdrawal(
+                    task["projeto_id"],
+                    protocol["tipo_orgao"] or "CARTORIO",
+                    task["responsavel_id"],
+                )
+                if next_stage:
+                    flash(f"Retirada registrada. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+                else:
+                    flash("Retirada registrada.", "success")
+                record_event(task["projeto_id"], "retirada_orgao_externo", f"Protocolo #{protocol['id']} retirado via Minhas missoes.")
+                return redirect(request.form.get("next") or url_for("my_missions"))
     record_event(task["projeto_id"], "acao_rapida_tarefa", f"Tarefa {task['titulo']} atualizada para {STATUS_META.get(status, {}).get('label', status)}.")
     flash("Tarefa atualizada.", "success")
     return redirect(request.form.get("next") or url_for("my_missions"))

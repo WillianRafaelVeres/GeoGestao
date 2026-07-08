@@ -252,18 +252,15 @@
     {% set active_external_type = 'PREFEITURA' if active_stage_key == 'PREFEITURA' else ('CARTORIO' if active_stage_key == 'ORGAO_EXTERNO' else '') %}
     {% set active_external_label = 'Prefeitura' if active_external_type == 'PREFEITURA' else ('Cartorio' if active_external_type == 'CARTORIO' else '') %}
     {% set active_external_records = external_controls_by_project.get(project.id, {}).get(active_external_type, []) if active_external_type else [] %}
-    {% set ns_external = namespace(has_withdrawal=false, has_open_requirement=false, protocol_count=0, ready_count=0) %}
+    {% set ns_external = namespace(has_withdrawal=false, protocol_count=0, ready_count=0, protocol_deadline='') %}
     {% for ext in active_external_records %}
         {% set ext_status = ext.status|lower %}
-        {% if (ext.tipo_registro or 'exigencia') == 'protocolo' %}
-            {% set ns_external.protocol_count = ns_external.protocol_count + 1 %}
-            {% if ext.data_retirada %}{% set ns_external.has_withdrawal = true %}{% endif %}
-            {% if ext.data_pronto_retirada and not ext.data_retirada %}{% set ns_external.ready_count = ns_external.ready_count + 1 %}{% endif %}
-        {% elif ext_status not in ['concluido', 'cancelado'] %}
-            {% set ns_external.has_open_requirement = true %}
-        {% endif %}
+        {% set ns_external.protocol_count = ns_external.protocol_count + 1 %}
+        {% if ext.prazo_resposta and not ns_external.protocol_deadline %}{% set ns_external.protocol_deadline = ext.prazo_resposta %}{% endif %}
+        {% if ext.data_retirada %}{% set ns_external.has_withdrawal = true %}{% endif %}
+        {% if ext.data_pronto_retirada and not ext.data_retirada %}{% set ns_external.ready_count = ns_external.ready_count + 1 %}{% endif %}
     {% endfor %}
-    {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and (not ns_external.has_withdrawal or ns_external.has_open_requirement) %}
+    {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and not ns_external.has_withdrawal %}
     {% set project_pendings = pending_by_project.get(project.id, []) %}
     {% set proxima_etapa = next_stage_by_project.get(project.id) %}
     {% set ns_next = namespace(anteriores=[]) %}
@@ -348,13 +345,11 @@
                     <section class="pmodal-section pmodal-external-control">
                         <div class="pmodal-section-head">
                             <span class="pmodal-section-title">Controle {{ active_external_label }}</span>
-                            <span class="pmodal-external-state {{ 'is-ok' if ns_external.has_withdrawal and not ns_external.has_open_requirement else 'is-pending' }}">
-                                {% if ns_external.has_withdrawal and not ns_external.has_open_requirement %}
+                            <span class="pmodal-external-state {{ 'is-ok' if ns_external.has_withdrawal else 'is-pending' }}">
+                                {% if ns_external.has_withdrawal %}
                                     Retirado
                                 {% elif ns_external.ready_count %}
                                     Pronto para retirada
-                                {% elif ns_external.has_open_requirement %}
-                                    Exigencia aberta
                                 {% elif ns_external.protocol_count %}
                                     Protocolado
                                 {% else %}
@@ -365,89 +360,61 @@
 
                         <div class="pmodal-external-summary">
                             <div><span>Protocolos</span><strong>{{ ns_external.protocol_count }}</strong></div>
-                            <div><span>Exigencias abertas</span><strong>{{ 'Sim' if ns_external.has_open_requirement else 'Nao' }}</strong></div>
+                            <div><span>Data limite</span><strong>{{ format_date(ns_external.protocol_deadline) or '-' }}</strong></div>
                             <div><span>Retirada</span><strong>{{ 'Registrada' if ns_external.has_withdrawal else 'Pendente' }}</strong></div>
                         </div>
 
                         <div class="pmodal-external-records">
                             {% for ext in active_external_records %}
                                 {% set ext_status = ext.status|lower %}
-                                {% set ext_is_protocol = (ext.tipo_registro or 'exigencia') == 'protocolo' %}
-                                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-record {{ 'is-protocol' if ext_is_protocol else 'is-requirement' }}">
+                                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-record">
                                     <input type="hidden" name="action" value="update_exigencia">
                                     <input type="hidden" name="exigencia_id" value="{{ ext.id }}">
-                                    <input type="hidden" name="tipo_registro" value="{{ ext.tipo_registro or 'exigencia' }}">
+                                    <input type="hidden" name="tipo_registro" value="protocolo">
                                     <input type="hidden" name="next" value="{{ request.full_path }}">
                                     <div class="pmodal-external-info">
-                                        <span>{{ 'Protocolo' if ext_is_protocol else 'Exigencia' }}</span>
+                                        <span>Protocolo</span>
                                         <strong>{{ ext.descricao }}</strong>
                                         <small>
-                                            {% if ext_is_protocol %}
-                                                {{ format_date(ext.data_protocolo) or 'Sem data' }}{% if ext.numero_protocolo %} - {{ ext.numero_protocolo }}{% endif %}
-                                            {% else %}
-                                                Prazo {{ format_date(ext.prazo_resposta) or '-' }}
-                                            {% endif %}
+                                            Protocolado em {{ format_date(ext.data_protocolo) or 'sem data' }}{% if ext.numero_protocolo %} - {{ ext.numero_protocolo }}{% endif %}
                                         </small>
                                     </div>
+                                    <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ ext.prazo_resposta or '' }}" title="Data limite">
                                     <select class="form-select form-select-sm" name="responsavel_id" title="Responsavel">
-                                        <option value="">Sem resp.</option>
+                                        <option value="">Responsavel pela retirada</option>
                                         {% for usuario in usuarios %}
                                             <option value="{{ usuario.id }}" {% if ext.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
                                         {% endfor %}
                                     </select>
-                                    {% if ext_is_protocol %}
-                                        <input class="form-control form-control-sm" type="date" name="data_pronto_retirada" value="{{ ext.data_pronto_retirada or '' }}" title="Pronto para retirada">
-                                        <input class="form-control form-control-sm" type="date" name="data_retirada" value="{{ ext.data_retirada or '' }}" title="Data retirada">
-                                    {% else %}
-                                        <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ ext.prazo_resposta or '' }}" title="Prazo de resposta" required>
-                                    {% endif %}
-                                    <select class="form-select form-select-sm" name="status" title="Status">
-                                        {% for key, info in status_meta.items() %}
-                                            <option value="{{ key }}" {% if ext_status == key %}selected{% endif %}>{{ info.label }}</option>
-                                        {% endfor %}
-                                    </select>
-                                    <button class="pmodal-btn-ghost" type="submit">Salvar</button>
+                                    <button class="pmodal-btn-ghost" name="protocol_action" value="ready" type="submit" {% if ext.data_retirada %}disabled{% endif %}>Pronto</button>
+                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--success" name="protocol_action" value="withdrawn" type="submit" {% if ext.data_retirada %}disabled{% endif %}>Retirado</button>
                                 </form>
                             {% else %}
-                                <div class="pmodal-external-empty">Nenhum protocolo ou exigencia registrado nesta etapa.</div>
+                                <div class="pmodal-external-empty">Nenhum protocolo registrado nesta etapa.</div>
                             {% endfor %}
                         </div>
 
-                        <div class="pmodal-external-add-grid">
-                            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-add">
-                                <input type="hidden" name="action" value="add_external_protocol">
-                                <input type="hidden" name="tipo_orgao" value="{{ active_external_type }}">
-                                <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}">
-                                <input type="hidden" name="next" value="{{ request.full_path }}">
-                                <label>Protocolar</label>
-                                <div class="pmodal-external-add-row">
-                                    <input class="form-control form-control-sm" type="date" name="data_protocolo" value="{{ today_iso }}" title="Data protocolado">
-                                    <input class="form-control form-control-sm" name="numero_protocolo" placeholder="Numero">
-                                    <input class="form-control form-control-sm" name="descricao" placeholder="Descricao do protocolo">
-                                    <button class="pmodal-btn-ghost" type="submit">Salvar protocolo</button>
-                                </div>
-                            </form>
-                            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-add">
-                                <input type="hidden" name="action" value="add_exigencia">
-                                <input type="hidden" name="tipo_orgao" value="{{ active_external_type }}">
-                                <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}">
-                                <input type="hidden" name="next" value="{{ request.full_path }}">
-                                <label>Adicionar exigencia</label>
-                                <div class="pmodal-external-add-row">
-                                    <input class="form-control form-control-sm" type="date" name="data_recebimento" value="{{ today_iso }}" title="Data recebida">
-                                    <input class="form-control form-control-sm" type="date" name="prazo_resposta" title="Prazo resposta" required>
-                                    <input class="form-control form-control-sm" name="descricao" placeholder="O que foi exigido" required>
-                                    <button class="pmodal-btn-ghost" type="submit">Salvar exigencia</button>
-                                </div>
-                            </form>
-                        </div>
+                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-add">
+                            <input type="hidden" name="action" value="add_external_protocol">
+                            <input type="hidden" name="tipo_orgao" value="{{ active_external_type }}">
+                            <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}">
+                            <input type="hidden" name="next" value="{{ request.full_path }}">
+                            <label>Protocolar</label>
+                            <div class="pmodal-external-add-row">
+                                <input class="form-control form-control-sm" type="date" name="data_protocolo" value="{{ today_iso }}" title="Data protocolado">
+                                <input class="form-control form-control-sm" type="date" name="prazo_resposta" title="Data limite" required>
+                                <input class="form-control form-control-sm" name="numero_protocolo" placeholder="Numero" required>
+                                <input class="form-control form-control-sm" name="descricao" placeholder="Descricao do protocolo">
+                                <button class="pmodal-btn-ghost" type="submit">Salvar protocolo</button>
+                            </div>
+                        </form>
                     </section>
                     {% endif %}
 
                     <div class="pmodal-actions">
                         {% if external_stage_blocked %}
                         <span class="pmodal-advance-blocked" title="Use o controle de {{ active_external_label }} para liberar o avanco">
-                            Registrar protocolo, exigencias e retirada para avancar
+                            Registrar retirada do protocolo para avancar
                         </span>
                         {% elif project_pendings %}
                         <span class="pmodal-advance-blocked" title="Resolva as pendencias abertas para liberar o avanco">
@@ -1014,6 +981,8 @@
 .pmodal-btn-ghost:hover { background: #f3f4f6; color: #111827; }
 .pmodal-btn-ghost--danger { color: #dc2626; border-color: #fca5a5; }
 .pmodal-btn-ghost--danger:hover { background: #fef2f2; color: #b91c1c; }
+.pmodal-btn-ghost--success { color: #15803d; border-color: #86efac; }
+.pmodal-btn-ghost--success:hover { background: #f0fdf4; color: #166534; }
 
 /* Grid 2 colunas */
 .pmodal-grid {
@@ -1251,7 +1220,7 @@
 }
 .pmodal-external-record {
     display: grid;
-    grid-template-columns: minmax(180px, 1.35fr) minmax(120px, .9fr) minmax(116px, .7fr) minmax(116px, .7fr) minmax(120px, .75fr) auto;
+    grid-template-columns: minmax(180px, 1.35fr) minmax(120px, .65fr) minmax(150px, .9fr) auto auto;
     gap: 6px;
     align-items: center;
     padding: 7px;
@@ -1259,10 +1228,6 @@
     border-left: 3px solid #2563eb;
     border-radius: 6px;
     background: #fff;
-}
-.pmodal-external-record.is-requirement {
-    grid-template-columns: minmax(180px, 1.35fr) minmax(120px, .9fr) minmax(116px, .7fr) minmax(120px, .75fr) auto;
-    border-left-color: #f59e0b;
 }
 .pmodal-external-info { min-width: 0; }
 .pmodal-external-info span {
@@ -1276,10 +1241,6 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: .04em;
-}
-.pmodal-external-record.is-requirement .pmodal-external-info span {
-    background: #fffbeb;
-    color: #92400e;
 }
 .pmodal-external-info strong {
     display: block;
@@ -1325,7 +1286,7 @@
 }
 .pmodal-external-add-row {
     display: grid;
-    grid-template-columns: minmax(104px, .55fr) minmax(90px, .55fr) minmax(120px, 1fr) auto;
+    grid-template-columns: minmax(104px, .5fr) minmax(104px, .5fr) minmax(90px, .5fr) minmax(140px, 1fr) auto;
     gap: 6px;
     align-items: center;
 }
@@ -1396,7 +1357,6 @@
         grid-template-columns: 1fr;
     }
     .pmodal-external-record,
-    .pmodal-external-record.is-requirement,
     .pmodal-external-add-row {
         grid-template-columns: 1fr;
     }
