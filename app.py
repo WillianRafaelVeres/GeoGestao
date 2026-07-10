@@ -2496,7 +2496,7 @@ def get_process_initial_stage_options():
 
 
 def set_project_initial_stage(db, project_id, stage_key_value):
-    stage_key_value = (stage_key_value or "").strip()
+    stage_key_value = (stage_key_value or "").strip().upper()
     if not stage_key_value:
         return None
 
@@ -2509,10 +2509,10 @@ def set_project_initial_stage(db, project_id, stage_key_value):
         WHERE pe.projeto_id = %s
           AND pe.stage_key = %s
           AND COALESCE(pe.show_in_project, 1) = 1
-          AND COALESCE(pe.workflow_active, 1) = 1
+          AND COALESCE(pe.applicability, '') != %s
         LIMIT 1
         """,
-        (project_id, stage_key_value),
+        (project_id, stage_key_value, APPLICABILITY_NOT_APPLICABLE),
     )
     if not selected:
         return None
@@ -2525,10 +2525,10 @@ def set_project_initial_stage(db, project_id, stage_key_value):
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE pe.projeto_id = %s
           AND COALESCE(pe.show_in_project, 1) = 1
-          AND COALESCE(pe.workflow_active, 1) = 1
+          AND COALESCE(pe.applicability, '') != %s
         ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
         """,
-        (project_id,),
+        (project_id, APPLICABILITY_NOT_APPLICABLE),
     ).fetchall()
     for stage in stages:
         if stage["id"] == selected["id"]:
@@ -2536,19 +2536,26 @@ def set_project_initial_stage(db, project_id, stage_key_value):
             progresso = max(stage["progresso"] or 0, 10)
             data_inicio = stage["data_inicio"] or now
             data_fim = None
+            workflow_active = 1
         elif stage["effective_order"] < selected["effective_order"]:
             status = "concluido"
             progresso = 100
             data_inicio = stage["data_inicio"] or now
             data_fim = stage["data_fim"] or now
+            workflow_active = 1
         else:
             status = "nao iniciado"
             progresso = 0
             data_inicio = None
             data_fim = None
+            workflow_active = stage["workflow_active"]
         db.execute(
-            "UPDATE projeto_etapas SET status = %s, progresso = %s, data_inicio = %s, data_fim = %s WHERE id = %s",
-            (status, progresso, data_inicio, data_fim, stage["id"]),
+            """
+            UPDATE projeto_etapas
+            SET status = %s, progresso = %s, data_inicio = %s, data_fim = %s, workflow_active = %s
+            WHERE id = %s
+            """,
+            (status, progresso, data_inicio, data_fim, workflow_active, stage["id"]),
         )
 
     db.execute(
