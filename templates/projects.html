@@ -433,7 +433,7 @@
                                 <span>Se nao houver nada para protocolar agora, avance para a proxima etapa do fluxo.</span>
                             </div>
                             <button class="pmodal-btn-advance" type="button" data-external-skip data-stage-id="{{ active_stage.id }}">
-                                Avancar â†’ {{ proxima_etapa.etapa_nome if proxima_etapa else 'Concluir projeto' }}
+                                Avancar -> {{ proxima_etapa.etapa_nome if proxima_etapa else 'Concluir projeto' }}
                             </button>
                         </div>
                         {% endif %}
@@ -493,7 +493,7 @@
                         <button class="pmodal-btn-advance" type="button" id="advance-btn-{{ active_stage.id }}"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-avancar-{{ project.id }}')"
                             {% if docs_travados %}style="display:none"{% endif %}>
-                            Avancar → {{ proxima_etapa.etapa_nome }}
+                            Avancar -> {{ proxima_etapa.etapa_nome }}
                         </button>
                         {% endif %}
                         <button class="pmodal-btn-set-top" type="button"
@@ -629,7 +629,7 @@
                 <div class="stage-modal-header stage-modal-header--advance">
                     <div>
                         <div class="stage-modal-label">Avancar etapa</div>
-                        <div class="stage-modal-title">{{ active_stage.etapa_nome }} → {{ proxima_etapa.etapa_nome }}</div>
+                        <div class="stage-modal-title">{{ active_stage.etapa_nome }} -> {{ proxima_etapa.etapa_nome }}</div>
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
@@ -657,7 +657,7 @@
                     </div>
                     <div class="stage-modal-footer">
                         <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--advance">Confirmar avanco →</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--advance">Confirmar avanco -></button>
                     </div>
                 </form>
             </div>

@@ -28,7 +28,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, Response, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
-from werkzeug.utils import secure_filename
 
 from documental import (
     DOCUMENT_FIELD_REQUIREMENTS,
@@ -179,14 +178,6 @@ CATEGORIAS_CUSTO = {
     "OUTRO": "Outro custo",
 }
 
-FINANCEIRO_COMPROVANTES_SUBPASTA = (
-    os.environ.get("GEOGESTAO_COMPROVANTES_SUBPASTA", "Financeiro/Comprovantes").strip().strip("/\\")
-    or "Financeiro/Comprovantes"
-)
-try:
-    FINANCEIRO_COMPROVANTE_MAX_BYTES = int(os.environ.get("GEOGESTAO_COMPROVANTE_MAX_MB", "20")) * 1024 * 1024
-except ValueError:
-    FINANCEIRO_COMPROVANTE_MAX_BYTES = 20 * 1024 * 1024
 FINANCEIRO_QUASE_PRONTO_PCT = 75
 
 PRIORITY_WEIGHT = {"Alta": 0, "Media": 1, "Baixa": 2, "": 3, None: 3}
@@ -1445,9 +1436,6 @@ def init_db():
             data_custo TEXT,
             observacoes TEXT,
             status TEXT NOT NULL DEFAULT 'a_cobrar',
-            comprovante_nome TEXT,
-            comprovante_path TEXT,
-            comprovante_url TEXT,
             criado_em TEXT NOT NULL,
             usuario_id INTEGER,
             registro_uid TEXT
@@ -6085,8 +6073,8 @@ def api_select_folder():
 
 
 # --- Integracao Dropbox: abre a pasta do projeto pelo Dropbox (web ou app desktop) ---
-# O app usa um refresh token unico da empresa (env: DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN).
-# Para comprovantes financeiros, o app precisa de permissao files.content.write.
+# O app usa um refresh token unico da empresa (env: DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN)
+# com escopos somente de metadados e links; sem acesso ao conteudo dos arquivos.
 
 _dropbox_lock = threading.Lock()
 _dropbox_cache = {"access_token": None, "expires_at": 0.0, "root_namespace_id": None}
@@ -6155,33 +6143,6 @@ def _dropbox_api(endpoint, payload, use_path_root=True):
         return None, detail or f"http_{err.code}"
 
 
-def _dropbox_content_api(endpoint, api_arg, content, use_path_root=True):
-    """Chama endpoint de conteudo do Dropbox. Retorna (json, None) ou (None, error_summary)."""
-    token = _dropbox_access_token()
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Dropbox-API-Arg": json.dumps(api_arg),
-        "Content-Type": "application/octet-stream",
-    }
-    if use_path_root:
-        headers["Dropbox-API-Path-Root"] = json.dumps({".tag": "root", "root": _dropbox_root_namespace()})
-    req = urllib.request.Request(
-        "https://content.dropboxapi.com/2/" + endpoint,
-        data=content,
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode()), None
-    except urllib.error.HTTPError as err:
-        try:
-            detail = json.loads(err.read().decode()).get("error_summary", "")
-        except Exception:
-            detail = ""
-        return None, detail or f"http_{err.code}"
-
-
 def _dropbox_root_namespace():
     with _dropbox_lock:
         if _dropbox_cache["root_namespace_id"]:
@@ -6221,34 +6182,6 @@ def dropbox_path_from_raw(raw_path):
             rest = parts[index + 1:]
             return "/" + "/".join(rest) if rest else None
     return None
-
-
-def join_dropbox_path(base_path, *parts):
-    path = (base_path or "").strip().replace("\\", "/").rstrip("/")
-    if path and not path.startswith("/"):
-        path = "/" + path
-    clean_parts = [str(part or "").strip().strip("/\\").replace("\\", "/") for part in parts if str(part or "").strip()]
-    if clean_parts:
-        path = path + "/" + "/".join(clean_parts)
-    return path.rstrip("/") or "/"
-
-
-def ensure_dropbox_folder(dropbox_folder):
-    current = ""
-    for part in [piece for piece in (dropbox_folder or "").strip("/").split("/") if piece]:
-        current += "/" + part
-        _, error = _dropbox_api("files/create_folder_v2", {"path": current, "autorename": False})
-        if error and not error.startswith("path/conflict/folder"):
-            return error
-    return None
-
-
-def safe_upload_filename(original_name, fallback_prefix="comprovante"):
-    filename = secure_filename(original_name or "")
-    if not filename:
-        filename = fallback_prefix
-    stamp = app_now().strftime("%Y%m%d_%H%M%S")
-    return f"{stamp}_{filename}"
 
 
 def dropbox_web_url(dropbox_path):
@@ -6301,70 +6234,6 @@ def folder_path_candidates(raw_path):
         if candidate and candidate not in unique:
             unique.append(candidate)
     return unique
-
-
-def save_finance_receipt(project, uploaded_file):
-    """Salva comprovante financeiro na subpasta padrao do projeto.
-
-    Retorna (nome, caminho, url, erro). O caminho pode ser Dropbox ou local,
-    dependendo do cadastro da pasta do projeto e do ambiente em execucao.
-    """
-    if not uploaded_file or not (uploaded_file.filename or "").strip():
-        return None, None, None, None
-
-    filename = safe_upload_filename(uploaded_file.filename)
-    content = uploaded_file.stream.read(FINANCEIRO_COMPROVANTE_MAX_BYTES + 1)
-    if len(content) > FINANCEIRO_COMPROVANTE_MAX_BYTES:
-        return None, None, None, "Comprovante maior que o limite permitido."
-    if not content:
-        return None, None, None, "O comprovante enviado esta vazio."
-
-    raw_folder = (project.get("caminho_pasta") if hasattr(project, "get") else project["caminho_pasta"]) or ""
-    raw_folder = raw_folder.strip()
-    if not raw_folder:
-        return None, None, None, "Cadastre o caminho da pasta do projeto antes de anexar comprovantes."
-
-    dropbox_path = dropbox_path_from_raw(raw_folder)
-    if dropbox_path:
-        if not dropbox_enabled():
-            return None, None, None, "Credenciais do Dropbox nao configuradas no servidor."
-        target_folder = join_dropbox_path(dropbox_path, FINANCEIRO_COMPROVANTES_SUBPASTA)
-        folder_error = ensure_dropbox_folder(target_folder)
-        if folder_error:
-            return None, None, None, f"Nao foi possivel criar a pasta de comprovantes no Dropbox: {folder_error}"
-        target_path = join_dropbox_path(target_folder, filename)
-        meta, error = _dropbox_content_api(
-            "files/upload",
-            {
-                "path": target_path,
-                "mode": "add",
-                "autorename": True,
-                "mute": False,
-                "strict_conflict": False,
-            },
-            content,
-        )
-        if not meta:
-            return None, None, None, f"Nao foi possivel enviar o comprovante ao Dropbox: {error}"
-        saved_path = meta.get("path_display") or target_path
-        return filename, saved_path, dropbox_web_url(saved_path), None
-
-    target_base = next((candidate for candidate in folder_path_candidates(raw_folder) if os.path.isdir(candidate)), None)
-    if target_base:
-        target_folder = os.path.join(target_base, *FINANCEIRO_COMPROVANTES_SUBPASTA.replace("/", "\\").split("\\"))
-        try:
-            os.makedirs(target_folder, exist_ok=True)
-            target_path = os.path.join(target_folder, filename)
-            with open(target_path, "wb") as fh:
-                fh.write(content)
-            return filename, target_path, None, None
-        except OSError as exc:
-            return None, None, None, f"Nao foi possivel salvar o comprovante na pasta local: {exc}"
-
-    return None, None, None, (
-        "Nao consegui localizar a pasta do projeto. Cadastre um caminho Dropbox direto, "
-        "um caminho dentro da pasta sincronizada do Dropbox ou configure DROPBOX_PATH_ALIASES."
-    )
 
 
 @app.route("/api/open-folder", methods=["POST"])
@@ -6458,6 +6327,60 @@ def api_add_cliente():
         return {"id": cliente_id, "nome": nome, "search": nome}, 201
     except Exception as e:
         return {"error": str(e)}, 500
+
+
+def get_project_financial_context(project):
+    ensure_financeiro_schema()
+    project_id = project["id"]
+    costs = query_db(
+        """
+        SELECT pc.*, u.nome AS usuario_nome
+        FROM projeto_custos pc
+        LEFT JOIN usuarios u ON u.id = pc.usuario_id
+        WHERE pc.projeto_id = %s
+          AND lower(COALESCE(pc.status, '')) != 'cancelado'
+        ORDER BY COALESCE(pc.data_custo, '') DESC, pc.id DESC
+        """,
+        (project_id,),
+    )
+    payments = query_db(
+        """
+        SELECT pg.*, u.nome AS usuario_nome
+        FROM projeto_pagamentos pg
+        LEFT JOIN usuarios u ON u.id = pg.usuario_id
+        WHERE pg.projeto_id = %s
+        ORDER BY COALESCE(pg.data_pagamento, '') DESC, pg.id DESC
+        """,
+        (project_id,),
+    )
+    contract_value = float(project["valor"] or 0.0)
+    total_costs = sum(float(cost["valor"] or 0.0) for cost in costs)
+    total_paid = sum(float(payment["valor"] or 0.0) for payment in payments)
+    total_billable = contract_value + total_costs
+    balance = round(total_billable - total_paid, 2)
+    if total_billable <= 0.005:
+        status = "Sem cobranca"
+        tone = "secondary"
+    elif balance <= 0.005:
+        status = "Quitado"
+        tone = "success"
+    elif total_paid > 0:
+        status = "Parcial"
+        tone = "warning"
+    else:
+        status = "Em aberto"
+        tone = "primary"
+    return {
+        "costs": costs,
+        "payments": payments,
+        "contract_value": contract_value,
+        "total_costs": total_costs,
+        "total_paid": total_paid,
+        "total_billable": total_billable,
+        "balance": balance,
+        "status": status,
+        "tone": tone,
+    }
 
 
 @app.route("/project/<int:project_id>")
@@ -6563,6 +6486,7 @@ def project_detail(project_id):
         for row in stage_history_rows
     ]
     project_open_days = format_days(calculate_days_between(project["criado_em"])) if project["criado_em"] else "-"
+    financeiro_context = get_project_financial_context(project) if can_admin() else None
     return render_template(
         "project_detail.html",
         project=project,
@@ -6578,6 +6502,9 @@ def project_detail(project_id):
         cartorios=get_cartorio_options(),
         process_types=get_process_type_options(),
         servicos_adicionais=decode_process_list(project["servicos_adicionais"]),
+        financeiro=financeiro_context,
+        categorias_custo=CATEGORIAS_CUSTO,
+        formas_pagamento=FORMAS_PAGAMENTO,
         external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
         external_orgao_labels=EXTERNAL_ORGAO_LABELS,
     )
@@ -9274,9 +9201,6 @@ def ensure_financeiro_schema():
             data_custo TEXT,
             observacoes TEXT,
             status TEXT NOT NULL DEFAULT 'a_cobrar',
-            comprovante_nome TEXT,
-            comprovante_path TEXT,
-            comprovante_url TEXT,
             criado_em TEXT NOT NULL,
             usuario_id INTEGER,
             registro_uid TEXT
@@ -9300,9 +9224,6 @@ def ensure_financeiro_schema():
     add_column_if_missing(db, "projeto_custos", "observacoes", "TEXT")
     add_column_if_missing(db, "projeto_custos", "registro_uid", "TEXT")
     add_column_if_missing(db, "projeto_custos", "status", "TEXT DEFAULT 'a_cobrar'")
-    add_column_if_missing(db, "projeto_custos", "comprovante_nome", "TEXT")
-    add_column_if_missing(db, "projeto_custos", "comprovante_path", "TEXT")
-    add_column_if_missing(db, "projeto_custos", "comprovante_url", "TEXT")
     add_column_if_missing(db, "projeto_custos", "criado_em", "TEXT")
     add_column_if_missing(db, "projeto_custos", "usuario_id", "INTEGER")
     db.execute_statements(
@@ -9495,7 +9416,6 @@ def financeiro():
         costs_by_project=costs_by_project,
         formas_pagamento=FORMAS_PAGAMENTO,
         categorias_custo=CATEGORIAS_CUSTO,
-        comprovantes_subpasta=FINANCEIRO_COMPROVANTES_SUBPASTA,
         history_project_ids=history_project_ids,
         quase_pronto_pct=FINANCEIRO_QUASE_PRONTO_PCT,
         resumo={
@@ -9616,21 +9536,13 @@ def financeiro_registrar_custo():
         flash("Este custo ja havia sido salvo; o envio repetido foi ignorado.", "info")
         return redirect(url_for("financeiro"))
 
-    comprovante_nome = comprovante_path = comprovante_url = None
-    uploaded_file = request.files.get("comprovante")
-    if uploaded_file and (uploaded_file.filename or "").strip():
-        comprovante_nome, comprovante_path, comprovante_url, upload_error = save_finance_receipt(projeto, uploaded_file)
-        if upload_error:
-            flash(upload_error, "danger")
-            return redirect(url_for("financeiro"))
-
     try:
         execute_db(
             """
             INSERT INTO projeto_custos
                 (projeto_id, descricao, categoria, valor, data_custo, observacoes, status,
-                 comprovante_nome, comprovante_path, comprovante_url, criado_em, usuario_id, registro_uid)
-            VALUES (%s, %s, %s, %s, %s, %s, 'a_cobrar', %s, %s, %s, %s, %s, %s)
+                 criado_em, usuario_id, registro_uid)
+            VALUES (%s, %s, %s, %s, %s, %s, 'a_cobrar', %s, %s, %s)
             """,
             (
                 projeto["id"],
@@ -9639,9 +9551,6 @@ def financeiro_registrar_custo():
                 valor,
                 data_custo,
                 request.form.get("observacoes", "").strip(),
-                comprovante_nome,
-                comprovante_path,
-                comprovante_url,
                 app_now_iso(),
                 g.user["id"],
                 registro_uid,
@@ -9651,11 +9560,10 @@ def financeiro_registrar_custo():
         flash("Este custo ja havia sido salvo; o envio repetido foi ignorado.", "info")
         return redirect(url_for("financeiro"))
 
-    detalhe_comprovante = " com comprovante anexado" if comprovante_path else ""
     record_event(
         projeto["id"],
         "custo_financeiro",
-        f"Custo registrado: {descricao} ({CATEGORIAS_CUSTO.get(categoria, 'Outro custo')}) - {format_currency(valor)}{detalhe_comprovante}.",
+        f"Custo registrado: {descricao} ({CATEGORIAS_CUSTO.get(categoria, 'Outro custo')}) - {format_currency(valor)}.",
     )
     flash(f"Custo de {format_currency(valor)} registrado para cobranca futura.", "success")
     return redirect(url_for("financeiro"))

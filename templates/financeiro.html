@@ -93,10 +93,10 @@
             <div class="mb-3">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <strong>Custos a cobrar</strong>
-                    <small class="text-muted">Comprovantes: pasta do projeto / {{ comprovantes_subpasta }}</small>
+                    <small class="text-muted">Valores registrados para cobranca futura</small>
                 </div>
                 <table class="table compact-table mb-0">
-                    <thead><tr><th>Data</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Comprovante</th><th>Registrado por</th><th></th></tr></thead>
+                    <thead><tr><th>Data</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Registrado por</th><th></th></tr></thead>
                     <tbody>
                         {% for custo in costs_by_project.get(item.id, []) %}
                         <tr>
@@ -107,15 +107,6 @@
                             </td>
                             <td>{{ categorias_custo.get(custo.categoria, custo.categoria or '-') }}</td>
                             <td><strong>{{ format_currency(custo.valor) }}</strong></td>
-                            <td>
-                                {% if custo.comprovante_url %}
-                                    <a class="btn btn-outline-secondary btn-sm" href="{{ custo.comprovante_url }}" target="_blank" rel="noopener">Abrir</a>
-                                {% elif custo.comprovante_path %}
-                                    <small title="{{ custo.comprovante_path }}">{{ custo.comprovante_nome or 'Anexado' }}</small>
-                                {% else %}
-                                    <span class="text-muted">Sem comprovante</span>
-                                {% endif %}
-                            </td>
                             <td>{{ custo.usuario_nome or '-' }}</td>
                             <td class="text-end">
                                 <form method="post" action="{{ url_for('financeiro_cancelar_custo', cost_id=custo.id) }}"
@@ -164,7 +155,7 @@
 <div class="page-heading">
     <div>
         <h1>Financeiro</h1>
-        <p>Controle de recebimentos, custos reembolsaveis e comprovantes por projeto. Visivel somente para administradores.</p>
+        <p>Controle de recebimentos e custos reembolsaveis por projeto. Visivel somente para administradores.</p>
     </div>
 </div>
 
@@ -256,7 +247,7 @@
 
 <div class="modal fade" id="modalCusto" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
-        <form method="post" action="{{ url_for('financeiro_registrar_custo') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form>
+        <form method="post" action="{{ url_for('financeiro_registrar_custo') }}" class="modal-content" data-modal-finance-form>
             <input type="hidden" name="projeto_id" id="custoProjetoId">
             <input type="hidden" name="registro_uid" id="custoRegistroUid">
             <div class="modal-header">
@@ -280,24 +271,17 @@
                             {% endfor %}
                         </select>
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                         <label class="form-label">Valor a cobrar</label>
                         <input class="form-control" name="valor" placeholder="0,00" inputmode="decimal" autocomplete="off" required>
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                         <label class="form-label">Data do custo</label>
                         <input class="form-control" type="date" name="data_custo" value="{{ today_iso }}">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Comprovante</label>
-                        <input class="form-control" type="file" name="comprovante" accept=".pdf,.png,.jpg,.jpeg,.webp,image/*">
                     </div>
                     <div class="col-12">
                         <label class="form-label">Observacoes</label>
                         <input class="form-control" name="observacoes" placeholder="Ex.: solicitado no cartorio, protocolo, observacao de cobranca..." autocomplete="off">
-                    </div>
-                    <div class="col-12">
-                        <small class="text-muted">O comprovante sera salvo em: pasta do projeto / {{ comprovantes_subpasta }}.</small>
                     </div>
                 </div>
             </div>

@@ -44,6 +44,9 @@
 
 <ul class="nav nav-pills detail-tabs" id="projectTabs" role="tablist">
     <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#resumo" type="button">Resumo</button></li>
+    {% if financeiro %}
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#financeiro" type="button">Financeiro</button></li>
+    {% endif %}
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#etapas" type="button">Etapas</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pendencias" type="button">Pendencias</button></li>
     <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cartorio" type="button">Orgao externo</button></li>
@@ -198,6 +201,102 @@
             {% endif %}
         </section>
     </div>
+
+    {% if financeiro %}
+    <div class="tab-pane fade" id="financeiro">
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Financeiro do projeto</h2>
+                    <small>Resumo de contrato, custos registrados para cobranca e pagamentos recebidos.</small>
+                </div>
+                <span class="badge bg-{{ financeiro.tone }}">{{ financeiro.status }}</span>
+            </div>
+
+            <div class="project-strip">
+                <div>
+                    <span>Contrato</span>
+                    <strong>{{ format_currency(financeiro.contract_value) }}</strong>
+                </div>
+                <div>
+                    <span>Custos a cobrar</span>
+                    <strong>{{ format_currency(financeiro.total_costs) }}</strong>
+                </div>
+                <div>
+                    <span>Total cobravel</span>
+                    <strong>{{ format_currency(financeiro.total_billable) }}</strong>
+                </div>
+                <div>
+                    <span>Pago</span>
+                    <strong>{{ format_currency(financeiro.total_paid) }}</strong>
+                </div>
+                <div>
+                    <span>Saldo</span>
+                    <strong class="{{ 'text-danger' if financeiro.balance < -0.005 else '' }}">{{ format_currency(financeiro.balance) }}</strong>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <h2>Custos registrados para cobrar</h2>
+                <span>{{ financeiro.costs|length }} lancamento(s)</span>
+            </div>
+            {% if financeiro.costs %}
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead>
+                        <tr><th>Data</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Observacoes</th><th>Registrado por</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for custo in financeiro.costs %}
+                        <tr>
+                            <td>{{ format_date(custo.data_custo) }}</td>
+                            <td><strong>{{ custo.descricao }}</strong></td>
+                            <td>{{ categorias_custo.get(custo.categoria, custo.categoria or '-') }}</td>
+                            <td><strong>{{ format_currency(custo.valor) }}</strong></td>
+                            <td>{{ custo.observacoes or '-' }}</td>
+                            <td>{{ custo.usuario_nome or '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">Nenhum custo registrado para cobranca futura.</div>
+            {% endif %}
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <h2>Pagamentos registrados</h2>
+                <span>{{ financeiro.payments|length }} pagamento(s)</span>
+            </div>
+            {% if financeiro.payments %}
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead>
+                        <tr><th>Data</th><th>Valor</th><th>Forma</th><th>Observacoes</th><th>Registrado por</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for pagamento in financeiro.payments %}
+                        <tr>
+                            <td>{{ format_date(pagamento.data_pagamento) }}</td>
+                            <td><strong>{{ format_currency(pagamento.valor) }}</strong></td>
+                            <td>{{ formas_pagamento.get(pagamento.forma_pagamento, pagamento.forma_pagamento or '-') }}</td>
+                            <td>{{ pagamento.observacoes or '-' }}</td>
+                            <td>{{ pagamento.usuario_nome or '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">Nenhum pagamento registrado.</div>
+            {% endif %}
+        </section>
+    </div>
+    {% endif %}
 
     <div class="tab-pane fade" id="etapas">
         <section class="panel stage-summary-panel">
