@@ -766,6 +766,38 @@ def drop_constraint_if_exists(db, table_name, constraint_name):
     db.execute(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}")
 
 
+def ensure_backend_rls_policy(db, table_name):
+    backend_role = db.execute("SELECT 1 FROM pg_roles WHERE rolname = 'geogestao_app'").fetchone()
+    if not backend_role:
+        return
+    existing = db.execute(
+        """
+        SELECT 1
+        FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = %s AND policyname = 'backend_all'
+        """,
+        (table_name,),
+    ).fetchone()
+    if not existing:
+        db.execute(
+            f"CREATE POLICY backend_all ON {table_name} FOR ALL TO geogestao_app USING (true) WITH CHECK (true)"
+        )
+
+
+def ensure_table_rls(db, table_name):
+    table_state = db.execute(
+        """
+        SELECT c.relrowsecurity, pg_get_userbyid(c.relowner) = current_user AS owned_by_current_user
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = %s
+        """,
+        (table_name,),
+    ).fetchone()
+    if table_state and not table_state["relrowsecurity"] and table_state["owned_by_current_user"]:
+        db.execute(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY")
+
+
 def ensure_performance_indexes(db):
     statements = [
         "CREATE INDEX IF NOT EXISTS idx_usuarios_lower_email ON usuarios (lower(email))",
@@ -775,6 +807,8 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_projetos_responsavel_geral_id ON projetos (responsavel_geral_id)",
         "CREATE INDEX IF NOT EXISTS idx_projetos_tipo_servico ON projetos (tipo_servico)",
         "CREATE INDEX IF NOT EXISTS idx_projetos_ordem ON projetos (ordem_prioridade, criado_em, id)",
+        "CREATE INDEX IF NOT EXISTS idx_projeto_proprietarios_cliente ON projeto_proprietarios (cliente_id, projeto_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_proprietarios_principal ON projeto_proprietarios (projeto_id) WHERE principal = 1",
         "CREATE INDEX IF NOT EXISTS idx_projeto_etapas_projeto_modelo ON projeto_etapas (projeto_id, etapa_modelo_id)",
         "CREATE INDEX IF NOT EXISTS idx_projeto_etapas_projeto_visivel ON projeto_etapas (projeto_id, show_in_project)",
         "CREATE INDEX IF NOT EXISTS idx_projeto_etapas_project_stage_key_visible ON projeto_etapas (projeto_id, stage_key, show_in_project)",
@@ -1173,6 +1207,17 @@ def init_db():
             FOREIGN KEY(responsavel_geral_id) REFERENCES usuarios(id)
         );
 
+        CREATE TABLE IF NOT EXISTS projeto_proprietarios (
+            projeto_id INTEGER NOT NULL,
+            cliente_id INTEGER NOT NULL,
+            principal INTEGER NOT NULL DEFAULT 0 CHECK (principal IN (0, 1)),
+            ordem INTEGER NOT NULL DEFAULT 0,
+            criado_em TEXT,
+            PRIMARY KEY (projeto_id, cliente_id),
+            FOREIGN KEY(projeto_id) REFERENCES projetos(id) ON DELETE CASCADE,
+            FOREIGN KEY(cliente_id) REFERENCES clientes(id) ON DELETE RESTRICT
+        );
+
         CREATE TABLE IF NOT EXISTS projeto_etapas (
             id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
@@ -1444,6 +1489,8 @@ def init_db():
     )
 
     add_column_if_missing(db, "usuarios", "cargo", "TEXT")
+    ensure_table_rls(db, "projeto_proprietarios")
+    ensure_backend_rls_policy(db, "projeto_proprietarios")
     add_column_if_missing(db, "projetos", "proprietario", "TEXT")
     add_column_if_missing(db, "projetos", "etapa_atual_id", "INTEGER")
     add_column_if_missing(db, "projetos", "observacoes", "TEXT")
@@ -1523,6 +1570,16 @@ def init_db():
     normalize_legacy_project_process_types(db)
     migrate_legacy_clients(db)
     normalize_stage_models(db)
+    db.execute(
+        """
+        INSERT INTO projeto_proprietarios (projeto_id, cliente_id, principal, ordem, criado_em)
+        SELECT id, cliente_id, 1, 0, COALESCE(criado_em, %s)
+        FROM projetos
+        WHERE cliente_id IS NOT NULL
+        ON CONFLICT (projeto_id, cliente_id) DO UPDATE SET principal = 1, ordem = 0
+        """,
+        (app_now_iso(),),
+    )
     ensure_project_structure(db)
     ensure_project_checklists(db)
     ensure_project_stage_history(db)
@@ -3228,6 +3285,7 @@ def build_reports_context():
         ORDER BY p.nome
         """
     )
+    attach_project_owner_names(projects)
     project_dicts = []
     for p in projects:
         item = dict(p)
@@ -3504,7 +3562,16 @@ def delete_project_records(db, project_id):
 
 
 def delete_client_records(db, cliente_id):
-    linked_projects = scalar(db, "SELECT COUNT(*) FROM projetos WHERE cliente_id = %s", (cliente_id,))
+    linked_projects = scalar(
+        db,
+        """
+        SELECT COUNT(DISTINCT p.id)
+        FROM projetos p
+        LEFT JOIN projeto_proprietarios pp ON pp.projeto_id = p.id
+        WHERE p.cliente_id = %s OR pp.cliente_id = %s
+        """,
+        (cliente_id, cliente_id),
+    )
     if linked_projects:
         return False
     pf_rows = db.execute("SELECT id FROM pessoas_fisicas WHERE cliente_id = %s", (cliente_id,)).fetchall()
@@ -4865,6 +4932,122 @@ def resolve_project_cliente(form, fallback_name=""):
     return None, (fallback_name or "").strip()
 
 
+def resolve_additional_project_owners(form, primary_client_id):
+    owner_ids = form.getlist("proprietario_adicional_id")
+    owner_names = form.getlist("proprietario_adicional_nome")
+    client_options = fetch_cliente_autocomplete_options()
+    clients_by_id = {str(option["id"]): option for option in client_options}
+    clients_by_name = {normalize_lookup(option["nome"]): option["id"] for option in client_options}
+    additional_ids = []
+    seen = {str(primary_client_id)} if primary_client_id else set()
+
+    for index in range(max(len(owner_ids), len(owner_names))):
+        raw_id = owner_ids[index].strip() if index < len(owner_ids) else ""
+        raw_name = owner_names[index].strip() if index < len(owner_names) else ""
+        client_id = None
+
+        if raw_id and raw_id in clients_by_id:
+            client_id = int(raw_id)
+        elif raw_name:
+            wanted = normalize_lookup(raw_name)
+            client_id = clients_by_name.get(wanted)
+            if client_id is None:
+                client_id = create_draft_cliente(raw_name)
+                clients_by_name[wanted] = client_id
+
+        if client_id is None or str(client_id) in seen:
+            continue
+        seen.add(str(client_id))
+        additional_ids.append(client_id)
+
+    return additional_ids
+
+
+def sync_project_owners(db, project_id, primary_client_id, additional_client_ids=()):
+    selected = []
+    seen = set()
+    for client_id in [primary_client_id, *additional_client_ids]:
+        if not client_id:
+            continue
+        normalized_id = int(client_id)
+        if normalized_id in seen:
+            continue
+        seen.add(normalized_id)
+        selected.append(normalized_id)
+
+    db.execute("DELETE FROM projeto_proprietarios WHERE projeto_id = %s", (project_id,))
+    created_at = app_now_iso()
+    for order_index, client_id in enumerate(selected):
+        db.execute(
+            """
+            INSERT INTO projeto_proprietarios (projeto_id, cliente_id, principal, ordem, criado_em)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (project_id, client_id, 1 if order_index == 0 else 0, order_index, created_at),
+        )
+
+
+def load_project_owners_bulk(project_ids):
+    unique_ids = list(dict.fromkeys(int(project_id) for project_id in project_ids if project_id))
+    if not unique_ids:
+        return {}
+    owner_placeholders = ",".join("%s" for _ in unique_ids)
+    fallback_placeholders = ",".join("%s" for _ in unique_ids)
+    rows = query_db(
+        f"""
+        WITH owners AS (
+            SELECT pp.projeto_id, pp.cliente_id, pp.principal, pp.ordem
+            FROM projeto_proprietarios pp
+            WHERE pp.projeto_id IN ({owner_placeholders})
+
+            UNION ALL
+
+            SELECT p.id, p.cliente_id, 1, 0
+            FROM projetos p
+            WHERE p.id IN ({fallback_placeholders})
+              AND p.cliente_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM projeto_proprietarios pp WHERE pp.projeto_id = p.id
+              )
+        )
+        SELECT
+            owners.projeto_id,
+            owners.cliente_id AS id,
+            owners.principal,
+            owners.ordem,
+            COALESCE(
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, ''),
+                'Cliente #' || owners.cliente_id::text
+            ) AS nome
+        FROM owners
+        JOIN clientes c ON c.id = owners.cliente_id
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        ORDER BY owners.projeto_id, owners.principal DESC, owners.ordem, owners.cliente_id
+        """,
+        unique_ids + unique_ids,
+    )
+    owners_by_project = {}
+    for row in rows:
+        owners_by_project.setdefault(row["projeto_id"], []).append(row)
+    return owners_by_project
+
+
+def attach_project_owner_names(project_rows):
+    owners_by_project = load_project_owners_bulk(row["id"] for row in project_rows)
+    for project in project_rows:
+        owners = owners_by_project.get(project["id"], [])
+        if owners:
+            project["proprietarios_nomes"] = " / ".join(owner["nome"] for owner in owners)
+            project["cliente_nome"] = project["proprietarios_nomes"]
+        else:
+            project["proprietarios_nomes"] = project.get("cliente_nome") or project.get("proprietario") or ""
+    return owners_by_project
+
+
 def get_process_type_options():
     return get_cached_lookup(
         "process_type_options",
@@ -5460,6 +5643,7 @@ def dashboard():
         """,
         [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso],
     )
+    attach_project_owner_names(priority_projects)
     # Quantos projetos em cada etapa (gargalo).
     bottlenecks = query_db(
         """
@@ -5541,17 +5725,30 @@ def projects():
                 OR ct.nome LIKE %s OR ct.cidade LIKE %s OR ct.uf LIKE %s
                 OR p.tipo_servico LIKE %s OR p.tipo_servico_legado LIKE %s OR tp.nome LIKE %s OR tp.categoria LIKE %s
                 OR u.nome LIKE %s OR ur.nome LIKE %s
+                OR EXISTS (
+                    SELECT 1
+                    FROM projeto_proprietarios pp_search
+                    JOIN clientes c_search ON c_search.id = pp_search.cliente_id
+                    LEFT JOIN pessoas_fisicas pf_search ON pf_search.cliente_id = c_search.id
+                    LEFT JOIN pessoas_juridicas pj_search ON pj_search.cliente_id = c_search.id
+                    WHERE pp_search.projeto_id = p.id
+                      AND concat_ws(' ', c_search.nome, c_search.nome_exibicao, pf_search.nome_completo,
+                                    pf_search.cpf, pj_search.razao_social, pj_search.nome_fantasia,
+                                    pj_search.cnpj) ILIKE %s
+                )
             )
             """
         )
         like_q = f"%{q}%"
-        params.extend([like_q] * 22)
+        params.extend([like_q] * 23)
     if filters.get("cidade"):
         sql_filters.append("p.cidade LIKE %s")
         params.append(f"%{filters['cidade']}%")
     if filters.get("cliente_id"):
-        sql_filters.append("p.cliente_id = %s")
-        params.append(filters["cliente_id"])
+        sql_filters.append(
+            "(p.cliente_id = %s OR EXISTS (SELECT 1 FROM projeto_proprietarios ppf WHERE ppf.projeto_id = p.id AND ppf.cliente_id = %s))"
+        )
+        params.extend([filters["cliente_id"], filters["cliente_id"]])
     if filters.get("cartorio_id"):
         sql_filters.append("p.cartorio_id = %s")
         params.append(filters["cartorio_id"])
@@ -5749,6 +5946,7 @@ def projects():
         """,
         [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso] + params + [today_iso],
     )
+    attach_project_owner_names(projetos)
     matrix_options = get_matrix_static_options()
     etapas = matrix_options["etapas"]
     matrix_rows_by_project = load_matrix_stage_rows_bulk(projetos, etapas)
@@ -5882,9 +6080,9 @@ def projects_export():
         """
         SELECT
             p.codigo,
-            p.proprietario,
+            COALESCE(owners.nomes, p.proprietario) AS proprietario,
             p.nome AS projeto,
-            c.nome AS cliente,
+            COALESCE(owners.nomes, c.nome) AS cliente,
             p.cidade,
             ct.nome AS cartorio,
             COALESCE(tp.nome, p.tipo_servico_legado, p.tipo_servico) AS tipo_processo,
@@ -5897,6 +6095,18 @@ def projects_export():
             p.caminho_pasta
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
+        LEFT JOIN LATERAL (
+            SELECT string_agg(
+                COALESCE(NULLIF(c2.nome_exibicao, ''), NULLIF(pf2.nome_completo, ''),
+                         NULLIF(pj2.razao_social, ''), NULLIF(c2.nome, '')),
+                ' / ' ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
+            ) AS nomes
+            FROM projeto_proprietarios pp
+            JOIN clientes c2 ON c2.id = pp.cliente_id
+            LEFT JOIN pessoas_fisicas pf2 ON pf2.cliente_id = c2.id
+            LEFT JOIN pessoas_juridicas pj2 ON pj2.cliente_id = c2.id
+            WHERE pp.projeto_id = p.id
+        ) owners ON TRUE
         LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
         LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
@@ -5936,6 +6146,7 @@ def project_create():
         if not cliente_nome:
             flash("Informe o Cliente / Proprietario do projeto.", "danger")
             return redirect(url_for("project_create"))
+        additional_owner_ids = resolve_additional_project_owners(request.form, cliente_id)
 
         process_key = normalize_project_process_type(request.form.get("tipo_servico"))
         additional_processes = normalize_additional_process_types(request.form.getlist("servicos_adicionais"), process_key)
@@ -5968,6 +6179,7 @@ def project_create():
                     created,
                 ),
             ).fetchone()["id"]
+            sync_project_owners(db, project_id, cliente_id, additional_owner_ids)
             initialize_project_workflow(db, project_id, process_key, user_id=g.user["id"])
             initial_stage_key = request.form.get("initial_stage_key") or "ORCAMENTO"
             initial_stage = set_project_initial_stage(db, project_id, initial_stage_key)
@@ -6424,6 +6636,12 @@ def project_detail(project_id):
         flash("Projeto nao encontrado.", "danger")
         return redirect(url_for("projects"))
 
+    project["cliente_principal_nome"] = project["cliente_nome"]
+    project_owners = load_project_owners_bulk([project_id]).get(project_id, [])
+    if project_owners:
+        project["proprietarios_nomes"] = " / ".join(owner["nome"] for owner in project_owners)
+        project["cliente_nome"] = project["proprietarios_nomes"]
+
     db = get_db()
     workflow_initialized = project_has_workflow_initialized_db(db, project_id)
     if not scalar(db, "SELECT COUNT(*) FROM project_checklist_items WHERE project_id = %s", (project_id,)):
@@ -6497,6 +6715,7 @@ def project_detail(project_id):
     return render_template(
         "project_detail.html",
         project=project,
+        project_owners=project_owners,
         etapas=etapas,
         workflow_initialized=workflow_initialized,
         exigencias=exigencias,
@@ -6545,39 +6764,48 @@ def project_action(project_id):
         valor = parse_currency_value(request.form.get("valor", "").strip())
         project_name = request.form.get("nome", "").strip() or project["nome"]
         cliente_id, cliente_nome = resolve_project_cliente(request.form, project_name)
+        additional_owner_ids = resolve_additional_project_owners(request.form, cliente_id)
         new_process_key = normalize_project_process_type(request.form.get("tipo_servico"))
         additional_processes = normalize_additional_process_types(request.form.getlist("servicos_adicionais"), new_process_key)
         old_process_key = normalize_project_process_type(project["tipo_servico"])
         workflow_initialized = project_has_workflow_initialized_db(get_db(), project_id)
 
-        execute_db(
-            """
-            UPDATE projetos
-            SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s, servicos_adicionais = %s,
-                prioridade = %s, status = %s, prazo_critico = %s, responsavel_geral_id = %s, caminho_pasta = %s,
-                observacoes = %s, valor = %s, atualizado_em = %s
-            WHERE id = %s
-            """,
-            (
-                project_name,
-                cliente_nome,
-                cliente_id,
-                request.form.get("cidade", "").strip(),
-                request.form.get("uf", "").strip().upper(),
-                request.form.get("cartorio_id") or None,
-                new_process_key,
-                encode_process_list(additional_processes),
-                request.form.get("prioridade", "Media"),
-                request.form.get("status", "Em andamento"),
-                request.form.get("prazo_critico") or None,
-                request.form.get("responsavel_geral_id") or None,
-                request.form.get("caminho_pasta", "").strip(),
-                request.form.get("observacoes", "").strip(),
-                valor,
-                app_now_iso(),
-                project_id,
-            ),
-        )
+        db = get_db()
+        try:
+            db.execute(
+                """
+                UPDATE projetos
+                SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s, servicos_adicionais = %s,
+                    prioridade = %s, status = %s, prazo_critico = %s, responsavel_geral_id = %s, caminho_pasta = %s,
+                    observacoes = %s, valor = %s, atualizado_em = %s
+                WHERE id = %s
+                """,
+                (
+                    project_name,
+                    cliente_nome,
+                    cliente_id,
+                    request.form.get("cidade", "").strip(),
+                    request.form.get("uf", "").strip().upper(),
+                    request.form.get("cartorio_id") or None,
+                    new_process_key,
+                    encode_process_list(additional_processes),
+                    request.form.get("prioridade", "Media"),
+                    request.form.get("status", "Em andamento"),
+                    request.form.get("prazo_critico") or None,
+                    request.form.get("responsavel_geral_id") or None,
+                    request.form.get("caminho_pasta", "").strip(),
+                    request.form.get("observacoes", "").strip(),
+                    valor,
+                    app_now_iso(),
+                    project_id,
+                ),
+            )
+            sync_project_owners(db, project_id, cliente_id, additional_owner_ids)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        invalidate_runtime_caches()
         if new_process_key != old_process_key:
             if workflow_initialized:
                 flash("Tipo de processo alterado. Este projeto ja possui etapas/checklist; revise o fluxo antes de recriar modelos.", "warning")
@@ -8740,7 +8968,12 @@ def clients():
             COALESCE(ep.cidade, pj.cidade) AS cidade_cadastro,
             pr.nome_completo AS procurador_nome_doc,
             pr.cpf AS procurador_cpf_doc,
-            (SELECT COUNT(*) FROM projetos p WHERE p.cliente_id = c.id) AS projetos
+            (
+                SELECT COUNT(DISTINCT p.id)
+                FROM projetos p
+                LEFT JOIN projeto_proprietarios pp ON pp.projeto_id = p.id
+                WHERE p.cliente_id = c.id OR pp.cliente_id = c.id
+            ) AS projetos
         FROM clientes c
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
@@ -9320,6 +9553,7 @@ def financeiro():
         ORDER BY lower(p.nome)
         """
     )
+    attach_project_owner_names(rows)
 
     em_aberto = []
     concluidos_pendentes = []

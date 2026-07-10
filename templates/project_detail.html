@@ -3,7 +3,7 @@
 <div class="page-heading">
     <div>
         <h1>{{ project.nome }}</h1>
-        <p>{{ project.codigo }} - {{ project.cliente_nome or 'Sem cliente' }} - {{ project.cartorio_nome or 'Sem cartorio' }}</p>
+        <p>{{ project.codigo }} - {{ project.proprietarios_nomes or project.cliente_nome or 'Sem cliente' }} - {{ project.cartorio_nome or 'Sem cartorio' }}</p>
     </div>
     <div class="heading-actions">
         {% if project.caminho_pasta %}
@@ -90,10 +90,10 @@
                     </select>
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">Cliente / Proprietario</label>
+                    <label class="form-label">Proprietario principal</label>
                     <div class="ac-wrapper" data-client-autocomplete data-client-source="projectClientes">
                         <input class="form-control" type="text" name="cliente_nome"
-                               value="{{ project.cliente_nome or (project.proprietario if project.proprietario != project.codigo else '') or '' }}"
+                               value="{{ project.cliente_principal_nome or (project.proprietario if project.proprietario != project.codigo else '') or '' }}"
                                placeholder="Digite para buscar ou adicionar..." autocomplete="off" required
                                data-client-autocomplete-input {% if not can_manage() %}readonly{% endif %} />
                         <input type="hidden" name="cliente_id" value="{{ project.cliente_id or '' }}" data-client-autocomplete-id />
@@ -108,6 +108,50 @@
                             <option value="{{ cartorio.id }}" {% if project.cartorio_id == cartorio.id %}selected{% endif %}>{{ cartorio.nome }}</option>
                         {% endfor %}
                     </select>
+                </div>
+                <div class="col-12 project-owners-manager" data-project-owners-manager>
+                    <div class="project-owners-heading">
+                        <div>
+                            <label class="form-label mb-0">Outros proprietarios</label>
+                            <small>Proprietarios adicionais vinculados ao projeto.</small>
+                        </div>
+                        {% if can_manage() %}
+                            <button class="btn btn-outline-primary btn-sm" type="button" data-add-project-owner
+                                    aria-label="Adicionar outro proprietario">+ Adicionar proprietario</button>
+                        {% endif %}
+                    </div>
+                    <div class="project-owner-list" data-project-owner-list>
+                        {% for owner in project_owners if not owner.principal %}
+                            <div class="project-owner-row" data-project-owner-row>
+                                <div class="ac-wrapper" data-client-autocomplete data-client-source="projectClientes">
+                                    <input class="form-control" type="text" name="proprietario_adicional_nome"
+                                           value="{{ owner.nome }}" autocomplete="off" data-client-autocomplete-input
+                                           {% if not can_manage() %}readonly{% endif %} />
+                                    <input type="hidden" name="proprietario_adicional_id" value="{{ owner.id }}" data-client-autocomplete-id />
+                                    <div class="ac-list" data-client-autocomplete-list></div>
+                                </div>
+                                {% if can_manage() %}
+                                    <button class="btn btn-outline-danger project-owner-remove" type="button" data-remove-project-owner
+                                            aria-label="Remover proprietario" title="Remover proprietario">&times;</button>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    </div>
+                    {% if can_manage() %}
+                        <template data-project-owner-template>
+                            <div class="project-owner-row" data-project-owner-row>
+                                <div class="ac-wrapper" data-client-autocomplete data-client-source="projectClientes">
+                                    <input class="form-control" type="text" name="proprietario_adicional_nome"
+                                           placeholder="Busque um cliente cadastrado..." autocomplete="off"
+                                           data-client-autocomplete-input />
+                                    <input type="hidden" name="proprietario_adicional_id" data-client-autocomplete-id />
+                                    <div class="ac-list" data-client-autocomplete-list></div>
+                                </div>
+                                <button class="btn btn-outline-danger project-owner-remove" type="button" data-remove-project-owner
+                                        aria-label="Remover proprietario" title="Remover proprietario">&times;</button>
+                            </div>
+                        </template>
+                    {% endif %}
                 </div>
 
                 <div class="col-12"><h3 class="form-section-title">Localizacao e processo</h3></div>

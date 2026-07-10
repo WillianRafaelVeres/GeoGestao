@@ -128,6 +128,7 @@ window.addEventListener("DOMContentLoaded", () => {
     initRepresentativeManagers();
     initClientLiveSearch();
     initProjectClientAutocompletes();
+    initProjectOwnerManagers();
     initCartorioLookup();
     initSingleSubmitForms();
     initMatrixLiveFilters();
@@ -136,6 +137,7 @@ window.addEventListener("DOMContentLoaded", () => {
 function initSingleSubmitForms() {
     document.querySelectorAll("form[data-single-submit]").forEach((form) => {
         form.addEventListener("submit", (event) => {
+            if (event.defaultPrevented) return;
             if (form.dataset.submitting === "1") {
                 event.preventDefault();
                 return;
@@ -437,16 +439,18 @@ function initClientLiveSearch() {
     }
 }
 
-function initProjectClientAutocompletes() {
-    const widgets = Array.from(document.querySelectorAll("[data-client-autocomplete]"));
+function initProjectClientAutocompletes(root = document) {
+    const widgets = Array.from(root.querySelectorAll("[data-client-autocomplete]"));
     if (!widgets.length) return;
 
     widgets.forEach((widget) => {
+        if (widget.dataset.clientAutocompleteReady === "1") return;
         const input = widget.querySelector("[data-client-autocomplete-input]");
         const hidden = widget.querySelector("[data-client-autocomplete-id]");
         const list = widget.querySelector("[data-client-autocomplete-list]");
         const sourceName = widget.dataset.clientSource || "projectClientes";
         if (!input || !hidden || !list || input.disabled || input.readOnly) return;
+        widget.dataset.clientAutocompleteReady = "1";
 
         const getSource = () => Array.isArray(window[sourceName]) ? window[sourceName] : [];
         let selectedLabel = input.value.trim();
@@ -624,6 +628,64 @@ function initProjectClientAutocompletes() {
                 }
             });
         }
+    });
+}
+
+function initProjectOwnerManagers() {
+    document.querySelectorAll("[data-project-owners-manager]").forEach((manager) => {
+        const list = manager.querySelector("[data-project-owner-list]");
+        const template = manager.querySelector("[data-project-owner-template]");
+        const addButton = manager.querySelector("[data-add-project-owner]");
+        const form = manager.closest("form");
+        if (!list || manager.dataset.projectOwnersReady === "1") return;
+        manager.dataset.projectOwnersReady = "1";
+
+        function removeRow(button) {
+            const row = button.closest("[data-project-owner-row]");
+            if (row) row.remove();
+        }
+
+        function bindRow(row) {
+            row.querySelector("[data-remove-project-owner]")?.addEventListener("click", (event) => {
+                removeRow(event.currentTarget);
+            });
+            initProjectClientAutocompletes(row);
+            row.querySelector("[data-client-autocomplete-input]")?.focus();
+        }
+
+        list.querySelectorAll("[data-project-owner-row]").forEach((row) => {
+            row.querySelector("[data-remove-project-owner]")?.addEventListener("click", (event) => {
+                removeRow(event.currentTarget);
+            });
+        });
+
+        addButton?.addEventListener("click", () => {
+            if (!template) return;
+            const fragment = template.content.cloneNode(true);
+            const row = fragment.querySelector("[data-project-owner-row]");
+            list.appendChild(fragment);
+            if (row) bindRow(row);
+        });
+
+        form?.addEventListener("submit", (event) => {
+            const primaryId = form.querySelector('[name="cliente_id"]')?.value || "";
+            const selected = new Set(primaryId ? [primaryId] : []);
+            let duplicateFound = false;
+            list.querySelectorAll("[data-project-owner-row]").forEach((row) => {
+                const hidden = row.querySelector('[name="proprietario_adicional_id"]');
+                if (!hidden?.value) return;
+                if (selected.has(hidden.value)) {
+                    duplicateFound = true;
+                    row.querySelector("[data-client-autocomplete-input]")?.focus();
+                    return;
+                }
+                selected.add(hidden.value);
+            });
+            if (duplicateFound) {
+                event.preventDefault();
+                alert("O mesmo proprietario foi selecionado mais de uma vez.");
+            }
+        });
     });
 }
 

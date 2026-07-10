@@ -17,7 +17,7 @@
             <input class="form-control" name="nome" required />
         </div>
         <div class="col-md-6">
-            <label class="form-label">Cliente / Proprietario</label>
+            <label class="form-label">Proprietario principal</label>
             <div class="ac-wrapper" data-client-autocomplete data-client-source="projectClientes">
                 <input class="form-control" type="text" name="cliente_nome" id="clienteNomeInput"
                        placeholder="Digite para buscar ou adicionar..." autocomplete="off" required
@@ -34,6 +34,30 @@
                 <input type="hidden" name="cartorio_id" id="cartorioIdInput" />
                 <div class="ac-list" id="cartorioList"></div>
             </div>
+        </div>
+        <div class="col-12 project-owners-manager" data-project-owners-manager>
+            <div class="project-owners-heading">
+                <div>
+                    <label class="form-label mb-0">Outros proprietarios</label>
+                    <small>Adicione todas as pessoas ou empresas vinculadas a este projeto.</small>
+                </div>
+                <button class="btn btn-outline-primary btn-sm" type="button" data-add-project-owner
+                        aria-label="Adicionar outro proprietario">+ Adicionar proprietario</button>
+            </div>
+            <div class="project-owner-list" data-project-owner-list></div>
+            <template data-project-owner-template>
+                <div class="project-owner-row" data-project-owner-row>
+                    <div class="ac-wrapper" data-client-autocomplete data-client-source="projectClientes">
+                        <input class="form-control" type="text" name="proprietario_adicional_nome"
+                               placeholder="Busque um cliente cadastrado..." autocomplete="off"
+                               data-client-autocomplete-input />
+                        <input type="hidden" name="proprietario_adicional_id" data-client-autocomplete-id />
+                        <div class="ac-list" data-client-autocomplete-list></div>
+                    </div>
+                    <button class="btn btn-outline-danger project-owner-remove" type="button" data-remove-project-owner
+                            aria-label="Remover proprietario" title="Remover proprietario">&times;</button>
+                </div>
+            </template>
         </div>
         <div class="col-md-2">
             <label class="form-label">UF</label>
