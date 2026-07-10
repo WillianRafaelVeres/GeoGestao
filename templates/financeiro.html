@@ -1,11 +1,21 @@
 {% extends 'base.html' %}
 {% block title %}Financeiro - GeoGestao{% endblock %}
 
+{% macro historico_botao(item) -%}
+    {% set total_registros = (item.qtd_pagamentos or 0) + (item.qtd_custos or 0) %}
+    {% if total_registros %}
+        <button class="btn btn-outline-secondary btn-sm" type="button"
+                data-bs-toggle="collapse" data-bs-target="#historico-{{ item.id }}">
+            Historico ({{ total_registros }})
+        </button>
+    {% endif %}
+{%- endmacro %}
+
 {% macro linha_projeto(item, mostrar_status=false) -%}
     <tr>
         <td>
             <a href="{{ url_for('project_detail', project_id=item.id) }}"><strong>{{ item.nome }}</strong></a>
-            <small>{{ item.codigo or '' }}{% if item.cliente_nome %} · {{ item.cliente_nome }}{% endif %}</small>
+            <small>{{ item.codigo or '' }}{% if item.cliente_nome %} &middot; {{ item.cliente_nome }}{% endif %}</small>
         </td>
         <td>
             {% if mostrar_status %}
@@ -32,10 +42,18 @@
                 </form>
             {% endif %}
         </td>
+        <td>
+            {% if item.qtd_custos %}
+                <strong>{{ format_currency(item.total_custos) }}</strong>
+                <small>{{ item.qtd_custos }} lanc.</small>
+            {% else %}
+                -
+            {% endif %}
+        </td>
         <td>{{ format_currency(item.total_pago) if item.qtd_pagamentos else '-' }}</td>
         <td>
-            {% if not item.tem_valor %}
-                <span class="text-muted">Sem valor</span>
+            {% if not item.tem_cobranca %}
+                <span class="text-muted">Sem cobranca</span>
             {% elif item.saldo < -0.005 %}
                 <strong class="text-danger">{{ format_currency(item.saldo) }}</strong>
             {% elif item.saldo <= 0.005 %}
@@ -46,23 +64,22 @@
         </td>
         <td>{{ format_date(item.ultimo_pagamento) if item.ultimo_pagamento else '-' }}</td>
         <td class="table-actions">
+            <button class="btn btn-outline-primary btn-sm" type="button"
+                    data-bs-toggle="modal" data-bs-target="#modalCusto"
+                    data-custo-projeto="{{ item.id }}"
+                    data-custo-nome="{{ item.nome }}">+ Custo</button>
             <button class="btn btn-primary btn-sm" type="button"
                     data-bs-toggle="modal" data-bs-target="#modalPagamento"
                     data-pagamento-projeto="{{ item.id }}"
                     data-pagamento-nome="{{ item.nome }}">+ Pagamento</button>
-            {% if item.qtd_pagamentos %}
-                <button class="btn btn-outline-secondary btn-sm" type="button"
-                        data-bs-toggle="collapse" data-bs-target="#historico-{{ item.id }}">
-                    Historico ({{ item.qtd_pagamentos }})
-                </button>
-            {% endif %}
+            {{ historico_botao(item) }}
         </td>
     </tr>
-    {% if item.qtd_pagamentos %}
+    {% if item.qtd_pagamentos or item.qtd_custos %}
     <tr class="collapse" id="historico-{{ item.id }}">
-        <td colspan="8" style="background: var(--surface-2, #f8fafc);">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <strong>Pagamentos de {{ item.nome }}</strong>
+        <td colspan="9" style="background: var(--surface-2, #f8fafc);">
+            <div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
+                <strong>Movimentacoes financeiras de {{ item.nome }}</strong>
                 {% if item.tem_valor %}
                 <form method="post" action="{{ url_for('financeiro_definir_valor', project_id=item.id) }}" class="d-flex gap-1 align-items-center">
                     <small class="text-muted">Valor do projeto:</small>
@@ -71,26 +88,73 @@
                 </form>
                 {% endif %}
             </div>
-            <table class="table compact-table mb-0">
-                <thead><tr><th>Data</th><th>Valor</th><th>Forma</th><th>Observacoes</th><th>Registrado por</th><th></th></tr></thead>
-                <tbody>
-                    {% for pagamento in payments_by_project.get(item.id, []) %}
-                    <tr>
-                        <td>{{ format_date(pagamento.data_pagamento) }}</td>
-                        <td><strong>{{ format_currency(pagamento.valor) }}</strong></td>
-                        <td>{{ formas_pagamento.get(pagamento.forma_pagamento, pagamento.forma_pagamento or '-') }}</td>
-                        <td>{{ pagamento.observacoes or '-' }}</td>
-                        <td>{{ pagamento.usuario_nome or '-' }}</td>
-                        <td class="text-end">
-                            <form method="post" action="{{ url_for('financeiro_excluir_pagamento', payment_id=pagamento.id) }}"
-                                  onsubmit="return confirm('Excluir este pagamento de {{ format_currency(pagamento.valor) }}?');">
-                                <button class="btn btn-outline-danger btn-sm" type="submit">Excluir</button>
-                            </form>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+
+            {% if costs_by_project.get(item.id) %}
+            <div class="mb-3">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <strong>Custos a cobrar</strong>
+                    <small class="text-muted">Comprovantes: pasta do projeto / {{ comprovantes_subpasta }}</small>
+                </div>
+                <table class="table compact-table mb-0">
+                    <thead><tr><th>Data</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Comprovante</th><th>Registrado por</th><th></th></tr></thead>
+                    <tbody>
+                        {% for custo in costs_by_project.get(item.id, []) %}
+                        <tr>
+                            <td>{{ format_date(custo.data_custo) }}</td>
+                            <td>
+                                <strong>{{ custo.descricao }}</strong>
+                                {% if custo.observacoes %}<small>{{ custo.observacoes }}</small>{% endif %}
+                            </td>
+                            <td>{{ categorias_custo.get(custo.categoria, custo.categoria or '-') }}</td>
+                            <td><strong>{{ format_currency(custo.valor) }}</strong></td>
+                            <td>
+                                {% if custo.comprovante_url %}
+                                    <a class="btn btn-outline-secondary btn-sm" href="{{ custo.comprovante_url }}" target="_blank" rel="noopener">Abrir</a>
+                                {% elif custo.comprovante_path %}
+                                    <small title="{{ custo.comprovante_path }}">{{ custo.comprovante_nome or 'Anexado' }}</small>
+                                {% else %}
+                                    <span class="text-muted">Sem comprovante</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ custo.usuario_nome or '-' }}</td>
+                            <td class="text-end">
+                                <form method="post" action="{{ url_for('financeiro_cancelar_custo', cost_id=custo.id) }}"
+                                      onsubmit="return confirm('Cancelar este custo de {{ format_currency(custo.valor) }}?');">
+                                    <button class="btn btn-outline-danger btn-sm" type="submit">Cancelar</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+
+            {% if payments_by_project.get(item.id) %}
+            <div>
+                <strong class="d-block mb-2">Pagamentos recebidos</strong>
+                <table class="table compact-table mb-0">
+                    <thead><tr><th>Data</th><th>Valor</th><th>Forma</th><th>Observacoes</th><th>Registrado por</th><th></th></tr></thead>
+                    <tbody>
+                        {% for pagamento in payments_by_project.get(item.id, []) %}
+                        <tr>
+                            <td>{{ format_date(pagamento.data_pagamento) }}</td>
+                            <td><strong>{{ format_currency(pagamento.valor) }}</strong></td>
+                            <td>{{ formas_pagamento.get(pagamento.forma_pagamento, pagamento.forma_pagamento or '-') }}</td>
+                            <td>{{ pagamento.observacoes or '-' }}</td>
+                            <td>{{ pagamento.usuario_nome or '-' }}</td>
+                            <td class="text-end">
+                                <form method="post" action="{{ url_for('financeiro_excluir_pagamento', payment_id=pagamento.id) }}"
+                                      onsubmit="return confirm('Excluir este pagamento de {{ format_currency(pagamento.valor) }}?');">
+                                    <button class="btn btn-outline-danger btn-sm" type="submit">Excluir</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
         </td>
     </tr>
     {% endif %}
@@ -100,7 +164,7 @@
 <div class="page-heading">
     <div>
         <h1>Financeiro</h1>
-        <p>Controle de recebimentos por projeto. Visivel somente para administradores.</p>
+        <p>Controle de recebimentos, custos reembolsaveis e comprovantes por projeto. Visivel somente para administradores.</p>
     </div>
 </div>
 
@@ -108,7 +172,12 @@
     <div class="dash-kpi">
         <span class="dash-kpi-label">Total a receber</span>
         <strong class="dash-kpi-value">{{ format_currency(resumo.total_a_receber) }}</strong>
-        <span class="dash-kpi-sub">se todos os projetos forem concluidos e pagos</span>
+        <span class="dash-kpi-sub">contratos + custos - pagamentos</span>
+    </div>
+    <div class="dash-kpi">
+        <span class="dash-kpi-label">Custos a cobrar</span>
+        <strong class="dash-kpi-value">{{ format_currency(resumo.custos_a_cobrar) }}</strong>
+        <span class="dash-kpi-sub">despesas lancadas para reembolso</span>
     </div>
     <div class="dash-kpi">
         <span class="dash-kpi-label">Ja recebido</span>
@@ -134,7 +203,7 @@
     </div>
     <div class="table-responsive">
         <table class="table compact-table">
-            <thead><tr><th>Projeto</th><th>Etapa atual</th><th>Progresso</th><th>Valor</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
+            <thead><tr><th>Projeto</th><th>Etapa atual</th><th>Progresso</th><th>Contrato</th><th>Custos</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
             <tbody>
                 {% for item in quase_prontos %}
                     {{ linha_projeto(item) }}
@@ -148,12 +217,12 @@
 <section class="panel">
     <div class="panel-header">
         <h2>Projetos em aberto</h2>
-        <span>{{ em_aberto|length }} projetos · carteira de {{ format_currency(resumo.total_carteira) }}</span>
+        <span>{{ em_aberto|length }} projetos &middot; contratos de {{ format_currency(resumo.total_carteira) }} &middot; custos de {{ format_currency(resumo.custos_a_cobrar) }}</span>
     </div>
     {% if em_aberto %}
     <div class="table-responsive">
         <table class="table compact-table">
-            <thead><tr><th>Projeto</th><th>Etapa atual</th><th>Progresso</th><th>Valor</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
+            <thead><tr><th>Projeto</th><th>Etapa atual</th><th>Progresso</th><th>Contrato</th><th>Custos</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
             <tbody>
                 {% for item in em_aberto %}
                     {{ linha_projeto(item) }}
@@ -174,7 +243,7 @@
     </div>
     <div class="table-responsive">
         <table class="table compact-table">
-            <thead><tr><th>Projeto</th><th>Status</th><th>Progresso</th><th>Valor</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
+            <thead><tr><th>Projeto</th><th>Status</th><th>Progresso</th><th>Contrato</th><th>Custos</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
             <tbody>
                 {% for item in concluidos_pendentes %}
                     {{ linha_projeto(item, mostrar_status=true) }}
@@ -185,9 +254,64 @@
 </section>
 {% endif %}
 
+<div class="modal fade" id="modalCusto" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <form method="post" action="{{ url_for('financeiro_registrar_custo') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form>
+            <input type="hidden" name="projeto_id" id="custoProjetoId">
+            <input type="hidden" name="registro_uid" id="custoRegistroUid">
+            <div class="modal-header">
+                <div>
+                    <span class="module-label">Registrar custo</span>
+                    <h2 class="modal-title" id="custoProjetoNome">Projeto</h2>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-7">
+                        <label class="form-label">Descricao do custo</label>
+                        <input class="form-control" name="descricao" placeholder="Ex.: Matricula atualizada" autocomplete="off" required>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label">Categoria</label>
+                        <select class="form-select" name="categoria">
+                            {% for chave, nome in categorias_custo.items() %}
+                                <option value="{{ chave }}">{{ nome }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Valor a cobrar</label>
+                        <input class="form-control" name="valor" placeholder="0,00" inputmode="decimal" autocomplete="off" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Data do custo</label>
+                        <input class="form-control" type="date" name="data_custo" value="{{ today_iso }}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Comprovante</label>
+                        <input class="form-control" type="file" name="comprovante" accept=".pdf,.png,.jpg,.jpeg,.webp,image/*">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Observacoes</label>
+                        <input class="form-control" name="observacoes" placeholder="Ex.: solicitado no cartorio, protocolo, observacao de cobranca..." autocomplete="off">
+                    </div>
+                    <div class="col-12">
+                        <small class="text-muted">O comprovante sera salvo em: pasta do projeto / {{ comprovantes_subpasta }}.</small>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary" type="submit">Salvar custo</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <div class="modal fade" id="modalPagamento" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <form method="post" action="{{ url_for('financeiro_registrar_pagamento') }}" class="modal-content">
+        <form method="post" action="{{ url_for('financeiro_registrar_pagamento') }}" class="modal-content" data-modal-finance-form>
             <input type="hidden" name="projeto_id" id="pagamentoProjetoId">
             <input type="hidden" name="registro_uid" id="pagamentoRegistroUid">
             <div class="modal-header">
@@ -230,16 +354,35 @@
 </div>
 
 <script>
+function novoRegistroUid() {
+    return (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Date.now() + "-" + Math.random().toString(16).slice(2);
+}
+
+document.querySelectorAll("[data-custo-projeto]").forEach((botao) => {
+    botao.addEventListener("click", () => {
+        document.getElementById("custoProjetoId").value = botao.dataset.custoProjeto;
+        document.getElementById("custoProjetoNome").textContent = botao.dataset.custoNome;
+        document.getElementById("custoRegistroUid").value = novoRegistroUid();
+    });
+});
+
 document.querySelectorAll("[data-pagamento-projeto]").forEach((botao) => {
     botao.addEventListener("click", () => {
         document.getElementById("pagamentoProjetoId").value = botao.dataset.pagamentoProjeto;
         document.getElementById("pagamentoProjetoNome").textContent = botao.dataset.pagamentoNome;
-        // Codigo unico por abertura do modal: pagamentos iguais entram normalmente,
-        // mas o reenvio acidental do mesmo formulario e ignorado pelo servidor.
-        document.getElementById("pagamentoRegistroUid").value =
-            (window.crypto && crypto.randomUUID)
-                ? crypto.randomUUID()
-                : Date.now() + "-" + Math.random().toString(16).slice(2);
+        document.getElementById("pagamentoRegistroUid").value = novoRegistroUid();
+    });
+});
+
+document.querySelectorAll("[data-modal-finance-form]").forEach((formulario) => {
+    formulario.addEventListener("submit", () => {
+        const botao = formulario.querySelector("button[type='submit']");
+        if (botao) {
+            botao.disabled = true;
+            botao.textContent = "Salvando...";
+        }
     });
 });
 </script>

@@ -5,7 +5,8 @@ Data: 2026-07-07
 ## O que faz
 
 O botao "Abrir pasta" (projetos, detalhe do projeto e minhas missoes) abre a pasta do
-projeto pelo Dropbox quando o app esta hospedado (Render):
+projeto pelo Dropbox quando o app esta hospedado (Render). A area financeira tambem
+envia comprovantes de custos para uma subpasta padrao dentro da pasta do projeto:
 
 1. Se o servidor Flask roda na maquina do usuario (instalacao local no Windows),
    abre direto no Windows Explorer — inclusive localizando a pasta sincronizada
@@ -21,15 +22,29 @@ projeto pelo Dropbox quando o app esta hospedado (Render):
   (tudo apos a pasta `* Dropbox` vira o caminho na API: `/SC/Pastas/PASTA 500 Fulano`).
 - Caminho Dropbox direto: `/SC/Pastas/PASTA 500 Fulano`.
 - Link do dropbox.com colado inteiro: aberto como esta.
-- Caminhos antigos (`X:\...`, `\\wdserver\...`): continuam com o comportamento
-  antigo (so abrem quando o app roda local e a pasta existe).
+- Caminhos antigos fora dos aliases (`\\wdserver\...` ou outras unidades): continuam
+  com o comportamento antigo (so abrem quando o app roda local e a pasta existe).
+- Caminhos mapeados por alias: por padrao `Y:\PASTAS`, `Z:\PASTAS` e `X:\PASTAS`
+  sao tratados como `/SC/Pastas`. Ajuste `DROPBOX_PATH_ALIASES` se a equipe usar
+  outro mapeamento. Exemplo:
+  `DROPBOX_PATH_ALIASES=Y:\PASTAS=/SC/Pastas;W:\CLIENTES=/SC/Clientes`.
+
+## Comprovantes financeiros
+
+- O caminho padrao dentro da pasta do projeto e `Financeiro/Comprovantes`.
+- Para alterar, configure `GEOGESTAO_COMPROVANTES_SUBPASTA`, por exemplo:
+  `GEOGESTAO_COMPROVANTES_SUBPASTA=Financeiro/Comprovantes de custos`.
+- O limite padrao de upload e 20 MB por comprovante. Para alterar, use
+  `GEOGESTAO_COMPROVANTE_MAX_MB`.
+- Quando a pasta ainda nao existe no Dropbox, o sistema cria automaticamente a
+  subpasta antes de enviar o arquivo.
 
 ## Credenciais e conta
 
 - App "GeoGestao" no Dropbox App Console (Scoped access, Full Dropbox), autorizado
   pela conta Willian (Dropbox Business, equipe "SC").
-- Escopos: `account_info.read`, `files.metadata.read`, `sharing.read`, `sharing.write`.
-  Sem `files.content.*`: o token nao le nem altera conteudo de arquivos.
+- Escopos minimos: `account_info.read`, `files.metadata.read`, `files.content.write`,
+  `sharing.read`, `sharing.write`.
 - Env vars (no `.env` local e no dashboard do Render):
   `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`.
   O refresh token nao expira; o access token e renovado em memoria pela aplicacao.

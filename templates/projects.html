@@ -249,7 +249,14 @@
     {% set active_stage_name = (active_stage.etapa_nome or active_stage.legacy_etapa_nome or '')|lower %}
     {% set active_external_type = 'ORGAO_EXTERNO' if active_stage_key in ['PREFEITURA', 'ORGAO_EXTERNO'] or active_stage_name in ['prefeitura', 'cartorio', 'orgao externo'] else '' %}
     {% set active_external_label = 'Orgao externo' if active_external_type else '' %}
-    {% set active_external_records = external_controls_by_project.get(project.id, {}).get(active_external_type, []) if active_external_type else [] %}
+    {% set all_external_records = external_controls_by_project.get(project.id, {}).get(active_external_type, []) if active_external_type else [] %}
+    {% set ns_active_external_records = namespace(items=[]) %}
+    {% for ext in all_external_records %}
+        {% if not ext.etapa_id or ext.etapa_id == active_stage.id %}
+            {% set ns_active_external_records.items = ns_active_external_records.items + [ext] %}
+        {% endif %}
+    {% endfor %}
+    {% set active_external_records = ns_active_external_records.items %}
     {% set ns_external = namespace(protocol_count=0, withdrawn_count=0, pending_count=0, ready_count=0, protocol_deadline='') %}
     {% for ext in active_external_records %}
         {% set ext_status = ext.status|lower %}
@@ -260,7 +267,9 @@
     {% endfor %}
     {% set ns_external.pending_count = ns_external.protocol_count - ns_external.withdrawn_count %}
     {% set external_all_withdrawn = ns_external.protocol_count > 0 and ns_external.pending_count == 0 %}
-    {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and not external_all_withdrawn %}
+    {% set external_has_protocols = ns_external.protocol_count > 0 %}
+    {% set external_can_skip = active_external_type and active_status != 'nao aplicavel' and not external_has_protocols %}
+    {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and external_has_protocols and not external_all_withdrawn %}
     {% set project_pendings = pending_by_project.get(project.id, []) %}
     {% set proxima_etapa = next_stage_by_project.get(project.id) %}
     {% set ns_next = namespace(anteriores=[]) %}
@@ -417,6 +426,18 @@
                             {% endfor %}
                         </div>
 
+                        {% if active_external_type and active_status != 'nao aplicavel' %}
+                        <div class="pmodal-external-skip-panel" data-external-skip-panel {% if not external_can_skip %}hidden{% endif %}>
+                            <div>
+                                <strong>Nenhum protocolo nesta etapa</strong>
+                                <span>Se nao houver nada para protocolar agora, avance para a proxima etapa do fluxo.</span>
+                            </div>
+                            <button class="pmodal-btn-advance" type="button" data-external-skip data-stage-id="{{ active_stage.id }}">
+                                Avancar â†’ {{ proxima_etapa.etapa_nome if proxima_etapa else 'Concluir projeto' }}
+                            </button>
+                        </div>
+                        {% endif %}
+
                         <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-add" data-external-protocol-add>
                             <input type="hidden" name="action" value="add_external_protocol">
                             <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}">
@@ -447,16 +468,13 @@
                             </div>
                             <small class="pmodal-external-hint">A data para verificar se esta pronto e calculada automaticamente: 15 dias uteis apos o protocolo.</small>
                         </form>
-                        <button class="pmodal-btn-ghost pmodal-btn-skip-external" type="button" data-external-skip data-stage-id="{{ active_stage.id }}" {% if ns_external.protocol_count %}disabled title="Exclua ou retire os protocolos antes de pular a etapa"{% endif %}>
-                            Sem orgao externo - avancar etapa
-                        </button>
                     </section>
                     {% endif %}
 
                     <div class="pmodal-actions">
                         {% if external_stage_blocked %}
                         <span class="pmodal-advance-blocked" data-external-lock title="Use o controle de {{ active_external_label }} para liberar o avanco">
-                            Registrar retirada do protocolo para avancar
+                            Retire todos os protocolos para avancar
                         </span>
                         {% elif project_pendings %}
                         <span class="pmodal-advance-blocked" title="Resolva as pendencias abertas para liberar o avanco">
@@ -1369,10 +1387,29 @@
     color: #166534;
     background: #f0fdf4;
 }
-.pmodal-btn-skip-external {
-    justify-content: center;
-    margin-top: 8px;
-    width: 100%;
+.pmodal-external-skip-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px;
+    border: 1px solid #bfdbfe;
+    border-radius: 7px;
+    background: #eff6ff;
+}
+.pmodal-external-skip-panel strong {
+    display: block;
+    font-size: 12.5px;
+    color: #111827;
+}
+.pmodal-external-skip-panel span {
+    display: block;
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: #4b5563;
+}
+.pmodal-external-skip-panel .pmodal-btn-advance {
+    flex: 0 0 auto;
 }
 
 .stage-modal { border: none; border-radius: 10px; overflow: hidden; }
@@ -1589,7 +1626,12 @@ function updateExternalSummary(section, summary) {
     if (skipButton) {
         const hasProtocols = Number(summary.protocol_count || 0) > 0;
         skipButton.disabled = hasProtocols || Boolean(summary.all_withdrawn);
-        skipButton.title = hasProtocols ? 'Exclua ou retire os protocolos antes de pular a etapa' : '';
+        skipButton.title = hasProtocols ? 'Exclua ou retire os protocolos antes de avancar sem protocolo' : '';
+    }
+    const skipPanel = section.querySelector('[data-external-skip-panel]');
+    if (skipPanel) {
+        const hasProtocols = Number(summary.protocol_count || 0) > 0;
+        skipPanel.hidden = hasProtocols || Boolean(summary.all_withdrawn);
     }
     const lock = section.closest('.pmodal-body')?.querySelector('[data-external-lock]');
     if (lock) {
@@ -1597,7 +1639,7 @@ function updateExternalSummary(section, summary) {
             lock.textContent = 'Protocolos retirados. Etapa liberada.';
             lock.classList.add('is-success');
         } else {
-            lock.textContent = 'Registrar retirada do protocolo para avancar';
+            lock.textContent = 'Retire todos os protocolos para avancar';
             lock.classList.remove('is-success');
         }
     }
@@ -1694,7 +1736,7 @@ function initExternalProtocolControls() {
         section.addEventListener('click', async (event) => {
             const skipButton = event.target.closest('[data-external-skip]');
             if (skipButton) {
-                if (!confirm('Confirmar que este projeto nao tem orgao externo e avancar a etapa?')) return;
+                if (!confirm('Avancar sem registrar protocolo nesta etapa?')) return;
                 const originalText = skipButton.textContent;
                 skipButton.disabled = true;
                 skipButton.textContent = 'Avancando...';
@@ -1706,12 +1748,13 @@ function initExternalProtocolControls() {
                     });
                     const data = await resp.json();
                     if (!resp.ok || !data.ok) throw new Error(data.error || 'Nao foi possivel avancar a etapa.');
-                    showExternalFeedback(section, data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa externa marcada como nao aplicavel.', 'success');
+                    showExternalFeedback(section, data.message || (data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa avancada.'), 'success');
                     const lock = section.closest('.pmodal-body')?.querySelector('[data-external-lock]');
                     if (lock) {
-                        lock.textContent = data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa externa marcada como nao aplicavel.';
+                        lock.textContent = data.message || (data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa avancada.');
                         lock.classList.add('is-success');
                     }
+                    window.setTimeout(() => window.location.reload(), 700);
                 } catch (error) {
                     showExternalFeedback(section, error.message || 'Nao foi possivel avancar a etapa.', 'error');
                     skipButton.disabled = false;
@@ -1755,6 +1798,9 @@ function initExternalProtocolControls() {
                 } else {
                     replaceExternalProtocolRow(section, data.protocol);
                     showExternalFeedback(section, data.next_stage ? `Retirada registrada. Projeto avancou para ${data.next_stage.nome}.` : 'Protocolo atualizado.', 'success');
+                    if (data.next_stage) {
+                        window.setTimeout(() => window.location.reload(), 700);
+                    }
                 }
                 updateExternalSummary(section, data.summary);
             } catch (error) {

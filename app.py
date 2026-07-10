@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, Response, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 from documental import (
     DOCUMENT_FIELD_REQUIREMENTS,
@@ -104,6 +105,10 @@ APP_PUBLIC_URL = os.environ.get("GEOGESTAO_PUBLIC_URL", "").strip().rstrip("/")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY", "").strip()
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET", "").strip()
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN", "").strip()
+DROPBOX_PATH_ALIASES_RAW = os.environ.get(
+    "DROPBOX_PATH_ALIASES",
+    r"Y:\PASTAS=/SC/Pastas;Z:\PASTAS=/SC/Pastas;X:\PASTAS=/SC/Pastas",
+).strip()
 try:
     APP_TIMEZONE = ZoneInfo(os.environ.get("GEOGESTAO_TIMEZONE", "America/Sao_Paulo"))
 except ZoneInfoNotFoundError:
@@ -165,6 +170,23 @@ FORMAS_PAGAMENTO = {
     "OUTRO": "Outro",
 }
 
+CATEGORIAS_CUSTO = {
+    "MATRICULA": "Matricula",
+    "CERTIDAO": "Certidao",
+    "TAXA": "Taxa / emolumento",
+    "DESLOCAMENTO": "Deslocamento",
+    "IMPRESSAO": "Impressao / copia",
+    "OUTRO": "Outro custo",
+}
+
+FINANCEIRO_COMPROVANTES_SUBPASTA = (
+    os.environ.get("GEOGESTAO_COMPROVANTES_SUBPASTA", "Financeiro/Comprovantes").strip().strip("/\\")
+    or "Financeiro/Comprovantes"
+)
+try:
+    FINANCEIRO_COMPROVANTE_MAX_BYTES = int(os.environ.get("GEOGESTAO_COMPROVANTE_MAX_MB", "20")) * 1024 * 1024
+except ValueError:
+    FINANCEIRO_COMPROVANTE_MAX_BYTES = 20 * 1024 * 1024
 FINANCEIRO_QUASE_PRONTO_PCT = 75
 
 PRIORITY_WEIGHT = {"Alta": 0, "Media": 1, "Baixa": 2, "": 3, None: 3}
@@ -787,6 +809,8 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_senha_reset_tokens_expires ON senha_reset_tokens (expires_at)",
         "CREATE INDEX IF NOT EXISTS idx_projeto_pagamentos_projeto ON projeto_pagamentos (projeto_id, data_pagamento DESC, id DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_pagamentos_registro_uid ON projeto_pagamentos (registro_uid)",
+        "CREATE INDEX IF NOT EXISTS idx_projeto_custos_projeto ON projeto_custos (projeto_id, data_custo DESC, id DESC)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_custos_registro_uid ON projeto_custos (registro_uid)",
     ]
     cur = db.cursor()
     try:
@@ -1407,6 +1431,23 @@ def init_db():
             forma_pagamento TEXT,
             data_pagamento TEXT,
             observacoes TEXT,
+            criado_em TEXT NOT NULL,
+            usuario_id INTEGER,
+            registro_uid TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS projeto_custos (
+            id SERIAL PRIMARY KEY,
+            projeto_id INTEGER NOT NULL,
+            descricao TEXT NOT NULL,
+            categoria TEXT,
+            valor DOUBLE PRECISION NOT NULL,
+            data_custo TEXT,
+            observacoes TEXT,
+            status TEXT NOT NULL DEFAULT 'a_cobrar',
+            comprovante_nome TEXT,
+            comprovante_path TEXT,
+            comprovante_url TEXT,
             criado_em TEXT NOT NULL,
             usuario_id INTEGER,
             registro_uid TEXT
@@ -3451,6 +3492,8 @@ def record_event(project_id, event_type, description, user_id=None):
 def delete_project_records(db, project_id):
     if table_columns(db, "projeto_pagamentos"):
         db.execute("DELETE FROM projeto_pagamentos WHERE projeto_id = %s", (project_id,))
+    if table_columns(db, "projeto_custos"):
+        db.execute("DELETE FROM projeto_custos WHERE projeto_id = %s", (project_id,))
     db.execute("DELETE FROM apontamentos_tempo WHERE projeto_id = %s", (project_id,))
     db.execute("DELETE FROM eventos_historico WHERE projeto_id = %s", (project_id,))
     db.execute("DELETE FROM movimentacoes_etapa WHERE projeto_id = %s", (project_id,))
@@ -3555,6 +3598,20 @@ def external_stage_label(tipo_orgao):
 
 
 def find_project_stage_by_external_type(db, project_id, tipo_orgao):
+    current = db.execute(
+        """
+        SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projetos p
+        JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE p.id = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+        LIMIT 1
+        """,
+        (project_id,),
+    ).fetchone()
+    if external_stage_type(current) == EXTERNAL_PROTOCOL_SCOPE:
+        return current
     row = db.execute(
         """
         SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
@@ -3699,11 +3756,15 @@ def cancel_protocol_withdrawal_tasks(project_id, protocol_id):
     )
 
 
-def external_stage_protocol_summary(project_id, tipo_orgao):
+def external_stage_protocol_summary(project_id, tipo_orgao, stage_id=None):
     orgao_filter = "" if tipo_orgao == EXTERNAL_PROTOCOL_SCOPE else "AND e.tipo_orgao = %s"
     params = [project_id]
     if orgao_filter:
         params.append(tipo_orgao)
+    stage_filter = ""
+    if stage_id:
+        stage_filter = "AND e.etapa_id = %s"
+        params.append(stage_id)
     rows = query_db(
         f"""
         SELECT e.*, u.nome AS responsavel_nome
@@ -3712,6 +3773,7 @@ def external_stage_protocol_summary(project_id, tipo_orgao):
         WHERE e.projeto_id = %s
           AND COALESCE(e.tipo_registro, 'exigencia') = 'protocolo'
           {orgao_filter}
+          {stage_filter}
         ORDER BY COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'), e.id
         """,
         params,
@@ -3779,16 +3841,20 @@ def load_external_protocol(project_id, protocol_id):
     )
 
 
-def external_stage_all_protocols_withdrawn(project_id, tipo_orgao):
-    summary = external_stage_protocol_summary(project_id, tipo_orgao)
+def external_stage_all_protocols_withdrawn(project_id, tipo_orgao, stage_id=None):
+    summary = external_stage_protocol_summary(project_id, tipo_orgao, stage_id)
     return summary["all_withdrawn"]
 
 
-def external_stage_has_any_records(project_id, tipo_orgao):
+def external_stage_has_any_records(project_id, tipo_orgao, stage_id=None):
     orgao_filter = "" if tipo_orgao == EXTERNAL_PROTOCOL_SCOPE else "AND tipo_orgao = %s"
     params = [project_id]
     if orgao_filter:
         params.append(tipo_orgao)
+    stage_filter = ""
+    if stage_id:
+        stage_filter = "AND etapa_id = %s"
+        params.append(stage_id)
     return bool(
         scalar(
             get_db(),
@@ -3798,6 +3864,7 @@ def external_stage_has_any_records(project_id, tipo_orgao):
             WHERE projeto_id = %s
               AND COALESCE(tipo_registro, 'exigencia') = 'protocolo'
               {orgao_filter}
+              {stage_filter}
             """,
             params,
         )
@@ -3812,10 +3879,11 @@ def can_finish_external_stage(project_id, stage):
     if status == "nao aplicavel":
         return True, None
     applicability = (stage["applicability"] if "applicability" in stage else "") or ""
-    if applicability in (APPLICABILITY_CONDITIONAL, APPLICABILITY_OPTIONAL) and not external_stage_has_any_records(project_id, tipo_orgao):
+    stage_id = stage["id"] if "id" in stage else None
+    if applicability in (APPLICABILITY_CONDITIONAL, APPLICABILITY_OPTIONAL) and not external_stage_has_any_records(project_id, tipo_orgao, stage_id):
         return True, None
-    if not external_stage_all_protocols_withdrawn(project_id, tipo_orgao):
-        return False, f"Registre a retirada de todos os protocolos em {external_stage_label(tipo_orgao)} antes de concluir esta etapa."
+    if not external_stage_all_protocols_withdrawn(project_id, tipo_orgao, stage_id):
+        return False, "Registre um protocolo ou avance sem protocolo nesta etapa. Se ja houver protocolo, registre a retirada antes de concluir."
     return True, None
 
 
@@ -6017,8 +6085,8 @@ def api_select_folder():
 
 
 # --- Integracao Dropbox: abre a pasta do projeto pelo Dropbox (web ou app desktop) ---
-# O app usa um refresh token unico da empresa (env: DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN)
-# com escopos somente de metadados e links; sem acesso ao conteudo dos arquivos.
+# O app usa um refresh token unico da empresa (env: DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN).
+# Para comprovantes financeiros, o app precisa de permissao files.content.write.
 
 _dropbox_lock = threading.Lock()
 _dropbox_cache = {"access_token": None, "expires_at": 0.0, "root_namespace_id": None}
@@ -6026,6 +6094,21 @@ _dropbox_cache = {"access_token": None, "expires_at": 0.0, "root_namespace_id": 
 
 def dropbox_enabled():
     return bool(DROPBOX_APP_KEY and DROPBOX_APP_SECRET and DROPBOX_REFRESH_TOKEN)
+
+
+def configured_dropbox_path_aliases():
+    aliases = []
+    for raw_alias in (DROPBOX_PATH_ALIASES_RAW or "").split(";"):
+        if "=" not in raw_alias:
+            continue
+        local_prefix, dropbox_prefix = raw_alias.split("=", 1)
+        local_prefix = local_prefix.strip().strip('"').rstrip("\\/")
+        dropbox_prefix = dropbox_prefix.strip().strip('"').replace("\\", "/").rstrip("/")
+        if local_prefix and dropbox_prefix:
+            if not dropbox_prefix.startswith("/"):
+                dropbox_prefix = "/" + dropbox_prefix
+            aliases.append((local_prefix, dropbox_prefix))
+    return aliases
 
 
 def _dropbox_access_token():
@@ -6072,6 +6155,33 @@ def _dropbox_api(endpoint, payload, use_path_root=True):
         return None, detail or f"http_{err.code}"
 
 
+def _dropbox_content_api(endpoint, api_arg, content, use_path_root=True):
+    """Chama endpoint de conteudo do Dropbox. Retorna (json, None) ou (None, error_summary)."""
+    token = _dropbox_access_token()
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Dropbox-API-Arg": json.dumps(api_arg),
+        "Content-Type": "application/octet-stream",
+    }
+    if use_path_root:
+        headers["Dropbox-API-Path-Root"] = json.dumps({".tag": "root", "root": _dropbox_root_namespace()})
+    req = urllib.request.Request(
+        "https://content.dropboxapi.com/2/" + endpoint,
+        data=content,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()), None
+    except urllib.error.HTTPError as err:
+        try:
+            detail = json.loads(err.read().decode()).get("error_summary", "")
+        except Exception:
+            detail = ""
+        return None, detail or f"http_{err.code}"
+
+
 def _dropbox_root_namespace():
     with _dropbox_lock:
         if _dropbox_cache["root_namespace_id"]:
@@ -6088,21 +6198,57 @@ def _dropbox_root_namespace():
 def dropbox_path_from_raw(raw_path):
     """Extrai o caminho Dropbox de um caminho cadastrado.
 
-    Aceita '/SC/Pastas/X' (ja no formato Dropbox) ou um caminho local sincronizado
-    como 'C:\\SC Dropbox\\SC\\Pastas\\X' (tudo apos a pasta '* Dropbox').
-    Retorna None quando o caminho nao tem relacao com o Dropbox (ex.: X:\\, \\\\wdserver).
+    Aceita '/SC/Pastas/X' (ja no formato Dropbox), aliases configurados como
+    'Y:\\PASTAS=/SC/Pastas' ou um caminho local sincronizado como
+    'C:\\SC Dropbox\\SC\\Pastas\\X' (tudo apos a pasta '* Dropbox').
     """
     path = (raw_path or "").strip().strip('"')
     if not path:
         return None
     if path.startswith("/"):
         return path.rstrip("/") or None
+    normalized = path.replace("/", "\\").rstrip("\\")
+    for local_prefix, dropbox_prefix in configured_dropbox_path_aliases():
+        local_normalized = local_prefix.replace("/", "\\").rstrip("\\")
+        lower_path = normalized.lower()
+        lower_prefix = local_normalized.lower()
+        if lower_path == lower_prefix or lower_path.startswith(lower_prefix + "\\"):
+            rest = normalized[len(local_normalized):].lstrip("\\")
+            return (dropbox_prefix + ("/" + rest.replace("\\", "/") if rest else "")).rstrip("/")
     parts = [part for part in path.replace("/", "\\").split("\\") if part]
     for index, part in enumerate(parts):
         if part.lower().endswith(" dropbox"):
             rest = parts[index + 1:]
             return "/" + "/".join(rest) if rest else None
     return None
+
+
+def join_dropbox_path(base_path, *parts):
+    path = (base_path or "").strip().replace("\\", "/").rstrip("/")
+    if path and not path.startswith("/"):
+        path = "/" + path
+    clean_parts = [str(part or "").strip().strip("/\\").replace("\\", "/") for part in parts if str(part or "").strip()]
+    if clean_parts:
+        path = path + "/" + "/".join(clean_parts)
+    return path.rstrip("/") or "/"
+
+
+def ensure_dropbox_folder(dropbox_folder):
+    current = ""
+    for part in [piece for piece in (dropbox_folder or "").strip("/").split("/") if piece]:
+        current += "/" + part
+        _, error = _dropbox_api("files/create_folder_v2", {"path": current, "autorename": False})
+        if error and not error.startswith("path/conflict/folder"):
+            return error
+    return None
+
+
+def safe_upload_filename(original_name, fallback_prefix="comprovante"):
+    filename = secure_filename(original_name or "")
+    if not filename:
+        filename = fallback_prefix
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
+    return f"{stamp}_{filename}"
 
 
 def dropbox_web_url(dropbox_path):
@@ -6155,6 +6301,70 @@ def folder_path_candidates(raw_path):
         if candidate and candidate not in unique:
             unique.append(candidate)
     return unique
+
+
+def save_finance_receipt(project, uploaded_file):
+    """Salva comprovante financeiro na subpasta padrao do projeto.
+
+    Retorna (nome, caminho, url, erro). O caminho pode ser Dropbox ou local,
+    dependendo do cadastro da pasta do projeto e do ambiente em execucao.
+    """
+    if not uploaded_file or not (uploaded_file.filename or "").strip():
+        return None, None, None, None
+
+    filename = safe_upload_filename(uploaded_file.filename)
+    content = uploaded_file.stream.read(FINANCEIRO_COMPROVANTE_MAX_BYTES + 1)
+    if len(content) > FINANCEIRO_COMPROVANTE_MAX_BYTES:
+        return None, None, None, "Comprovante maior que o limite permitido."
+    if not content:
+        return None, None, None, "O comprovante enviado esta vazio."
+
+    raw_folder = (project.get("caminho_pasta") if hasattr(project, "get") else project["caminho_pasta"]) or ""
+    raw_folder = raw_folder.strip()
+    if not raw_folder:
+        return None, None, None, "Cadastre o caminho da pasta do projeto antes de anexar comprovantes."
+
+    dropbox_path = dropbox_path_from_raw(raw_folder)
+    if dropbox_path:
+        if not dropbox_enabled():
+            return None, None, None, "Credenciais do Dropbox nao configuradas no servidor."
+        target_folder = join_dropbox_path(dropbox_path, FINANCEIRO_COMPROVANTES_SUBPASTA)
+        folder_error = ensure_dropbox_folder(target_folder)
+        if folder_error:
+            return None, None, None, f"Nao foi possivel criar a pasta de comprovantes no Dropbox: {folder_error}"
+        target_path = join_dropbox_path(target_folder, filename)
+        meta, error = _dropbox_content_api(
+            "files/upload",
+            {
+                "path": target_path,
+                "mode": "add",
+                "autorename": True,
+                "mute": False,
+                "strict_conflict": False,
+            },
+            content,
+        )
+        if not meta:
+            return None, None, None, f"Nao foi possivel enviar o comprovante ao Dropbox: {error}"
+        saved_path = meta.get("path_display") or target_path
+        return filename, saved_path, dropbox_web_url(saved_path), None
+
+    target_base = next((candidate for candidate in folder_path_candidates(raw_folder) if os.path.isdir(candidate)), None)
+    if target_base:
+        target_folder = os.path.join(target_base, *FINANCEIRO_COMPROVANTES_SUBPASTA.replace("/", "\\").split("\\"))
+        try:
+            os.makedirs(target_folder, exist_ok=True)
+            target_path = os.path.join(target_folder, filename)
+            with open(target_path, "wb") as fh:
+                fh.write(content)
+            return filename, target_path, None, None
+        except OSError as exc:
+            return None, None, None, f"Nao foi possivel salvar o comprovante na pasta local: {exc}"
+
+    return None, None, None, (
+        "Nao consegui localizar a pasta do projeto. Cadastre um caminho Dropbox direto, "
+        "um caminho dentro da pasta sincronizada do Dropbox ou configure DROPBOX_PATH_ALIASES."
+    )
 
 
 @app.route("/api/open-folder", methods=["POST"])
@@ -7161,7 +7371,7 @@ def api_add_external_protocol(project_id):
     return jsonify({
         "ok": True,
         "protocol": external_protocol_payload(protocol),
-        "summary": external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE),
+        "summary": external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE, stage["id"] if stage else None),
     })
 
 
@@ -7173,13 +7383,14 @@ def api_update_external_protocol(project_id, protocol_id):
     protocol = load_external_protocol(project_id, protocol_id)
     if not protocol or (protocol["tipo_registro"] or "exigencia") != "protocolo":
         return jsonify({"ok": False, "error": "Protocolo nao encontrado."}), 404
+    protocol_stage_id = protocol["etapa_id"]
     tipo_orgao = normalize_external_orgao(protocol["tipo_orgao"] or "CARTORIO")
 
     if action == "delete":
         cancel_protocol_withdrawal_tasks(project_id, protocol_id)
         execute_db("DELETE FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (protocol_id, project_id))
         record_event(project_id, "protocolo_excluido", f"Protocolo #{protocol_id} excluido.")
-        summary = external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE)
+        summary = external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE, protocol_stage_id)
         project = query_db("SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,), one=True)
         if summary["protocol_count"] == 0 and project and project["etapa_atual_id"] == protocol["etapa_id"]:
             execute_db(
@@ -7242,7 +7453,7 @@ def api_update_external_protocol(project_id, protocol_id):
     payload = {
         "ok": True,
         "protocol": external_protocol_payload(protocol),
-        "summary": external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE),
+        "summary": external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE, protocol_stage_id),
     }
     if next_stage:
         payload["next_stage"] = {"id": next_stage["id"], "nome": next_stage["etapa_nome"]}
@@ -7262,20 +7473,23 @@ def api_skip_external_stage(project_id):
         return jsonify({"ok": False, "error": "Etapa externa nao encontrada."}), 404
     if project["etapa_atual_id"] != stage["id"]:
         return jsonify({"ok": False, "error": "Esta nao e a etapa atual do projeto."}), 400
-    if external_stage_has_any_records(project_id, EXTERNAL_PROTOCOL_SCOPE):
-        return jsonify({"ok": False, "error": "Ja existe protocolo externo. Retire ou exclua os protocolos antes de pular a etapa."}), 400
+    if external_stage_has_any_records(project_id, EXTERNAL_PROTOCOL_SCOPE, stage["id"]):
+        return jsonify({"ok": False, "error": "Ja existe protocolo nesta etapa. Retire ou exclua os protocolos antes de avancar sem protocolo."}), 400
 
     now = app_now_iso()
     execute_db(
         "UPDATE projeto_etapas SET status = 'nao aplicavel', progresso = 100, data_fim = COALESCE(data_fim, %s), subetapa_ativa = %s WHERE id = %s",
-        (now, "Sem orgao externo", stage["id"]),
+        (now, "Sem protocolo nesta etapa", stage["id"]),
     )
     completed_stage = load_project_stage_for_action(stage["id"], project_id)
     next_stage = advance_project_after_stage_completion(project_id, completed_stage, stage["responsavel_id"])
-    record_event(project_id, "orgao_externo_nao_aplicavel", "Etapa de orgao externo pulada por nao haver protocolo externo.")
-    payload = {"ok": True}
+    record_event(project_id, "orgao_externo_nao_aplicavel", f"Etapa {stage['etapa_nome']} avancada sem protocolo externo.")
+    payload = {"ok": True, "message": "Etapa avancada sem protocolo."}
     if next_stage:
         payload["next_stage"] = {"id": next_stage["id"], "nome": next_stage["etapa_nome"]}
+        payload["message"] = f"Etapa avancada para {next_stage['etapa_nome']}."
+    else:
+        payload["message"] = "Etapa avancada e projeto concluido."
     return jsonify(payload)
 
 
@@ -9027,7 +9241,7 @@ _financeiro_schema_ready = False
 
 
 def ensure_financeiro_schema():
-    """Cria a tabela de pagamentos se ainda nao existir (uma verificacao por processo)."""
+    """Cria as tabelas financeiras se ainda nao existirem (uma verificacao por processo)."""
     global _financeiro_schema_ready
     if _financeiro_schema_ready:
         return
@@ -9049,6 +9263,27 @@ def ensure_financeiro_schema():
 
         CREATE INDEX IF NOT EXISTS idx_projeto_pagamentos_projeto
             ON projeto_pagamentos (projeto_id, data_pagamento DESC, id DESC)
+        ;
+
+        CREATE TABLE IF NOT EXISTS projeto_custos (
+            id SERIAL PRIMARY KEY,
+            projeto_id INTEGER NOT NULL,
+            descricao TEXT NOT NULL,
+            categoria TEXT,
+            valor DOUBLE PRECISION NOT NULL,
+            data_custo TEXT,
+            observacoes TEXT,
+            status TEXT NOT NULL DEFAULT 'a_cobrar',
+            comprovante_nome TEXT,
+            comprovante_path TEXT,
+            comprovante_url TEXT,
+            criado_em TEXT NOT NULL,
+            usuario_id INTEGER,
+            registro_uid TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_projeto_custos_projeto
+            ON projeto_custos (projeto_id, data_custo DESC, id DESC)
         """
     )
     # registro_uid: identificador unico de cada envio do formulario. Permite
@@ -9057,6 +9292,21 @@ def ensure_financeiro_schema():
     add_column_if_missing(db, "projeto_pagamentos", "registro_uid", "TEXT")
     db.execute_statements(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_pagamentos_registro_uid ON projeto_pagamentos (registro_uid)"
+    )
+    add_column_if_missing(db, "projeto_custos", "descricao", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "categoria", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "valor", "DOUBLE PRECISION DEFAULT 0")
+    add_column_if_missing(db, "projeto_custos", "data_custo", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "observacoes", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "registro_uid", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "status", "TEXT DEFAULT 'a_cobrar'")
+    add_column_if_missing(db, "projeto_custos", "comprovante_nome", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "comprovante_path", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "comprovante_url", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "criado_em", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "usuario_id", "INTEGER")
+    db.execute_statements(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_custos_registro_uid ON projeto_custos (registro_uid)"
     )
     db.commit()
     _financeiro_schema_ready = True
@@ -9090,11 +9340,12 @@ def financeiro():
     rows = query_db(
         """
         SELECT
-            p.id, p.codigo, p.nome, p.status, p.valor,
+            p.id, p.codigo, p.nome, p.status, p.valor, p.caminho_pasta,
             COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(c.nome, ''), p.proprietario) AS cliente_nome,
             em.nome AS etapa_nome, pe.status AS etapa_status,
             prog.total_etapas, prog.etapas_concluidas,
-            pag.total_pago, pag.qtd_pagamentos, pag.ultimo_pagamento
+            pag.total_pago, pag.qtd_pagamentos, pag.ultimo_pagamento,
+            cust.total_custos, cust.qtd_custos, cust.ultimo_custo
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
@@ -9119,10 +9370,24 @@ def financeiro():
             FROM projeto_pagamentos pg
             WHERE pg.projeto_id = p.id
         ) pag ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT
+                COALESCE(SUM(pc.valor) FILTER (
+                    WHERE lower(COALESCE(pc.status, '')) != 'cancelado'
+                ), 0) AS total_custos,
+                COUNT(*) FILTER (
+                    WHERE lower(COALESCE(pc.status, '')) != 'cancelado'
+                ) AS qtd_custos,
+                MAX(pc.data_custo) FILTER (
+                    WHERE lower(COALESCE(pc.status, '')) != 'cancelado'
+                ) AS ultimo_custo
+            FROM projeto_custos pc
+            WHERE pc.projeto_id = p.id
+        ) cust ON TRUE
         WHERE lower(COALESCE(p.status, '')) != 'cancelado'
           AND (
               lower(COALESCE(p.status, '')) != 'concluido'
-              OR COALESCE(p.valor, 0) - pag.total_pago > 0.005
+              OR COALESCE(p.valor, 0) + cust.total_custos - pag.total_pago > 0.005
           )
         ORDER BY lower(p.nome)
         """
@@ -9136,28 +9401,39 @@ def financeiro():
     a_receber_ativos = 0.0
     a_receber_concluidos = 0.0
     quase_prontos_saldo = 0.0
+    custos_a_cobrar = 0.0
 
     for row in rows:
         item = dict(row)
         valor = float(item["valor"] or 0.0)
         pago = float(item["total_pago"] or 0.0)
-        saldo = round(valor - pago, 2)
+        custos = float(item["total_custos"] or 0.0)
+        saldo = round(valor + custos - pago, 2)
         total = item["total_etapas"] or 0
         done = item["etapas_concluidas"] or 0
         item["pct"] = int(done / total * 100) if total else 0
+        item["qtd_pagamentos"] = int(item["qtd_pagamentos"] or 0)
+        item["qtd_custos"] = int(item["qtd_custos"] or 0)
+        item["total_pago"] = pago
+        item["total_custos"] = custos
+        item["total_cobravel"] = valor + custos
         item["saldo"] = saldo
         item["tem_valor"] = valor > 0.005
+        item["tem_cobranca"] = item["total_cobravel"] > 0.005
         if (item["status"] or "").lower() == "concluido":
             concluidos_pendentes.append(item)
             a_receber_concluidos += max(saldo, 0.0)
+            custos_a_cobrar += custos
             continue
         em_aberto.append(item)
         if item["tem_valor"]:
             total_carteira += valor
-            a_receber_ativos += max(saldo, 0.0)
         else:
             sem_valor_count += 1
-        if item["tem_valor"] and item["pct"] >= FINANCEIRO_QUASE_PRONTO_PCT and saldo > 0.005:
+        custos_a_cobrar += custos
+        if item["tem_cobranca"]:
+            a_receber_ativos += max(saldo, 0.0)
+        if item["tem_cobranca"] and item["pct"] >= FINANCEIRO_QUASE_PRONTO_PCT and saldo > 0.005:
             quase_prontos.append(item)
             quase_prontos_saldo += saldo
     quase_prontos.sort(key=lambda item: (-item["pct"], -item["saldo"]))
@@ -9174,9 +9450,15 @@ def financeiro():
     )
 
     payments_by_project = {}
-    project_ids = [item["id"] for item in em_aberto + concluidos_pendentes if item["qtd_pagamentos"]]
-    if project_ids:
-        placeholders = ",".join("%s" for _ in project_ids)
+    costs_by_project = {}
+    history_project_ids = [
+        item["id"]
+        for item in em_aberto + concluidos_pendentes
+        if item["qtd_pagamentos"] or item["qtd_custos"]
+    ]
+    payment_project_ids = [item["id"] for item in em_aberto + concluidos_pendentes if item["qtd_pagamentos"]]
+    if payment_project_ids:
+        placeholders = ",".join("%s" for _ in payment_project_ids)
         for payment in query_db(
             f"""
             SELECT pg.*, u.nome AS usuario_nome
@@ -9185,9 +9467,24 @@ def financeiro():
             WHERE pg.projeto_id IN ({placeholders})
             ORDER BY COALESCE(pg.data_pagamento, '') DESC, pg.id DESC
             """,
-            project_ids,
+            payment_project_ids,
         ):
             payments_by_project.setdefault(payment["projeto_id"], []).append(payment)
+    cost_project_ids = [item["id"] for item in em_aberto + concluidos_pendentes if item["qtd_custos"]]
+    if cost_project_ids:
+        placeholders = ",".join("%s" for _ in cost_project_ids)
+        for cost in query_db(
+            f"""
+            SELECT pc.*, u.nome AS usuario_nome
+            FROM projeto_custos pc
+            LEFT JOIN usuarios u ON u.id = pc.usuario_id
+            WHERE pc.projeto_id IN ({placeholders})
+              AND lower(COALESCE(pc.status, '')) != 'cancelado'
+            ORDER BY COALESCE(pc.data_custo, '') DESC, pc.id DESC
+            """,
+            cost_project_ids,
+        ):
+            costs_by_project.setdefault(cost["projeto_id"], []).append(cost)
 
     return render_template(
         "financeiro.html",
@@ -9195,13 +9492,18 @@ def financeiro():
         concluidos_pendentes=concluidos_pendentes,
         quase_prontos=quase_prontos,
         payments_by_project=payments_by_project,
+        costs_by_project=costs_by_project,
         formas_pagamento=FORMAS_PAGAMENTO,
+        categorias_custo=CATEGORIAS_CUSTO,
+        comprovantes_subpasta=FINANCEIRO_COMPROVANTES_SUBPASTA,
+        history_project_ids=history_project_ids,
         quase_pronto_pct=FINANCEIRO_QUASE_PRONTO_PCT,
         resumo={
             "total_a_receber": a_receber_ativos + a_receber_concluidos,
             "a_receber_ativos": a_receber_ativos,
             "a_receber_concluidos": a_receber_concluidos,
             "total_carteira": total_carteira,
+            "custos_a_cobrar": custos_a_cobrar,
             "recebido_total": float(recebido["total"] or 0.0),
             "recebido_30d": float(recebido["ultimos_30d"] or 0.0),
             "quase_prontos_count": len(quase_prontos),
@@ -9262,7 +9564,16 @@ def financeiro_registrar_pagamento():
     total_pago = scalar(
         get_db(), "SELECT COALESCE(SUM(valor), 0) FROM projeto_pagamentos WHERE projeto_id = %s", (projeto["id"],)
     )
-    saldo = round(float(projeto["valor"] or 0.0) - float(total_pago or 0.0), 2)
+    total_custos = scalar(
+        get_db(),
+        """
+        SELECT COALESCE(SUM(valor), 0)
+        FROM projeto_custos
+        WHERE projeto_id = %s AND lower(COALESCE(status, '')) != 'cancelado'
+        """,
+        (projeto["id"],),
+    )
+    saldo = round(float(projeto["valor"] or 0.0) + float(total_custos or 0.0) - float(total_pago or 0.0), 2)
     if projeto["valor"] and saldo < -0.005:
         flash(
             f"Pagamento registrado. Atencao: o total pago supera o valor do projeto em {format_currency(abs(saldo))}.",
@@ -9272,6 +9583,81 @@ def financeiro_registrar_pagamento():
         flash(f"Pagamento de {format_currency(valor)} registrado. Saldo restante: {format_currency(max(saldo, 0))}.", "success")
     else:
         flash(f"Pagamento de {format_currency(valor)} registrado. Defina o valor do projeto para acompanhar o saldo.", "success")
+    return redirect(url_for("financeiro"))
+
+
+@app.route("/financeiro/custo", methods=["POST"])
+@login_required
+def financeiro_registrar_custo():
+    denied = require_admin_or_redirect()
+    if denied:
+        return denied
+    ensure_financeiro_schema()
+    projeto_id = request.form.get("projeto_id")
+    projeto = query_db("SELECT id, nome, caminho_pasta FROM projetos WHERE id = %s", (projeto_id,), one=True)
+    if not projeto:
+        flash("Projeto nao encontrado.", "danger")
+        return redirect(url_for("financeiro"))
+
+    descricao = (request.form.get("descricao") or "").strip()
+    if not descricao:
+        flash("Informe a descricao do custo.", "danger")
+        return redirect(url_for("financeiro"))
+    valor = parse_currency_value(request.form.get("valor", "").strip())
+    if not valor or valor <= 0:
+        flash("Informe um valor de custo maior que zero.", "danger")
+        return redirect(url_for("financeiro"))
+    categoria = request.form.get("categoria", "")
+    if categoria not in CATEGORIAS_CUSTO:
+        categoria = "OUTRO"
+    data_custo = parse_payment_date(request.form.get("data_custo"))
+    registro_uid = (request.form.get("registro_uid") or "").strip()[:64] or secrets.token_hex(16)
+    if query_db("SELECT id FROM projeto_custos WHERE registro_uid = %s", (registro_uid,), one=True):
+        flash("Este custo ja havia sido salvo; o envio repetido foi ignorado.", "info")
+        return redirect(url_for("financeiro"))
+
+    comprovante_nome = comprovante_path = comprovante_url = None
+    uploaded_file = request.files.get("comprovante")
+    if uploaded_file and (uploaded_file.filename or "").strip():
+        comprovante_nome, comprovante_path, comprovante_url, upload_error = save_finance_receipt(projeto, uploaded_file)
+        if upload_error:
+            flash(upload_error, "danger")
+            return redirect(url_for("financeiro"))
+
+    try:
+        execute_db(
+            """
+            INSERT INTO projeto_custos
+                (projeto_id, descricao, categoria, valor, data_custo, observacoes, status,
+                 comprovante_nome, comprovante_path, comprovante_url, criado_em, usuario_id, registro_uid)
+            VALUES (%s, %s, %s, %s, %s, %s, 'a_cobrar', %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                projeto["id"],
+                descricao,
+                categoria,
+                valor,
+                data_custo,
+                request.form.get("observacoes", "").strip(),
+                comprovante_nome,
+                comprovante_path,
+                comprovante_url,
+                app_now_iso(),
+                g.user["id"],
+                registro_uid,
+            ),
+        )
+    except psycopg2.errors.UniqueViolation:
+        flash("Este custo ja havia sido salvo; o envio repetido foi ignorado.", "info")
+        return redirect(url_for("financeiro"))
+
+    detalhe_comprovante = " com comprovante anexado" if comprovante_path else ""
+    record_event(
+        projeto["id"],
+        "custo_financeiro",
+        f"Custo registrado: {descricao} ({CATEGORIAS_CUSTO.get(categoria, 'Outro custo')}) - {format_currency(valor)}{detalhe_comprovante}.",
+    )
+    flash(f"Custo de {format_currency(valor)} registrado para cobranca futura.", "success")
     return redirect(url_for("financeiro"))
 
 
@@ -9288,6 +9674,35 @@ def financeiro_excluir_pagamento(payment_id):
         return redirect(url_for("financeiro"))
     execute_db("DELETE FROM projeto_pagamentos WHERE id = %s", (payment_id,))
     flash(f"Pagamento de {format_currency(payment['valor'])} excluido.", "success")
+    return redirect(url_for("financeiro"))
+
+
+@app.route("/financeiro/custo/<int:cost_id>/cancelar", methods=["POST"])
+@login_required
+def financeiro_cancelar_custo(cost_id):
+    denied = require_admin_or_redirect()
+    if denied:
+        return denied
+    ensure_financeiro_schema()
+    cost = query_db(
+        """
+        SELECT pc.id, pc.projeto_id, pc.valor, pc.descricao, pc.status
+        FROM projeto_custos pc
+        WHERE pc.id = %s
+        """,
+        (cost_id,),
+        one=True,
+    )
+    if not cost or (cost["status"] or "").lower() == "cancelado":
+        flash("Custo nao encontrado.", "danger")
+        return redirect(url_for("financeiro"))
+    execute_db("UPDATE projeto_custos SET status = 'cancelado' WHERE id = %s", (cost_id,))
+    record_event(
+        cost["projeto_id"],
+        "custo_financeiro_cancelado",
+        f"Custo cancelado: {cost['descricao']} - {format_currency(cost['valor'])}.",
+    )
+    flash(f"Custo de {format_currency(cost['valor'])} cancelado.", "success")
     return redirect(url_for("financeiro"))
 
 
