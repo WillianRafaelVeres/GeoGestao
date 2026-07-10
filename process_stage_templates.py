@@ -105,8 +105,8 @@ MACRO_STAGES = [
     },
     {
         "key": "ORGAO_EXTERNO",
-        "name": "Cartorio",
-        "description": "Protocolo, exigencias, deferimento e retirada junto ao cartorio ou orgao externo principal.",
+        "name": "Orgao externo",
+        "description": "Protocolo, verificacao, deferimento e retirada junto a prefeitura, cartorio, SIGEF, INCRA, SICAR ou outro orgao externo.",
         "order": 11,
         "default_responsible_role": "acompanhamento_externo",
         "default_deadline_days": 10,
@@ -366,6 +366,16 @@ PROCESS_STAGE_OVERRIDES = {
 
 def build_stage_template(process_type_key, macro_stage, override):
     applicability = override.get("applicability", APPLICABILITY_NOT_APPLICABLE)
+    if macro_stage["key"] == "PREFEITURA":
+        override = {
+            **override,
+            "applicability": APPLICABILITY_NOT_APPLICABLE,
+            "show_in_matrix": False,
+            "show_in_project": False,
+            "active": True,
+            "notes": "Etapa unificada em Orgao externo.",
+        }
+        applicability = APPLICABILITY_NOT_APPLICABLE
     can_skip = override.get("can_skip")
     if can_skip is None:
         can_skip = applicability != APPLICABILITY_REQUIRED

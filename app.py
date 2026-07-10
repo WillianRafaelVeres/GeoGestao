@@ -141,6 +141,18 @@ REPRESENTATIVE_TYPES = {
     "REPRESENTANTE": "Representante",
 }
 
+EXTERNAL_ORGAO_OPTIONS = [
+    ("CARTORIO", "Cartorio"),
+    ("PREFEITURA", "Prefeitura"),
+    ("SIGEF", "SIGEF"),
+    ("INCRA", "INCRA"),
+    ("SICAR", "SICAR"),
+    ("SNCR", "SNCR"),
+    ("OUTRO", "Outro orgao"),
+]
+EXTERNAL_ORGAO_LABELS = dict(EXTERNAL_ORGAO_OPTIONS)
+EXTERNAL_PROTOCOL_SCOPE = "ORGAO_EXTERNO"
+
 FORMAS_PAGAMENTO = {
     "PIX": "PIX",
     "DINHEIRO": "Dinheiro",
@@ -178,6 +190,7 @@ REPORT_STAGE_DEFAULT_DAYS = {
     "conferencia": 4,
     "assinaturas": 4,
     "cartorio": 14,
+    "orgaoexterno": 14,
     "pendencia": 7,
     "finalizado": 1,
     "arquivado": 1,
@@ -233,7 +246,7 @@ DEFAULT_STAGES = [
         "checklist": ["Protocolo registrado", "Exigencias acompanhadas", "Pronto para retirada", "Retirada concluida"],
     },
     {
-        "nome": "Cartorio",
+        "nome": "Orgao externo",
         "ordem": 11,
         "cor": "danger",
         "checklist": ["Protocolo registrado", "Exigencias acompanhadas", "Pronto para retirada", "Retirada concluida"],
@@ -259,6 +272,8 @@ STAGE_ALIASES = {
     "documentacao": "escritorio",
     "finalizacao": "finalizado",
     "finalizado": "finalizado",
+    "orgaoexterno": "cartorio",
+    "orgao": "cartorio",
 }
 
 PROCESS_STAGE_TO_LEGACY_STAGE = {
@@ -306,15 +321,15 @@ PROCESS_CHECKLIST_STAGE_NAMES = {
     "CONFERENCIA": "Conferencia",
     "ASSINATURAS": "Assinaturas / Anuencias",
     "PREFEITURA": "Prefeitura",
-    "ORGAO_EXTERNO": "Cartorio",
+    "ORGAO_EXTERNO": "Orgao externo",
     "PENDENCIAS": "Pendencias / Exigencias",
     "ENTREGA": "Entrega / Encerramento",
     "FINALIZADO": "Finalizado",
 }
 
 FUTURE_AUTOMATIONS = [
-    "Criar lembrete quando o projeto entrar em Cartorio.",
-    "Criar pendencia com prazo quando houver exigencia de cartorio.",
+    "Criar lembrete quando o projeto entrar em Orgao externo.",
+    "Criar pendencia com prazo quando houver exigencia de orgao externo.",
     "Notificar responsavel faltando 5 dias para o prazo.",
     "Notificar responsavel e gestor quando vencer.",
     "Sugerir proxima etapa ao concluir uma etapa.",
@@ -2050,7 +2065,7 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
     custom_office_items = get_cartorio_checklist_rows(
         db, process_key, project_row["cartorio_id"] if project_row else None
     )
-    templates = [template for template in templates if template["stage_key"] != "ESCRITORIO"]
+    templates = [template for template in templates if template["stage_key"] not in ("ESCRITORIO", "PREFEITURA")]
     now = app_now_iso()
     # O checklist da etapa Escritorio e composto somente pelos documentos do cartorio
     # (definidos em /cartorios/checklist). Itens herdados dos modelos de processo sao
@@ -2264,7 +2279,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
         """
         SELECT *
         FROM process_stage_templates
-        WHERE process_type_key = %s AND active = 1
+        WHERE process_type_key = %s AND active = 1 AND stage_key != 'PREFEITURA'
         ORDER BY stage_order, id
         """,
         (process_key,),
@@ -2281,6 +2296,12 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
         applicability = template["applicability"]
         if applicability == APPLICABILITY_NOT_APPLICABLE:
             continue
+        template_stage_name = "Orgao externo" if template["stage_key"] == "ORGAO_EXTERNO" else template["stage_name"]
+        template_description = (
+            "Protocolo e retirada em prefeitura, cartorio, SIGEF, INCRA, SICAR ou outro orgao externo."
+            if template["stage_key"] == "ORGAO_EXTERNO"
+            else template["description"]
+        )
 
         workflow_active = 1 if applicability == APPLICABILITY_REQUIRED else 0
         if workflow_active:
@@ -2300,7 +2321,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
         values = (
             process_key,
             template["stage_key"],
-            template["stage_name"],
+            template_stage_name,
             template["stage_order"],
             applicability,
             1 if workflow_active else 0,
@@ -2310,7 +2331,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
             1 if template["show_in_project"] else 0,
             template["external_actor_type"],
             template["id"],
-            template["description"],
+            template_description,
             template["notes"],
         )
         if existing:
@@ -2346,7 +2367,7 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
                     data_inicio,
                     prazo,
                     10 if status == "em andamento" else 0,
-                    default_checklist_for_stage(template["stage_name"])[0],
+                    default_checklist_for_stage(template_stage_name)[0],
                     *values[5:],
                 ),
             ).fetchone()["id"]
@@ -2424,11 +2445,14 @@ def get_process_initial_stage_options():
         "process_initial_stage_options_rows",
         lambda: query_db(
             """
-            SELECT process_type_key, stage_key, stage_name, stage_order
+            SELECT process_type_key, stage_key,
+                   CASE WHEN stage_key = 'ORGAO_EXTERNO' THEN 'Orgao externo' ELSE stage_name END AS stage_name,
+                   stage_order
             FROM process_stage_templates
             WHERE active = 1
               AND applicability != %s
               AND show_in_project = 1
+              AND stage_key != 'PREFEITURA'
             ORDER BY process_type_key, stage_order, id
             """,
             (APPLICABILITY_NOT_APPLICABLE,),
@@ -3519,47 +3543,60 @@ def external_stage_type(stage):
         return None
     key = (stage["stage_key"] if "stage_key" in stage else "") or ""
     name_key = stage_key(stage["etapa_nome"] or "")
-    if key == "PREFEITURA" or name_key == "prefeitura":
-        return "PREFEITURA"
-    if key == "ORGAO_EXTERNO" or name_key == "cartorio":
-        return "CARTORIO"
+    if key in ("PREFEITURA", "ORGAO_EXTERNO") or name_key in ("prefeitura", "cartorio"):
+        return EXTERNAL_PROTOCOL_SCOPE
     return None
 
 
 def external_stage_label(tipo_orgao):
-    return "Prefeitura" if tipo_orgao == "PREFEITURA" else "Cartorio"
+    if tipo_orgao == EXTERNAL_PROTOCOL_SCOPE:
+        return "Orgao externo"
+    return EXTERNAL_ORGAO_LABELS.get(tipo_orgao, "Orgao externo")
 
 
 def find_project_stage_by_external_type(db, project_id, tipo_orgao):
-    stage_key_value = "PREFEITURA" if tipo_orgao == "PREFEITURA" else "ORGAO_EXTERNO"
     row = db.execute(
         """
         SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE pe.projeto_id = %s
-          AND pe.stage_key = %s
+          AND pe.stage_key = 'ORGAO_EXTERNO'
           AND COALESCE(pe.show_in_project, 1) = 1
         ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
         LIMIT 1
         """,
-        (project_id, stage_key_value),
+        (project_id,),
     ).fetchone()
     if row:
         return row
-    legacy_name = "prefeitura" if tipo_orgao == "PREFEITURA" else "cartorio"
+    row = db.execute(
+        """
+        SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s
+          AND pe.stage_key = 'PREFEITURA'
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        LIMIT 1
+        """,
+        (project_id,),
+    ).fetchone()
+    if row:
+        return row
     return db.execute(
         """
         SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
         FROM projeto_etapas pe
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE pe.projeto_id = %s
-          AND lower(em.nome) = %s
+          AND lower(em.nome) IN ('cartorio', 'orgao externo', 'prefeitura')
           AND COALESCE(pe.show_in_project, 1) = 1
         ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
         LIMIT 1
         """,
-        (project_id, legacy_name),
+        (project_id,),
     ).fetchone()
 
 
@@ -3589,7 +3626,8 @@ def external_protocol_check_date(data_protocolo):
 
 
 def normalize_external_orgao(value):
-    return value if value in ("PREFEITURA", "CARTORIO") else "CARTORIO"
+    value = (value or "").strip().upper()
+    return value if value in EXTERNAL_ORGAO_LABELS else "CARTORIO"
 
 
 def ensure_protocol_withdrawal_task(project_id, stage_id, protocol_id, tipo_orgao, responsible_id, due_date=None):
@@ -3662,17 +3700,21 @@ def cancel_protocol_withdrawal_tasks(project_id, protocol_id):
 
 
 def external_stage_protocol_summary(project_id, tipo_orgao):
+    orgao_filter = "" if tipo_orgao == EXTERNAL_PROTOCOL_SCOPE else "AND e.tipo_orgao = %s"
+    params = [project_id]
+    if orgao_filter:
+        params.append(tipo_orgao)
     rows = query_db(
-        """
+        f"""
         SELECT e.*, u.nome AS responsavel_nome
         FROM exigencias_cartorio e
         LEFT JOIN usuarios u ON u.id = e.responsavel_id
         WHERE e.projeto_id = %s
-          AND e.tipo_orgao = %s
           AND COALESCE(e.tipo_registro, 'exigencia') = 'protocolo'
+          {orgao_filter}
         ORDER BY COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'), e.id
         """,
-        (project_id, tipo_orgao),
+        params,
     )
     withdrawn = [row for row in rows if row["data_retirada"] and (row["status"] or "").lower() == "concluido"]
     ready = [row for row in rows if row["data_pronto_retirada"] and not row["data_retirada"]]
@@ -3713,6 +3755,8 @@ def external_protocol_payload(protocol):
         "prazo_resposta": protocol["prazo_resposta"] or "",
         "prazo_resposta_label": format_date(protocol["prazo_resposta"]) if protocol["prazo_resposta"] else "-",
         "status": protocol["status"] or "",
+        "tipo_orgao": protocol["tipo_orgao"] or "CARTORIO",
+        "tipo_orgao_label": EXTERNAL_ORGAO_LABELS.get(protocol["tipo_orgao"] or "CARTORIO", protocol["tipo_orgao"] or "Orgao externo"),
         "responsavel_id": protocol["responsavel_id"],
         "responsavel_nome": protocol["responsavel_nome"] if "responsavel_nome" in protocol.keys() else "",
         "data_pronto_retirada": protocol["data_pronto_retirada"] or "",
@@ -3741,17 +3785,21 @@ def external_stage_all_protocols_withdrawn(project_id, tipo_orgao):
 
 
 def external_stage_has_any_records(project_id, tipo_orgao):
+    orgao_filter = "" if tipo_orgao == EXTERNAL_PROTOCOL_SCOPE else "AND tipo_orgao = %s"
+    params = [project_id]
+    if orgao_filter:
+        params.append(tipo_orgao)
     return bool(
         scalar(
             get_db(),
-            """
+            f"""
             SELECT COUNT(*)
             FROM exigencias_cartorio
             WHERE projeto_id = %s
-              AND tipo_orgao = %s
               AND COALESCE(tipo_registro, 'exigencia') = 'protocolo'
+              {orgao_filter}
             """,
-            (project_id, tipo_orgao),
+            params,
         )
     )
 
@@ -3778,7 +3826,7 @@ def maybe_advance_external_stage_after_withdrawal(project_id, tipo_orgao, respon
         return None
     current_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project_id)
     current_stage = load_project_stage_for_action(current_stage_id, project_id) if current_stage_id else None
-    if external_stage_type(current_stage) != tipo_orgao:
+    if external_stage_type(current_stage) != EXTERNAL_PROTOCOL_SCOPE:
         return None
     can_finish, _message = can_finish_external_stage(project_id, current_stage)
     if not can_finish:
@@ -4113,8 +4161,15 @@ def load_matrix_stage_rows_bulk(projects, global_stages=None):
         )
     ]
     stages_by_project_model = {}
+    external_model_id = next((stage["id"] for stage in global_stages if stage_key(stage["nome"]) == "cartorio"), None)
     for stage in project_stages:
-        stages_by_project_model.setdefault(stage["projeto_id"], {}).setdefault(stage["etapa_modelo_id"], []).append(stage)
+        model_id = stage["etapa_modelo_id"]
+        if external_model_id and (
+            (stage.get("stage_key") or "") == "PREFEITURA"
+            or stage_key(stage.get("legacy_etapa_nome") or "") == "prefeitura"
+        ):
+            model_id = external_model_id
+        stages_by_project_model.setdefault(stage["projeto_id"], {}).setdefault(model_id, []).append(stage)
 
     current_stage_by_project = {project["id"]: project["etapa_atual_id"] for project in projects}
     rows_by_project = {}
@@ -4550,7 +4605,16 @@ def fetch_cliente_autocomplete_options():
 def get_active_stage_models():
     return get_cached_lookup(
         "active_stage_models",
-        lambda: query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem"),
+        lambda: query_db(
+            """
+            SELECT id,
+                   CASE WHEN lower(nome) = 'cartorio' THEN 'Orgao externo' ELSE nome END AS nome,
+                   ordem, cor_padrao, ativa
+            FROM etapas_modelo
+            WHERE ativa = 1 AND lower(nome) != 'prefeitura'
+            ORDER BY ordem
+            """
+        ),
     )
 
 
@@ -4594,7 +4658,8 @@ def get_matrix_summary_counts(today_iso, in_7):
                     FROM projetos p
                     JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
                     JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                    WHERE lower(em.nome) = 'cartorio'
+                    WHERE pe.stage_key IN ('ORGAO_EXTERNO', 'PREFEITURA')
+                       OR lower(em.nome) IN ('cartorio', 'orgao externo', 'prefeitura')
                 ) AS cartorio,
                 (
                     SELECT COUNT(*)
@@ -4617,7 +4682,14 @@ def get_matrix_static_options():
                 COALESCE(
                     (
                         SELECT json_agg(row_to_json(s))
-                        FROM (SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem) s
+                        FROM (
+                            SELECT id,
+                                   CASE WHEN lower(nome) = 'cartorio' THEN 'Orgao externo' ELSE nome END AS nome,
+                                   ordem, cor_padrao, ativa
+                            FROM etapas_modelo
+                            WHERE ativa = 1 AND lower(nome) != 'prefeitura'
+                            ORDER BY ordem
+                        ) s
                     ),
                     '[]'::json
                 ) AS etapas,
@@ -5702,18 +5774,15 @@ def projects():
             FROM exigencias_cartorio e
             LEFT JOIN usuarios u ON u.id = e.responsavel_id
             WHERE e.projeto_id IN ({project_placeholders})
-              AND COALESCE(e.tipo_orgao, 'CARTORIO') IN ('PREFEITURA', 'CARTORIO')
               AND COALESCE(e.tipo_registro, 'exigencia') = 'protocolo'
             ORDER BY
                 e.projeto_id,
-                CASE COALESCE(e.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
                 COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
                 e.id
             """,
             project_ids,
         ):
-            tipo_orgao = item["tipo_orgao"] or "CARTORIO"
-            external_controls_by_project.setdefault(item["projeto_id"], {}).setdefault(tipo_orgao, []).append(item)
+            external_controls_by_project.setdefault(item["projeto_id"], {}).setdefault(EXTERNAL_PROTOCOL_SCOPE, []).append(item)
     summary_counts = get_matrix_summary_counts(today_iso, in_7)
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
@@ -5736,6 +5805,8 @@ def projects():
         usuarios=matrix_options["usuarios"],
         cartorios=matrix_options["cartorios"],
         process_types=matrix_options["process_types"],
+        external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
+        external_orgao_labels=EXTERNAL_ORGAO_LABELS,
         filters=filters,
         today_iso=today_iso,
     )
@@ -6297,6 +6368,8 @@ def project_detail(project_id):
         cartorios=get_cartorio_options(),
         process_types=get_process_type_options(),
         servicos_adicionais=decode_process_list(project["servicos_adicionais"]),
+        external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
+        external_orgao_labels=EXTERNAL_ORGAO_LABELS,
     )
 
 
@@ -6837,9 +6910,7 @@ def project_action(project_id):
         flash("Protocolo registrado.", "success")
 
     elif action == "add_exigencia":
-        tipo_orgao = request.form.get("tipo_orgao", "CARTORIO")
-        if tipo_orgao not in ("PREFEITURA", "CARTORIO"):
-            tipo_orgao = "CARTORIO"
+        tipo_orgao = normalize_external_orgao(request.form.get("tipo_orgao", "CARTORIO"))
         description = request.form.get("descricao", "").strip()
         prazo_resposta = request.form.get("prazo_resposta") or None
         if not description:
@@ -6872,7 +6943,7 @@ def project_action(project_id):
             )
             if external_stage:
                 execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", external_stage["id"]))
-            origem_externa = "prefeitura" if tipo_orgao == "PREFEITURA" else "cartorio"
+            origem_externa = normalize_text(external_stage_label(tipo_orgao)) or "orgaoexterno"
             execute_db(
                 """
                 INSERT INTO pendencias
@@ -7090,7 +7161,7 @@ def api_add_external_protocol(project_id):
     return jsonify({
         "ok": True,
         "protocol": external_protocol_payload(protocol),
-        "summary": external_stage_protocol_summary(project_id, tipo_orgao),
+        "summary": external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE),
     })
 
 
@@ -7108,7 +7179,7 @@ def api_update_external_protocol(project_id, protocol_id):
         cancel_protocol_withdrawal_tasks(project_id, protocol_id)
         execute_db("DELETE FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (protocol_id, project_id))
         record_event(project_id, "protocolo_excluido", f"Protocolo #{protocol_id} excluido.")
-        summary = external_stage_protocol_summary(project_id, tipo_orgao)
+        summary = external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE)
         project = query_db("SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,), one=True)
         if summary["protocol_count"] == 0 and project and project["etapa_atual_id"] == protocol["etapa_id"]:
             execute_db(
@@ -7171,8 +7242,38 @@ def api_update_external_protocol(project_id, protocol_id):
     payload = {
         "ok": True,
         "protocol": external_protocol_payload(protocol),
-        "summary": external_stage_protocol_summary(project_id, tipo_orgao),
+        "summary": external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE),
     }
+    if next_stage:
+        payload["next_stage"] = {"id": next_stage["id"], "nome": next_stage["etapa_nome"]}
+    return jsonify(payload)
+
+
+@app.route("/api/project/<int:project_id>/external-stage/skip", methods=["POST"])
+@login_required
+def api_skip_external_stage(project_id):
+    data = request.get_json() or {}
+    project = query_db("SELECT * FROM projetos WHERE id = %s", (project_id,), one=True)
+    if not project:
+        return jsonify({"ok": False, "error": "Projeto nao encontrado."}), 404
+    stage_id = data.get("stage_id") or project["etapa_atual_id"]
+    stage = load_project_stage_for_action(stage_id, project_id)
+    if not stage or external_stage_type(stage) != EXTERNAL_PROTOCOL_SCOPE:
+        return jsonify({"ok": False, "error": "Etapa externa nao encontrada."}), 404
+    if project["etapa_atual_id"] != stage["id"]:
+        return jsonify({"ok": False, "error": "Esta nao e a etapa atual do projeto."}), 400
+    if external_stage_has_any_records(project_id, EXTERNAL_PROTOCOL_SCOPE):
+        return jsonify({"ok": False, "error": "Ja existe protocolo externo. Retire ou exclua os protocolos antes de pular a etapa."}), 400
+
+    now = app_now_iso()
+    execute_db(
+        "UPDATE projeto_etapas SET status = 'nao aplicavel', progresso = 100, data_fim = COALESCE(data_fim, %s), subetapa_ativa = %s WHERE id = %s",
+        (now, "Sem orgao externo", stage["id"]),
+    )
+    completed_stage = load_project_stage_for_action(stage["id"], project_id)
+    next_stage = advance_project_after_stage_completion(project_id, completed_stage, stage["responsavel_id"])
+    record_event(project_id, "orgao_externo_nao_aplicavel", "Etapa de orgao externo pulada por nao haver protocolo externo.")
+    payload = {"ok": True}
     if next_stage:
         payload["next_stage"] = {"id": next_stage["id"], "nome": next_stage["etapa_nome"]}
     return jsonify(payload)
@@ -9227,7 +9328,7 @@ def cartorio_board():
             e.id
         """
     )
-    return render_template("cartorio_board.html", exigencias=exigencias)
+    return render_template("cartorio_board.html", exigencias=exigencias, external_orgao_labels=EXTERNAL_ORGAO_LABELS)
 
 
 @app.route("/reports")

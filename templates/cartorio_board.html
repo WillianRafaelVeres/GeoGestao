@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-heading">
     <div>
-        <h1>Cartorio e orgaos externos</h1>
+        <h1>Orgaos externos</h1>
         <p>Controle central de protocolos, exigencias, prazos e retiradas.</p>
     </div>
     <div class="heading-actions">
@@ -31,7 +31,7 @@
                     {% set status_key = item.status|lower %}
                     <tr class="{{ 'table-danger' if is_overdue(item.prazo_resposta, item.status) or item.status == 'atrasado' else '' }}">
                         <td><a class="table-link" href="{{ url_for('project_detail', project_id=item.projeto_id) }}#cartorio">{{ item.projeto_nome }}</a></td>
-                        <td>{{ 'Prefeitura' if item.tipo_orgao == 'PREFEITURA' else 'Cartorio' }}</td>
+                        <td>{{ external_orgao_labels.get(item.tipo_orgao or 'CARTORIO', item.tipo_orgao or 'Orgao externo') }}</td>
                         <td>{{ 'Protocolo' if item.tipo_registro == 'protocolo' else 'Exigencia' }}</td>
                         <td>{{ item.descricao }}</td>
                         <td>{{ item.responsavel_nome or '-' }}</td>
