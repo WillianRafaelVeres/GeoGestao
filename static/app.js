@@ -15,12 +15,19 @@ document.addEventListener("show.bs.modal", () => {
 async function toggleChecklist(btn) {
     const itemId = btn.dataset.itemId;
     const stageId = btn.dataset.stageId;
+    const wasChecked = btn.classList.contains("checked");
+    const label = document.getElementById(`check-label-${itemId}`);
     btn.disabled = true;
+    btn.classList.toggle("checked", !wasChecked);
+    btn.innerHTML = wasChecked ? "" : "&#10003;";
+    if (label) {
+        label.style.color = wasChecked ? "" : "#9ca3af";
+        label.style.textDecoration = wasChecked ? "" : "line-through";
+    }
     try {
         const resp = await fetch(`/api/checklist/${itemId}/toggle`, { method: "POST" });
         if (!resp.ok) throw new Error("Falha");
         const data = await resp.json();
-        const label = document.getElementById(`check-label-${itemId}`);
         if (data.concluido) {
             btn.classList.add("checked");
             btn.innerHTML = "&#10003;";
@@ -33,6 +40,12 @@ async function toggleChecklist(btn) {
         const counter = document.querySelector(`.checklist-counter-${stageId}`);
         if (counter) counter.textContent = `${data.done}/${data.total}`;
     } catch {
+        btn.classList.toggle("checked", wasChecked);
+        btn.innerHTML = wasChecked ? "&#10003;" : "";
+        if (label) {
+            label.style.color = wasChecked ? "#9ca3af" : "";
+            label.style.textDecoration = wasChecked ? "line-through" : "";
+        }
         alert("Erro ao atualizar checklist. Tente novamente.");
     } finally {
         btn.disabled = false;

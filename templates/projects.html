@@ -598,7 +598,7 @@
                                     {% endfor %}
                                 </div>
                                 <div class="pmodal-note-add">
-                                    <textarea class="pmodal-note-input" id="note-input-{{ project.id }}" rows="2" placeholder="Escrever uma anotacao..."></textarea>
+                                    <textarea class="pmodal-note-input" id="note-input-{{ project.id }}" rows="2" placeholder="Escrever uma anotacao..." onkeydown="handleNoteKey(event, {{ project.id }})"></textarea>
                                     <button class="pmodal-btn-ghost" type="button" onclick="addNote({{ project.id }})">Adicionar anotacao</button>
                                 </div>
                             </div>
@@ -1502,11 +1502,18 @@ function openSubModal(mainId, subId) {
 
 /* Toggle checklist via API */
 function toggleCheck(cb, itemId, stageId) {
+    const row = document.getElementById(`check-row-${itemId}`);
+    const previousChecked = !cb.checked;
+    row?.classList.toggle('is-done', cb.checked);
+    cb.disabled = true;
     fetch(`/api/project-checklist/${itemId}/toggle`, { method: 'POST' })
-    .then(r => r.json())
+    .then(async r => {
+        const data = await r.json();
+        if (!r.ok || !data.ok) throw new Error(data.error || 'Falha ao salvar checklist.');
+        return data;
+    })
     .then(data => {
-        if (!data.ok) return;
-        const row = document.getElementById(`check-row-${itemId}`);
+        cb.checked = data.concluido;
         if (data.concluido) row.classList.add('is-done');
         else row.classList.remove('is-done');
         const counter = document.getElementById(`counter-${stageId}`);
@@ -1521,7 +1528,13 @@ function toggleCheck(cb, itemId, stageId) {
                 btn.style.display = data.required_pending > 0 ? 'none' : '';
             }
         }
-    });
+    })
+    .catch((error) => {
+        cb.checked = previousChecked;
+        row?.classList.toggle('is-done', previousChecked);
+        alert(error.message || 'Nao foi possivel salvar o checklist.');
+    })
+    .finally(() => { cb.disabled = false; });
 }
 
 /* Adicionar item no checklist — Enter para confirmar */
@@ -1557,11 +1570,30 @@ function handleAddCheck(e, stageId) {
 }
 
 /* Adicionar anotacao no projeto (popup) */
+function handleNoteKey(event, projectId) {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    addNote(projectId);
+}
+
 function addNote(projectId) {
     const input = document.getElementById('note-input-' + projectId);
     if (!input) return;
     const texto = input.value.trim();
     if (!texto) return;
+    input.value = '';
+    const list = document.getElementById('notes-' + projectId);
+    const note = document.createElement('div');
+    note.className = 'pmodal-note is-saving';
+    const text = document.createElement('div');
+    text.className = 'pmodal-note-text';
+    text.textContent = texto;
+    const meta = document.createElement('div');
+    meta.className = 'pmodal-note-meta';
+    meta.textContent = 'Salvando...';
+    note.appendChild(text);
+    note.appendChild(meta);
+    list.insertBefore(note, list.firstChild);
     fetch('/api/project/' + projectId + '/note', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1569,24 +1601,18 @@ function addNote(projectId) {
     })
     .then(r => r.json())
     .then(data => {
-        if (!data.ok) { alert(data.error || 'Nao foi possivel salvar a anotacao.'); return; }
-        input.value = '';
-        const list = document.getElementById('notes-' + projectId);
+        if (!data.ok) throw new Error(data.error || 'Nao foi possivel salvar a anotacao.');
+        note.classList.remove('is-saving');
         const empty = document.getElementById('notes-empty-' + projectId);
         if (empty) empty.remove();
-        const note = document.createElement('div');
-        note.className = 'pmodal-note';
-        const text = document.createElement('div');
-        text.className = 'pmodal-note-text';
-        text.textContent = data.texto;
-        const meta = document.createElement('div');
-        meta.className = 'pmodal-note-meta';
         meta.textContent = data.data + ' · ' + data.autor;
-        note.appendChild(text);
-        note.appendChild(meta);
-        list.insertBefore(note, list.firstChild);
     })
-    .catch(() => alert('Nao foi possivel salvar a anotacao.'));
+    .catch((error) => {
+        note.remove();
+        input.value = texto;
+        alert(error.message || 'Nao foi possivel salvar a anotacao.');
+    })
+    .finally(() => input.focus());
 }
 
 /* ── DRAG-AND-DROP: reordenação de prioridade ───────── */

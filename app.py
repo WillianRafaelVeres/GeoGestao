@@ -5955,6 +5955,8 @@ def projects():
     matrix_checklists = {}
     pending_by_stage = {}
     pending_by_project = {}
+    notes_by_project = {}
+    external_controls_by_project = {}
     if active_stage_ids:
         placeholders = ",".join("%s" for _ in active_stage_ids)
         # Checklist do processo (por tipo) — somente a tarefa, sem selos, agrupado por etapa do projeto.
@@ -5972,19 +5974,52 @@ def projects():
     project_ids = [project["id"] for project, _ in matrix]
     if project_ids:
         placeholders = ",".join("%s" for _ in project_ids)
-        for pending in query_db(
+        for auxiliary in query_db(
             f"""
-            SELECT pd.*, u.nome AS responsavel_nome
+            SELECT 'pending' AS kind,
+                   to_jsonb(pd) || jsonb_build_object('responsavel_nome', u.nome) AS payload,
+                   pd.projeto_id,
+                   COALESCE(pd.prazo, '9999-12-31') AS sort_date,
+                   pd.id AS sort_id
             FROM pendencias pd
             LEFT JOIN usuarios u ON u.id = pd.responsavel_id
             WHERE pd.projeto_id IN ({placeholders})
               AND lower(pd.status) NOT IN ('resolvida', 'cancelada')
-            ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
+
+            UNION ALL
+
+            SELECT 'note' AS kind,
+                   to_jsonb(e) || jsonb_build_object('usuario_nome', un.nome) AS payload,
+                   e.projeto_id,
+                   COALESCE(e.criado_em, '') AS sort_date,
+                   e.id AS sort_id
+            FROM eventos_historico e
+            LEFT JOIN usuarios un ON un.id = e.usuario_id
+            WHERE e.projeto_id IN ({placeholders}) AND e.tipo_evento = 'anotacao'
+
+            UNION ALL
+
+            SELECT 'external' AS kind,
+                   to_jsonb(ex) || jsonb_build_object('responsavel_nome', ue.nome) AS payload,
+                   ex.projeto_id,
+                   COALESCE(ex.prazo_resposta, ex.data_protocolo, '9999-12-31') AS sort_date,
+                   ex.id AS sort_id
+            FROM exigencias_cartorio ex
+            LEFT JOIN usuarios ue ON ue.id = ex.responsavel_id
+            WHERE ex.projeto_id IN ({placeholders})
+              AND COALESCE(ex.tipo_registro, 'exigencia') = 'protocolo'
+            ORDER BY projeto_id, kind, sort_date, sort_id
             """,
-            project_ids,
+            project_ids + project_ids + project_ids,
         ):
-            pending_by_stage.setdefault(pending["etapa_id"], []).append(pending)
-            pending_by_project.setdefault(pending["projeto_id"], []).append(pending)
+            item = auxiliary["payload"]
+            if auxiliary["kind"] == "pending":
+                pending_by_stage.setdefault(item["etapa_id"], []).append(item)
+                pending_by_project.setdefault(item["projeto_id"], []).append(item)
+            elif auxiliary["kind"] == "note":
+                notes_by_project.setdefault(item["projeto_id"], []).insert(0, item)
+            else:
+                external_controls_by_project.setdefault(item["projeto_id"], {}).setdefault(EXTERNAL_PROTOCOL_SCOPE, []).append(item)
     # Proxima etapa real de cada projeto (mesma regra de get_next_applicable_stage),
     # em lote. A matriz nao serve para isso: ela colapsa etapas por modelo global e
     # a ordem global pode ter saltos (modelos desativados), escondendo a proxima etapa.
@@ -6012,38 +6047,6 @@ def projects():
             project_ids,
         ):
             next_stage_by_project[stage["projeto_id"]] = stage
-    notes_by_project = {}
-    if project_ids:
-        project_placeholders = ",".join("%s" for _ in project_ids)
-        for note in query_db(
-            f"""
-            SELECT e.*, u.nome AS usuario_nome
-            FROM eventos_historico e
-            LEFT JOIN usuarios u ON u.id = e.usuario_id
-            WHERE e.projeto_id IN ({project_placeholders}) AND e.tipo_evento = 'anotacao'
-            ORDER BY e.criado_em DESC
-            """,
-            project_ids,
-        ):
-            notes_by_project.setdefault(note["projeto_id"], []).append(note)
-    external_controls_by_project = {}
-    if project_ids:
-        project_placeholders = ",".join("%s" for _ in project_ids)
-        for item in query_db(
-            f"""
-            SELECT e.*, u.nome AS responsavel_nome
-            FROM exigencias_cartorio e
-            LEFT JOIN usuarios u ON u.id = e.responsavel_id
-            WHERE e.projeto_id IN ({project_placeholders})
-              AND COALESCE(e.tipo_registro, 'exigencia') = 'protocolo'
-            ORDER BY
-                e.projeto_id,
-                COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
-                e.id
-            """,
-            project_ids,
-        ):
-            external_controls_by_project.setdefault(item["projeto_id"], {}).setdefault(EXTERNAL_PROTOCOL_SCOPE, []).append(item)
     summary_counts = get_matrix_summary_counts(today_iso, in_7)
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
@@ -6655,50 +6658,58 @@ def project_detail(project_id):
             invalidate_runtime_caches()
 
     etapas = load_stage_rows(project_id)
-    exigencias = query_db(
+    detail_data = query_db(
         """
-        SELECT e.*, c.nome AS cartorio_nome, u.nome AS responsavel_nome
-        FROM exigencias_cartorio e
-        LEFT JOIN cartorios c ON c.id = e.cartorio_id
-        LEFT JOIN usuarios u ON u.id = e.responsavel_id
-        WHERE e.projeto_id = %s
-        ORDER BY
-            CASE COALESCE(e.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
-            CASE COALESCE(e.tipo_registro, 'exigencia') WHEN 'protocolo' THEN 0 ELSE 1 END,
-            COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
-            e.id
+        SELECT
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY
+                    CASE COALESCE(x.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
+                    CASE COALESCE(x.tipo_registro, 'exigencia') WHEN 'protocolo' THEN 0 ELSE 1 END,
+                    COALESCE(x.prazo_resposta, x.data_protocolo, '9999-12-31'), x.id)
+                FROM (
+                    SELECT e.*, c.nome AS cartorio_nome, u.nome AS responsavel_nome
+                    FROM exigencias_cartorio e
+                    LEFT JOIN cartorios c ON c.id = e.cartorio_id
+                    LEFT JOIN usuarios u ON u.id = e.responsavel_id
+                    WHERE e.projeto_id = %s
+                ) x
+            ), '[]'::jsonb) AS exigencias,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY
+                    CASE WHEN lower(x.status) IN ('resolvida', 'cancelada') THEN 1 ELSE 0 END,
+                    COALESCE(x.prazo, '9999-12-31'))
+                FROM (
+                    SELECT pd.*, em.nome AS etapa_nome, u.nome AS responsavel_nome
+                    FROM pendencias pd
+                    LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
+                    LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                    LEFT JOIN usuarios u ON u.id = pd.responsavel_id
+                    WHERE pd.projeto_id = %s
+                ) x
+            ), '[]'::jsonb) AS pendencias,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY x.criado_em DESC)
+                FROM (
+                    SELECT e.*, u.nome AS usuario_nome
+                    FROM eventos_historico e
+                    LEFT JOIN usuarios u ON u.id = e.usuario_id
+                    WHERE e.projeto_id = %s
+                ) x
+            ), '[]'::jsonb) AS historico,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(h) ORDER BY h.entered_at, h.id)
+                FROM project_stage_history h
+                WHERE h.project_id = %s
+            ), '[]'::jsonb) AS stage_history
         """,
-        (project_id,),
+        (project_id, project_id, project_id, project_id),
+        one=True,
     )
-    pendencias = query_db(
-        """
-        SELECT pd.*, em.nome AS etapa_nome, u.nome AS responsavel_nome
-        FROM pendencias pd
-        LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
-        LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        LEFT JOIN usuarios u ON u.id = pd.responsavel_id
-        WHERE pd.projeto_id = %s
-        ORDER BY
-            CASE WHEN lower(pd.status) IN ('resolvida', 'cancelada') THEN 1 ELSE 0 END,
-            COALESCE(pd.prazo, '9999-12-31')
-        """,
-        (project_id,),
-    )
-    historico = query_db(
-        """
-        SELECT e.*, u.nome AS usuario_nome
-        FROM eventos_historico e
-        LEFT JOIN usuarios u ON u.id = e.usuario_id
-        WHERE e.projeto_id = %s
-        ORDER BY e.criado_em DESC
-        """,
-        (project_id,),
-    )
+    exigencias = detail_data["exigencias"]
+    pendencias = detail_data["pendencias"]
+    historico = detail_data["historico"]
     # Tempo por etapa: quando o projeto entrou e saiu de cada fase.
-    stage_history_rows = query_db(
-        "SELECT * FROM project_stage_history WHERE project_id = %s ORDER BY entered_at, id",
-        (project_id,),
-    )
+    stage_history_rows = detail_data["stage_history"]
     stage_timeline = [
         {
             "stage_name": row["stage_name"],
@@ -7676,20 +7687,49 @@ def api_add_checklist_item():
 @app.route("/api/checklist/<int:item_id>/toggle", methods=["POST"])
 @login_required
 def api_toggle_checklist(item_id):
-    from flask import jsonify
-    item = query_db("SELECT * FROM checklist_itens WHERE id = %s", (item_id,), one=True)
-    if not item:
-        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
-    new_value = 0 if item["concluido"] else 1
     now = app_now_iso()
-    execute_db(
-        "UPDATE checklist_itens SET concluido = %s, concluido_por = %s, concluido_em = %s WHERE id = %s",
-        (new_value, g.user["id"] if new_value else None, now if new_value else None, item_id),
+    result = query_db(
+        """
+        WITH toggled AS (
+            UPDATE checklist_itens
+            SET concluido = CASE WHEN concluido = 1 THEN 0 ELSE 1 END,
+                concluido_por = CASE WHEN concluido = 1 THEN NULL ELSE %s END,
+                concluido_em = CASE WHEN concluido = 1 THEN NULL ELSE %s END
+            WHERE id = %s
+            RETURNING projeto_etapa_id, concluido
+        ), counts AS (
+            SELECT t.projeto_etapa_id, t.concluido,
+                   COUNT(i.id) AS total,
+                   COUNT(i.id) FILTER (WHERE i.concluido = 1) AS done
+            FROM toggled t
+            LEFT JOIN checklist_itens i ON i.projeto_etapa_id = t.projeto_etapa_id
+            GROUP BY t.projeto_etapa_id, t.concluido
+        ), stage_updated AS (
+            UPDATE projeto_etapas pe
+            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
+            FROM counts c
+            WHERE pe.id = c.projeto_etapa_id
+            RETURNING pe.id
+        )
+        SELECT concluido, done, total,
+               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress
+        FROM counts
+        """,
+        (g.user["id"], now, item_id),
+        one=True,
     )
-    progress = update_stage_progress(item["projeto_etapa_id"])
-    done = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = %s AND concluido = 1", (item["projeto_etapa_id"],), one=True)["n"]
-    total = query_db("SELECT COUNT(*) AS n FROM checklist_itens WHERE projeto_etapa_id = %s", (item["projeto_etapa_id"],), one=True)["n"]
-    return jsonify({"ok": True, "concluido": bool(new_value), "progress": progress, "done": done, "total": total})
+    if not result:
+        get_db().rollback()
+        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
+    get_db().commit()
+    invalidate_runtime_caches()
+    return jsonify({
+        "ok": True,
+        "concluido": bool(result["concluido"]),
+        "progress": result["progress"],
+        "done": result["done"],
+        "total": result["total"],
+    })
 
 
 @app.route("/api/project/<int:project_id>/note", methods=["POST"])
@@ -7700,48 +7740,96 @@ def api_add_project_note(project_id):
     texto = (data.get("texto") or "").strip()
     if not texto:
         return jsonify({"ok": False, "error": "Escreva a anotacao."}), 400
-    if not query_db("SELECT id FROM projetos WHERE id = %s", (project_id,), one=True):
-        return jsonify({"ok": False, "error": "Projeto nao encontrado"}), 404
     now = app_now_iso()
-    note_id = execute_db(
-        "INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em) VALUES (%s, %s, 'anotacao', %s, %s)",
-        (project_id, g.user["id"], texto, now),
+    row = query_db(
+        """
+        INSERT INTO eventos_historico
+            (projeto_id, usuario_id, tipo_evento, descricao, criado_em)
+        SELECT p.id, %s, 'anotacao', %s, %s
+        FROM projetos p
+        WHERE p.id = %s
+        RETURNING id
+        """,
+        (g.user["id"], texto, now, project_id),
+        one=True,
     )
-    return jsonify({"ok": True, "id": note_id, "texto": texto, "autor": g.user["nome"], "data": format_datetime(now)})
+    if not row:
+        get_db().rollback()
+        return jsonify({"ok": False, "error": "Projeto nao encontrado"}), 404
+    get_db().commit()
+    invalidate_runtime_caches()
+    return jsonify({"ok": True, "id": row["id"], "texto": texto, "autor": g.user["nome"], "data": format_datetime(now)})
 
 
 @app.route("/api/project-checklist/<int:item_id>/toggle", methods=["POST"])
 @login_required
 def api_toggle_project_checklist(item_id):
     """Marca/desmarca um item do checklist do processo (usado no popup da matriz)."""
-    item = query_db("SELECT * FROM project_checklist_items WHERE id = %s", (item_id,), one=True)
-    if not item:
-        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
-    new_status = CHECKLIST_STATUS_NOT_STARTED if item["status"] == CHECKLIST_STATUS_DONE else CHECKLIST_STATUS_DONE
     now = app_now_iso()
-    execute_db(
-        "UPDATE project_checklist_items SET status = %s, completed_at = %s, completed_by = %s, updated_at = %s WHERE id = %s",
+    result = query_db(
+        """
+        WITH toggled AS (
+            UPDATE project_checklist_items
+            SET status = CASE WHEN status = %s THEN %s ELSE %s END,
+                completed_at = CASE WHEN status = %s THEN NULL ELSE %s END,
+                completed_by = CASE WHEN status = %s THEN NULL ELSE %s END,
+                updated_at = %s
+            WHERE id = %s
+            RETURNING project_stage_id, status
+        ), counts AS (
+            SELECT
+                t.project_stage_id,
+                t.status,
+                COUNT(i.id) FILTER (WHERE i.active = 1 AND i.status != %s) AS total,
+                COUNT(i.id) FILTER (WHERE i.active = 1 AND i.status = %s) AS done,
+                COUNT(i.id) FILTER (
+                    WHERE i.active = 1 AND i.blocks_stage_completion = 1
+                      AND i.status NOT IN (%s, %s)
+                ) AS required_pending
+            FROM toggled t
+            LEFT JOIN project_checklist_items i ON i.project_stage_id = t.project_stage_id
+            GROUP BY t.project_stage_id, t.status
+        ), stage_updated AS (
+            UPDATE projeto_etapas pe
+            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
+            FROM counts c
+            WHERE pe.id = c.project_stage_id
+            RETURNING pe.id
+        )
+        SELECT status, done, total,
+               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress,
+               required_pending
+        FROM counts
+        """,
         (
-            new_status,
-            now if new_status == CHECKLIST_STATUS_DONE else None,
-            g.user["id"] if new_status == CHECKLIST_STATUS_DONE else None,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_STARTED,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_DONE,
+            now,
+            CHECKLIST_STATUS_DONE,
+            g.user["id"],
             now,
             item_id,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
         ),
+        one=True,
     )
-    done = total = progress = 0
-    required_pending = 0
-    if item["project_stage_id"]:
-        done, total, progress = project_checklist_stage_counts(item["project_stage_id"])
-        required_pending = count_blocking_checklist_pending(item["project_stage_id"])
-        execute_db("UPDATE projeto_etapas SET progresso = %s WHERE id = %s", (progress, item["project_stage_id"]))
+    if not result:
+        get_db().rollback()
+        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
+    get_db().commit()
+    invalidate_runtime_caches()
     return jsonify({
         "ok": True,
-        "concluido": new_status == CHECKLIST_STATUS_DONE,
-        "progress": progress,
-        "done": done,
-        "total": total,
-        "required_pending": required_pending,
+        "concluido": result["status"] == CHECKLIST_STATUS_DONE,
+        "progress": result["progress"],
+        "done": result["done"],
+        "total": result["total"],
+        "required_pending": result["required_pending"],
     })
 
 
