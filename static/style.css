@@ -2227,3 +2227,23 @@ a:hover { color: #1d4ed8; }
     .stage-history-table th:nth-child(4),
     .stage-history-table td:nth-child(4) { display: none; }
 }
+.cartorio-lookup-status {
+    display: block;
+    min-height: 1.25rem;
+    margin-top: .35rem;
+}
+
+.cartorio-lookup-status[data-state="success"] { color: #15803d; }
+.cartorio-lookup-status[data-state="warning"] { color: #a16207; }
+.cartorio-lookup-status[data-state="error"] { color: #b91c1c; }
+.cartorio-lookup-status[data-state="loading"] { color: #2563eb; }
+
+.cnpj-confirm-details {
+    display: grid;
+    grid-template-columns: minmax(7rem, auto) 1fr;
+    gap: .4rem 1rem;
+    margin: 1rem 0 0;
+}
+
+.cnpj-confirm-details dt { color: #64748b; font-weight: 600; }
+.cnpj-confirm-details dd { margin: 0; font-weight: 500; }

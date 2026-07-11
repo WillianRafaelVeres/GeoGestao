@@ -65,20 +65,20 @@
                         </select>
                     </div>
                     <div class="col-md-5">
-                        <label class="form-label">Cartorio cadastrado</label>
+                        <label class="form-label">Registro de Imoveis</label>
                         <select class="form-select" data-cartorio-lookup-office disabled>
                             <option value="">Escolha a cidade</option>
                         </select>
                     </div>
                     <div class="col-12">
                         <label class="form-label">Ou buscar pelo CNS</label>
-                        <input class="form-control" data-cartorio-lookup-cns placeholder="Digite o CNS para preencher nome, cidade e UF" />
+                        <input class="form-control" name="cns" data-cartorio-lookup-cns data-cartorio-field="cns" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="00.000-0" />
+                        <small class="cartorio-lookup-status" data-cartorio-lookup-status aria-live="polite"></small>
                     </div>
                 </div>
                 <small class="text-muted">Use esta busca para reaproveitar dados ja cadastrados. Para importar todos os CNS, use a base oficial do Justica Aberta/CNJ como fonte.</small>
             </div>
             <div><label class="form-label">Nome</label><input class="form-control" name="nome" data-cartorio-field="nome" required /></div>
-            <div><label class="form-label">CNS</label><input class="form-control" name="cns" data-cartorio-field="cns" placeholder="Codigo Nacional de Serventia" /></div>
             <div class="row g-2">
                 <div class="col-4">
                     <label class="form-label">UF</label>

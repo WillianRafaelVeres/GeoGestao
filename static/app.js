@@ -17,12 +17,20 @@ async function toggleChecklist(btn) {
     const stageId = btn.dataset.stageId;
     const wasChecked = btn.classList.contains("checked");
     const label = document.getElementById(`check-label-${itemId}`);
+    const counter = document.querySelector(`.checklist-counter-${stageId}`);
+    const previousCounter = counter?.textContent || "";
     btn.disabled = true;
     btn.classList.toggle("checked", !wasChecked);
     btn.innerHTML = wasChecked ? "" : "&#10003;";
     if (label) {
         label.style.color = wasChecked ? "" : "#9ca3af";
         label.style.textDecoration = wasChecked ? "" : "line-through";
+    }
+    const match = previousCounter.match(/(\d+)\s*\/\s*(\d+)/);
+    if (counter && match) {
+        const total = Number(match[2]);
+        const done = Math.max(0, Math.min(total, Number(match[1]) + (wasChecked ? -1 : 1)));
+        counter.textContent = `${done}/${total}`;
     }
     try {
         const resp = await fetch(`/api/checklist/${itemId}/toggle`, { method: "POST" });
@@ -37,7 +45,6 @@ async function toggleChecklist(btn) {
             btn.innerHTML = "";
             if (label) { label.style.color = ""; label.style.textDecoration = ""; }
         }
-        const counter = document.querySelector(`.checklist-counter-${stageId}`);
         if (counter) counter.textContent = `${data.done}/${data.total}`;
     } catch {
         btn.classList.toggle("checked", wasChecked);
@@ -46,6 +53,7 @@ async function toggleChecklist(btn) {
             label.style.color = wasChecked ? "#9ca3af" : "";
             label.style.textDecoration = wasChecked ? "line-through" : "";
         }
+        if (counter) counter.textContent = previousCounter;
         alert("Erro ao atualizar checklist. Tente novamente.");
     } finally {
         btn.disabled = false;
@@ -176,8 +184,16 @@ function initCartorioLookup() {
         const citySelect = lookup.querySelector("[data-cartorio-lookup-city]");
         const officeSelect = lookup.querySelector("[data-cartorio-lookup-office]");
         const cnsInput = lookup.querySelector("[data-cartorio-lookup-cns]");
+        const status = lookup.querySelector("[data-cartorio-lookup-status]");
 
-        const normalize = (value) => String(value || "").trim().toLowerCase();
+        const normalize = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+        const cleanCns = (value) => String(value || "").replace(/\D/g, "").slice(0, 6);
+        const formatCns = (value) => cleanCns(value).replace(/^(\d{2})(\d)/, "$1.$2").replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2-$3");
+        const setStatus = (message, state = "") => {
+            if (!status) return;
+            status.textContent = message;
+            status.dataset.state = state;
+        };
         const uniqueSorted = (values) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
         const setOptions = (select, values, placeholder) => {
             if (!select) return;
@@ -203,7 +219,7 @@ function initCartorioLookup() {
         };
         const fillForm = (item) => {
             if (!item) return;
-            ["nome", "cns", "cidade", "uf", "contato", "email", "telefone", "whatsapp", "oficial", "observacoes"].forEach((field) => {
+            ["nome", "cidade", "uf", "contato", "email", "telefone", "whatsapp", "oficial", "observacoes"].forEach((field) => {
                 setField(field, item[field] || "");
             });
             if (ufSelect) ufSelect.value = item.uf || "";
@@ -211,25 +227,27 @@ function initCartorioLookup() {
             if (citySelect) citySelect.value = item.cidade || "";
             refreshOffices();
             if (officeSelect) officeSelect.value = String(item.id || "");
-            if (cnsInput) cnsInput.value = item.cns || "";
+            if (cnsInput) cnsInput.value = formatCns(item.cns || "");
+            setStatus(`Cartorio encontrado: ${item.nome}.`, "success");
         };
         const refreshCities = () => {
             const uf = ufSelect?.value || "";
-            const cities = uniqueSorted(catalog.filter((item) => !uf || item.uf === uf).map((item) => item.cidade));
+            const cities = uniqueSorted(catalog.filter((item) => !uf || normalize(item.uf) === normalize(uf)).map((item) => item.cidade));
             setOptions(citySelect, cities, uf ? "Selecione a cidade" : "Escolha a UF");
             setOptions(officeSelect, [], "Escolha a cidade");
+            setStatus(cities.length || !uf ? "" : "Nenhum Registro de Imoveis cadastrado nesta UF.", cities.length ? "" : "warning");
         };
         const refreshOffices = () => {
             const uf = ufSelect?.value || "";
             const city = citySelect?.value || "";
             const offices = catalog
-                .filter((item) => (!uf || item.uf === uf) && (!city || item.cidade === city))
+                .filter((item) => (!uf || normalize(item.uf) === normalize(uf)) && (!city || normalize(item.cidade) === normalize(city)))
                 .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
             if (!officeSelect) return;
             officeSelect.innerHTML = "";
             const first = document.createElement("option");
             first.value = "";
-            first.textContent = offices.length ? "Selecione o cartorio" : "Nenhum cartorio cadastrado";
+            first.textContent = offices.length ? "Selecione o Registro de Imoveis" : "Nenhum Registro de Imoveis cadastrado";
             officeSelect.appendChild(first);
             offices.forEach((item) => {
                 const option = document.createElement("option");
@@ -238,6 +256,7 @@ function initCartorioLookup() {
                 officeSelect.appendChild(option);
             });
             officeSelect.disabled = offices.length === 0;
+            setStatus(offices.length || !city ? "" : "Nenhum Registro de Imoveis cadastrado nesta cidade.", offices.length ? "" : "warning");
         };
 
         ufSelect?.addEventListener("change", refreshCities);
@@ -247,10 +266,19 @@ function initCartorioLookup() {
             fillForm(item);
         });
         cnsInput?.addEventListener("input", () => {
-            const cns = normalize(cnsInput.value).replace(/\D/g, "");
-            if (cns.length < 4) return;
-            const item = catalog.find((entry) => normalize(entry.cns).replace(/\D/g, "") === cns);
-            if (item) fillForm(item);
+            const cns = cleanCns(cnsInput.value);
+            cnsInput.value = formatCns(cns);
+            if (cns.length < 6) {
+                setStatus(cns.length ? `Digite os ${6 - cns.length} numero(s) restantes.` : "");
+                return;
+            }
+            setStatus("Consultando CNS...", "loading");
+            const item = catalog.find((entry) => cleanCns(entry.cns) === cns);
+            if (item) {
+                fillForm(item);
+            } else {
+                setStatus("CNS nao encontrado no catalogo de Registro de Imoveis.", "error");
+            }
         });
 
         refreshCities();
@@ -1147,11 +1175,76 @@ async function doLookupCnpj(cnpjInput, form, updateCityWarnings) {
             return;
         }
         const empresa = window.CnpjService.mapBrasilApiCnpjToEmpresa(data);
+        const confirmed = await confirmCompanyImport(empresa, clean);
+        if (!confirmed) {
+            setDocStatus(status, "Empresa encontrada. Preenchimento manual mantido.", "warning");
+            return;
+        }
         aplicarDadosEmpresa(form, empresa, updateCityWarnings);
-        setDocStatus(status, "Empresa encontrada. Dados preenchidos automaticamente.", "success");
+        setDocStatus(status, "Dados da empresa importados.", "success");
     } catch {
         setDocStatus(status, "Nao foi possivel consultar o CNPJ agora. Voce pode preencher manualmente.", "warning");
     }
+}
+
+function confirmCompanyImport(empresa, cnpj) {
+    return new Promise((resolve) => {
+        const existing = document.getElementById("cnpj-confirm-modal");
+        if (existing) existing.remove();
+        const modal = document.createElement("div");
+        modal.className = "modal fade";
+        modal.id = "cnpj-confirm-modal";
+        modal.tabIndex = -1;
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <div><span class="module-label">Consulta CNPJ</span><h2 class="modal-title">Empresa encontrada</h2></div>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Encontramos os dados desta empresa. E esta a empresa com que voce esta trabalhando?</p>
+                        <dl class="cnpj-confirm-details"></dl>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-cnpj-manual>Não, preencher manualmente</button>
+                        <button type="button" class="btn btn-primary" data-cnpj-import>Sim, importar dados</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+        const details = modal.querySelector(".cnpj-confirm-details");
+        const rows = [
+            ["CNPJ", cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")],
+            ["Razao social", empresa.razao_social],
+            ["Nome fantasia", empresa.nome_fantasia],
+            ["Endereco", [empresa.logradouro, empresa.numero, empresa.bairro].filter(Boolean).join(", ")],
+            ["Cidade/UF", [empresa.cidade, empresa.uf].filter(Boolean).join(" / ")],
+            ["Telefone", empresa.telefone],
+            ["E-mail", empresa.email],
+        ];
+        rows.filter(([, value]) => value).forEach(([label, value]) => {
+            const dt = document.createElement("dt");
+            const dd = document.createElement("dd");
+            dt.textContent = label;
+            dd.textContent = value;
+            details.append(dt, dd);
+        });
+        let answered = false;
+        const finish = (answer) => {
+            if (answered) return;
+            answered = true;
+            resolve(answer);
+            bootstrap.Modal.getInstance(modal)?.hide();
+        };
+        modal.querySelector("[data-cnpj-import]").addEventListener("click", () => finish(true));
+        modal.querySelector("[data-cnpj-manual]").addEventListener("click", () => finish(false));
+        modal.addEventListener("hidden.bs.modal", () => {
+            if (!answered) resolve(false);
+            modal.remove();
+        }, { once: true });
+        bootstrap.Modal.getOrCreateInstance(modal).show();
+    });
 }
 
 function aplicarDadosEmpresa(form, empresa, updateCityWarnings) {

@@ -6552,7 +6552,8 @@ def api_add_cliente():
 
 
 def get_project_financial_context(project):
-    ensure_financeiro_schema()
+    # O detalhe do projeto e uma rota quente. Criacao/inspecao de schema pertence
+    # ao modulo financeiro e nao pode bloquear cada novo worker ao abrir projeto.
     project_id = project["id"]
     costs = query_db(
         """
@@ -7688,44 +7689,46 @@ def api_add_checklist_item():
 @login_required
 def api_toggle_checklist(item_id):
     now = app_now_iso()
-    result = query_db(
+    toggled = query_db(
         """
-        WITH toggled AS (
-            UPDATE checklist_itens
-            SET concluido = CASE WHEN concluido = 1 THEN 0 ELSE 1 END,
-                concluido_por = CASE WHEN concluido = 1 THEN NULL ELSE %s END,
-                concluido_em = CASE WHEN concluido = 1 THEN NULL ELSE %s END
-            WHERE id = %s
-            RETURNING projeto_etapa_id, concluido
-        ), counts AS (
-            SELECT t.projeto_etapa_id, t.concluido,
-                   COUNT(i.id) AS total,
-                   COUNT(i.id) FILTER (WHERE i.concluido = 1) AS done
-            FROM toggled t
-            LEFT JOIN checklist_itens i ON i.projeto_etapa_id = t.projeto_etapa_id
-            GROUP BY t.projeto_etapa_id, t.concluido
-        ), stage_updated AS (
-            UPDATE projeto_etapas pe
-            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
-            FROM counts c
-            WHERE pe.id = c.projeto_etapa_id
-            RETURNING pe.id
-        )
-        SELECT concluido, done, total,
-               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress
-        FROM counts
+        UPDATE checklist_itens
+        SET concluido = CASE WHEN concluido = 1 THEN 0 ELSE 1 END,
+            concluido_por = CASE WHEN concluido = 1 THEN NULL ELSE %s END,
+            concluido_em = CASE WHEN concluido = 1 THEN NULL ELSE %s END
+        WHERE id = %s
+        RETURNING projeto_etapa_id, concluido
         """,
         (g.user["id"], now, item_id),
         one=True,
     )
-    if not result:
+    if not toggled:
         get_db().rollback()
         return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
+    result = query_db(
+        """
+        WITH counts AS (
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE concluido = 1) AS done
+            FROM checklist_itens
+            WHERE projeto_etapa_id = %s
+        ), updated AS (
+            UPDATE projeto_etapas pe
+            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
+            FROM counts c
+            WHERE pe.id = %s
+        )
+        SELECT done, total,
+               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress
+        FROM counts
+        """,
+        (toggled["projeto_etapa_id"], toggled["projeto_etapa_id"]),
+        one=True,
+    )
     get_db().commit()
     invalidate_runtime_caches()
     return jsonify({
         "ok": True,
-        "concluido": bool(result["concluido"]),
+        "concluido": bool(toggled["concluido"]),
         "progress": result["progress"],
         "done": result["done"],
         "total": result["total"],
@@ -7766,40 +7769,15 @@ def api_add_project_note(project_id):
 def api_toggle_project_checklist(item_id):
     """Marca/desmarca um item do checklist do processo (usado no popup da matriz)."""
     now = app_now_iso()
-    result = query_db(
+    toggled = query_db(
         """
-        WITH toggled AS (
-            UPDATE project_checklist_items
-            SET status = CASE WHEN status = %s THEN %s ELSE %s END,
-                completed_at = CASE WHEN status = %s THEN NULL ELSE %s END,
-                completed_by = CASE WHEN status = %s THEN NULL ELSE %s END,
-                updated_at = %s
-            WHERE id = %s
-            RETURNING project_stage_id, status
-        ), counts AS (
-            SELECT
-                t.project_stage_id,
-                t.status,
-                COUNT(i.id) FILTER (WHERE i.active = 1 AND i.status != %s) AS total,
-                COUNT(i.id) FILTER (WHERE i.active = 1 AND i.status = %s) AS done,
-                COUNT(i.id) FILTER (
-                    WHERE i.active = 1 AND i.blocks_stage_completion = 1
-                      AND i.status NOT IN (%s, %s)
-                ) AS required_pending
-            FROM toggled t
-            LEFT JOIN project_checklist_items i ON i.project_stage_id = t.project_stage_id
-            GROUP BY t.project_stage_id, t.status
-        ), stage_updated AS (
-            UPDATE projeto_etapas pe
-            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
-            FROM counts c
-            WHERE pe.id = c.project_stage_id
-            RETURNING pe.id
-        )
-        SELECT status, done, total,
-               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress,
-               required_pending
-        FROM counts
+        UPDATE project_checklist_items
+        SET status = CASE WHEN status = %s THEN %s ELSE %s END,
+            completed_at = CASE WHEN status = %s THEN NULL ELSE %s END,
+            completed_by = CASE WHEN status = %s THEN NULL ELSE %s END,
+            updated_at = %s
+        WHERE id = %s
+        RETURNING project_stage_id, status
         """,
         (
             CHECKLIST_STATUS_DONE,
@@ -7811,21 +7789,50 @@ def api_toggle_project_checklist(item_id):
             g.user["id"],
             now,
             item_id,
-            CHECKLIST_STATUS_NOT_APPLICABLE,
-            CHECKLIST_STATUS_DONE,
-            CHECKLIST_STATUS_DONE,
-            CHECKLIST_STATUS_NOT_APPLICABLE,
         ),
         one=True,
     )
-    if not result:
+    if not toggled:
         get_db().rollback()
         return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
+    result = query_db(
+        """
+        WITH counts AS (
+            SELECT
+                COUNT(*) FILTER (WHERE active = 1 AND status != %s) AS total,
+                COUNT(*) FILTER (WHERE active = 1 AND status = %s) AS done,
+                COUNT(*) FILTER (
+                    WHERE active = 1 AND blocks_stage_completion = 1
+                      AND status NOT IN (%s, %s)
+                ) AS required_pending
+            FROM project_checklist_items
+            WHERE project_stage_id = %s
+        ), updated AS (
+            UPDATE projeto_etapas pe
+            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
+            FROM counts c
+            WHERE pe.id = %s
+        )
+        SELECT done, total,
+               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress,
+               required_pending
+        FROM counts
+        """,
+        (
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            toggled["project_stage_id"],
+            toggled["project_stage_id"],
+        ),
+        one=True,
+    )
     get_db().commit()
     invalidate_runtime_caches()
     return jsonify({
         "ok": True,
-        "concluido": result["status"] == CHECKLIST_STATUS_DONE,
+        "concluido": toggled["status"] == CHECKLIST_STATUS_DONE,
         "progress": result["progress"],
         "done": result["done"],
         "total": result["total"],
@@ -9175,7 +9182,12 @@ def cartorios():
         for row in rows
         if row["nome"] or row["cns"] or row["cidade"] or row["uf"]
     ]
-    return render_template("cartorios.html", cartorios=rows, cartorio_catalog=cartorio_catalog)
+    return render_template(
+        "cartorios.html",
+        cartorios=rows,
+        cartorio_catalog=cartorio_catalog,
+        ufs=UFS,
+    )
 
 
 @app.route("/cartorios/checklist", methods=["GET", "POST"])

@@ -1504,7 +1504,18 @@ function openSubModal(mainId, subId) {
 function toggleCheck(cb, itemId, stageId) {
     const row = document.getElementById(`check-row-${itemId}`);
     const previousChecked = !cb.checked;
+    const counter = document.getElementById(`counter-${stageId}`);
+    const bar = document.getElementById(`progress-${stageId}`);
+    const previousCounter = counter?.textContent || '';
+    const previousBar = bar?.style.width || '';
     row?.classList.toggle('is-done', cb.checked);
+    const match = previousCounter.match(/(\d+)\s*\/\s*(\d+)/);
+    if (match) {
+        const total = Number(match[2]);
+        const done = Math.max(0, Math.min(total, Number(match[1]) + (cb.checked ? 1 : -1)));
+        counter.textContent = `${done}/${total}`;
+        if (bar) bar.style.width = (total ? Math.round(done * 100 / total) : 0) + '%';
+    }
     cb.disabled = true;
     fetch(`/api/project-checklist/${itemId}/toggle`, { method: 'POST' })
     .then(async r => {
@@ -1516,9 +1527,7 @@ function toggleCheck(cb, itemId, stageId) {
         cb.checked = data.concluido;
         if (data.concluido) row.classList.add('is-done');
         else row.classList.remove('is-done');
-        const counter = document.getElementById(`counter-${stageId}`);
         if (counter) counter.textContent = `${data.done}/${data.total}`;
-        const bar = document.getElementById(`progress-${stageId}`);
         if (bar) bar.style.width = data.progress + '%';
         if (typeof data.required_pending !== 'undefined') {
             const lock = document.getElementById(`advance-lock-${stageId}`);
@@ -1532,6 +1541,8 @@ function toggleCheck(cb, itemId, stageId) {
     .catch((error) => {
         cb.checked = previousChecked;
         row?.classList.toggle('is-done', previousChecked);
+        if (counter) counter.textContent = previousCounter;
+        if (bar) bar.style.width = previousBar;
         alert(error.message || 'Nao foi possivel salvar o checklist.');
     })
     .finally(() => { cb.disabled = false; });
