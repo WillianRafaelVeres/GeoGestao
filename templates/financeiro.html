@@ -33,14 +33,18 @@
             </div>
         </td>
         <td>
-            {% if item.tem_valor %}
-                {{ format_currency(item.valor) }}
-            {% else %}
-                <form method="post" action="{{ url_for('financeiro_definir_valor', project_id=item.id) }}" class="d-flex gap-1">
-                    <input class="form-control form-control-sm" style="max-width: 110px;" name="valor" placeholder="0,00" inputmode="decimal" required>
-                    <button class="btn btn-sm btn-outline-primary" type="submit">Definir</button>
-                </form>
-            {% endif %}
+            <form method="post" action="{{ url_for('financeiro_definir_valor', project_id=item.id) }}" class="finance-project-value">
+                <input class="form-control form-control-sm"
+                       name="valor"
+                       value="{{ '%.2f'|format(item.valor)|replace('.', ',') if item.tem_valor else '' }}"
+                       placeholder="0,00"
+                       inputmode="decimal"
+                       aria-label="Valor do contrato de {{ item.nome }}"
+                       required>
+                <button class="btn btn-sm {{ 'btn-outline-secondary' if item.tem_valor else 'btn-outline-primary' }}" type="submit">
+                    {{ 'Atualizar' if item.tem_valor else 'Definir' }}
+                </button>
+            </form>
         </td>
         <td>
             {% if item.qtd_custos %}
@@ -159,28 +163,28 @@
     </div>
 </div>
 
-<section class="dash-kpi-row">
-    <div class="dash-kpi">
+<section class="dash-kpi-row finance-summary-grid">
+    <div class="dash-kpi finance-summary-card finance-summary-card--primary">
         <span class="dash-kpi-label">Total a receber</span>
         <strong class="dash-kpi-value">{{ format_currency(resumo.total_a_receber) }}</strong>
         <span class="dash-kpi-sub">contratos + custos - pagamentos</span>
     </div>
-    <div class="dash-kpi">
+    <div class="dash-kpi finance-summary-card">
         <span class="dash-kpi-label">Custos a cobrar</span>
         <strong class="dash-kpi-value">{{ format_currency(resumo.custos_a_cobrar) }}</strong>
         <span class="dash-kpi-sub">despesas lancadas para reembolso</span>
     </div>
-    <div class="dash-kpi">
+    <div class="dash-kpi finance-summary-card finance-summary-card--received">
         <span class="dash-kpi-label">Ja recebido</span>
         <strong class="dash-kpi-value">{{ format_currency(resumo.recebido_total) }}</strong>
         <span class="dash-kpi-sub">{{ format_currency(resumo.recebido_30d) }} nos ultimos 30 dias</span>
     </div>
-    <div class="dash-kpi {{ 'dash-kpi--warn' if resumo.quase_prontos_count else '' }}">
+    <div class="dash-kpi finance-summary-card {{ 'dash-kpi--warn' if resumo.quase_prontos_count else '' }}">
         <span class="dash-kpi-label">Proximos de terminar</span>
         <strong class="dash-kpi-value">{{ resumo.quase_prontos_count }}</strong>
         <span class="dash-kpi-sub">{{ format_currency(resumo.quase_prontos_saldo) }} a receber em breve</span>
     </div>
-    <div class="dash-kpi {{ 'dash-kpi--danger' if resumo.sem_valor_count else '' }}">
+    <div class="dash-kpi finance-summary-card {{ 'dash-kpi--danger' if resumo.sem_valor_count else '' }}">
         <span class="dash-kpi-label">Sem valor definido</span>
         <strong class="dash-kpi-value">{{ resumo.sem_valor_count }}</strong>
         <span class="dash-kpi-sub">projetos ativos sem valor de contrato</span>
