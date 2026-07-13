@@ -99,12 +99,11 @@
                                 {{ field_text('Orgao RG', 'pf_orgao_expedidor_rg', pf.orgao_expedidor_rg, 'text', '', '', '', 'maxlength="20"') }}
                                 {{ field_text('Nacionalidade', 'pf_nacionalidade', pf.nacionalidade or '', 'text', '', '', 'brasileiro(a)', 'data-role="pf-nacionalidade" data-default-nationality') }}
                                 {{ field_text('Profissao/ocupacao', 'pf_profissao_ocupacao', pf.profissao_ocupacao) }}
-                                <label>Sexo
+                                <label>Ele ou ela
                                     <select name="pf_sexo" data-role="pf-sexo">
                                         <option value="">Selecione</option>
-                                        {% for key, label in sexos.items() %}
-                                            <option value="{{ key }}" {% if pf.sexo == key %}selected{% endif %}>{{ label }}</option>
-                                        {% endfor %}
+                                        <option value="MASCULINO" {% if pf.sexo == 'MASCULINO' %}selected{% endif %}>Ele</option>
+                                        <option value="FEMININO" {% if pf.sexo == 'FEMININO' %}selected{% endif %}>Ela</option>
                                     </select>
                                 </label>
                                 <label>Estado civil
@@ -161,6 +160,14 @@
                             <div class="form-grid four">
                                 {{ field_text('Nome completo', 'conj_nome_completo', conjuge.nome_completo) }}
                                 {{ field_text('CPF', 'conj_cpf', format_cpf(conjuge.cpf), 'text', 'cpf') }}
+                                <label>Ele ou ela
+                                    <select name="conj_sexo">
+                                        <option value="">Selecione</option>
+                                        <option value="MASCULINO" {% if conjuge.sexo == 'MASCULINO' %}selected{% endif %}>Ele</option>
+                                        <option value="FEMININO" {% if conjuge.sexo == 'FEMININO' %}selected{% endif %}>Ela</option>
+                                    </select>
+                                    <small class="field-error" data-error-for="conj_sexo"></small>
+                                </label>
                                 {{ field_text('RG', 'conj_rg', conjuge.rg, 'text', '', '', '', 'maxlength="20"') }}
                                 {{ field_text('Orgao RG', 'conj_orgao_expedidor_rg', conjuge.orgao_expedidor_rg, 'text', '', '', '', 'maxlength="20"') }}
                                 {{ field_text('Nacionalidade', 'conj_nacionalidade', conjuge.nacionalidade) }}
@@ -278,12 +285,11 @@
                                         <label>Orgao RG<input type="text" maxlength="20" data-rep-field="orgao_expedidor_rg"></label>
                                         <label>Nacionalidade<input type="text" data-rep-field="nacionalidade"></label>
                                         <label>Profissao/ocupacao<input type="text" data-rep-field="profissao_ocupacao"></label>
-                                        <label>Sexo
+                                        <label>Ele ou ela
                                             <select data-rep-field="sexo">
                                                 <option value="">Selecione</option>
-                                                {% for key, label in sexos.items() %}
-                                                    <option value="{{ key }}">{{ label }}</option>
-                                                {% endfor %}
+                                                <option value="MASCULINO">Ele</option>
+                                                <option value="FEMININO">Ela</option>
                                             </select>
                                         </label>
                                         <label>Estado civil
