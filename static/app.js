@@ -187,6 +187,8 @@ function initCartorioLookup() {
         const cnsStatus = lookup.querySelector("[data-cartorio-cns-status]");
         const cityApplyButton = lookup.querySelector("[data-cartorio-apply-city]");
         const cnsApplyButton = lookup.querySelector("[data-cartorio-apply-cns]");
+        const catalogSource = form.querySelector("[data-cartorio-catalog-source]");
+        const catalogSingle = form.querySelector("[data-cartorio-catalog-single]");
         let selectedCityItem = null;
         let selectedCnsItem = null;
         let cityRequest = null;
@@ -226,6 +228,8 @@ function initCartorioLookup() {
         };
         const fillForm = (item) => {
             if (!item) return;
+            if (catalogSource) catalogSource.value = item.fonte ? "cnj" : "";
+            if (catalogSingle) catalogSingle.value = item.unico_na_cidade ? "1" : "0";
             ["nome", "cns", "cidade", "uf", "contato", "email", "telefone", "whatsapp", "oficial", "observacoes"].forEach((field) => {
                 setField(field, field === "cns" ? formatCns(item[field]) : item[field] || "");
             });
@@ -297,7 +301,8 @@ function initCartorioLookup() {
                 selectedCnsItem = items[0] || null;
                 if (!selectedCnsItem) throw new Error("CNS não encontrado ou não pertence a Registro de Imóveis.");
                 if (cnsApplyButton) cnsApplyButton.disabled = false;
-                setStatus(cnsStatus, `CNS encontrado: ${selectedCnsItem.nome}. Clique em Aplicar dados deste CNS.`, "success");
+                const location = [selectedCnsItem.cidade, selectedCnsItem.uf].filter(Boolean).join(" / ");
+                setStatus(cnsStatus, `CNS encontrado: ${selectedCnsItem.nome}${location ? ` — ${location}` : ""}. Clique em Aplicar dados deste CNS.`, "success");
             } catch (error) {
                 if (error.name === "AbortError") return;
                 selectedCnsItem = null;

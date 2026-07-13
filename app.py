@@ -6268,11 +6268,18 @@ def api_add_cartorio():
         return {"error": "Nome obrigatorio"}, 400
 
     try:
+        lock_cur = get_db().execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("cartorios:dedupe",))
+        lock_cur.close()
+        duplicate = _find_duplicate_cartorio(nome, "", "", "")
+        if duplicate:
+            get_db().commit()
+            return {"id": duplicate["id"], "nome": duplicate["nome"], "existing": True}, 200
         cartorio_id = execute_db("INSERT INTO cartorios (nome) VALUES (%s)", (nome,))
         invalidate_runtime_caches()
         return {"id": cartorio_id, "nome": nome}, 201
-    except Exception as e:
-        return {"error": str(e)}, 500
+    except Exception:
+        get_db().rollback()
+        return {"error": "Nao foi possivel cadastrar o cartorio."}, 500
 
 
 @app.route("/api/select-folder", methods=["POST"])
@@ -9183,6 +9190,31 @@ def _cnj_serventia_dados(cns):
     )
 
 
+def _cnj_city_registry_items(uf, cidade):
+    cache_key = f"cnj_registros_cidade:{uf}:{normalize_text(cidade)}"
+
+    def load():
+        candidates = [
+            row for row in _cnj_uf_serventias(uf)
+            if normalize_text(row.get("cidade")) == normalize_text(cidade)
+        ]
+        items = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(candidates)))) as executor:
+            futures = [executor.submit(_cnj_serventia_dados, row.get("cns")) for row in candidates]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    item = future.result()
+                except (OSError, ValueError):
+                    continue
+                if item:
+                    items.append(item)
+        items.sort(key=lambda item: normalize_text(item["nome"]))
+        is_single = len(items) == 1
+        return [{**item, "unico_na_cidade": is_single} for item in items]
+
+    return get_cached_lookup(cache_key, load, ttl_seconds=CNJ_CARTORIO_CACHE_TTL_SECONDS)
+
+
 @app.route("/api/cartorios/catalogo")
 @login_required
 def api_cartorios_catalogo():
@@ -9198,31 +9230,98 @@ def api_cartorios_catalogo():
             return jsonify({"items": [], "message": "O Justiça Aberta/CNJ está temporariamente indisponível."}), 503
         if not item:
             return jsonify({"items": [], "message": "CNS não encontrado ou não pertence a Registro de Imóveis."}), 404
+        try:
+            city_items = _cnj_city_registry_items(item["uf"], item["cidade"])
+            item = {**item, "unico_na_cidade": len(city_items) == 1}
+        except (OSError, ValueError):
+            item = {**item, "unico_na_cidade": False}
         return jsonify({"items": [item], "source": "CNJ/Justiça Aberta"})
 
     if uf not in UFS or not cidade:
         return jsonify({"items": [], "message": "Selecione a UF e a cidade."}), 400
     try:
-        candidates = [
-            row for row in _cnj_uf_serventias(uf)
-            if normalize_text(row.get("cidade")) == normalize_text(cidade)
-        ]
-        items = []
-        # Uma cidade normalmente possui poucas serventias. A consulta paralela
-        # confirma a atribuição oficial e evita incluir tabelionatos ou registro civil.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(candidates)))) as executor:
-            futures = [executor.submit(_cnj_serventia_dados, row.get("cns")) for row in candidates]
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    item = future.result()
-                except (OSError, ValueError):
-                    continue
-                if item:
-                    items.append(item)
-        items.sort(key=lambda item: normalize_text(item["nome"]))
+        items = _cnj_city_registry_items(uf, cidade)
         return jsonify({"items": items, "source": "CNJ/Justiça Aberta"})
     except (OSError, ValueError):
         return jsonify({"items": [], "message": "O Justiça Aberta/CNJ está temporariamente indisponível."}), 503
+
+
+def _find_duplicate_cartorio(
+    name, cns, cidade, uf, exclude_id=None, cnj_verified=False, single_city_registry=False
+):
+    cns_digits = only_digits(cns)[:6]
+    rows = query_db(
+        """
+        SELECT id, nome, cns, cidade, uf
+        FROM cartorios
+        WHERE (COALESCE(%s::integer, 0) = 0 OR id <> %s::integer)
+          AND (
+                (%s <> '' AND regexp_replace(COALESCE(cns, ''), '[^0-9]', '', 'g') = %s)
+             OR lower(trim(COALESCE(nome, ''))) = lower(trim(%s))
+             OR (%s <> '' AND %s <> '' AND upper(COALESCE(uf, '')) = %s
+                 AND lower(trim(COALESCE(cidade, ''))) = lower(trim(%s)))
+             OR (COALESCE(cns, '') = '' AND COALESCE(cidade, '') = '')
+          )
+        ORDER BY id
+        """,
+        (
+            exclude_id, exclude_id, cns_digits, cns_digits, name,
+            uf, cidade, uf, cidade,
+        ),
+    )
+    wanted_name = normalize_text(name)
+    wanted_city = normalize_text(cidade)
+    matches = []
+    for row in rows:
+        row_cns = only_digits(row["cns"] or "")[:6]
+        row_name = normalize_text(row["nome"])
+        same_cns = bool(cns_digits and row_cns == cns_digits)
+        same_name = bool(wanted_name and row_name == wanted_name)
+        same_location = (
+            bool(uf and cidade)
+            and (row["uf"] or "").upper() == uf
+            and normalize_text(row["cidade"]) == wanted_city
+        )
+        related_name = bool(row_name and wanted_name and (row_name in wanted_name or wanted_name in row_name))
+        legacy_city_name = (
+            cnj_verified
+            and single_city_registry
+            and not row_cns
+            and not (row["cidade"] or "").strip()
+            and bool(wanted_city and wanted_city == row_name)
+        )
+        score = (
+            100 if same_cns else
+            80 if same_name else
+            70 if same_location and related_name else
+            60 if legacy_city_name else 0
+        )
+        if score:
+            matches.append((score, row))
+    return max(matches, key=lambda match: (match[0], -int(match[1]["id"])))[1] if matches else None
+
+
+def _update_cartorio_with_catalog_data(cartorio_id, values):
+    execute_db(
+        """
+        UPDATE cartorios
+        SET nome = %s,
+            cns = COALESCE(NULLIF(%s, ''), cns),
+            cidade = COALESCE(NULLIF(%s, ''), cidade),
+            uf = COALESCE(NULLIF(%s, ''), uf),
+            contato = COALESCE(NULLIF(%s, ''), contato),
+            email = COALESCE(NULLIF(%s, ''), email),
+            telefone = COALESCE(NULLIF(%s, ''), telefone),
+            whatsapp = COALESCE(NULLIF(%s, ''), whatsapp),
+            oficial = COALESCE(NULLIF(%s, ''), oficial),
+            observacoes = CASE
+                WHEN COALESCE(observacoes, '') = '' THEN %s
+                ELSE observacoes
+            END
+        WHERE id = %s
+        """,
+        values + (cartorio_id,),
+    )
 
 
 @app.route("/cartorios", methods=["GET", "POST"])
@@ -9234,12 +9333,37 @@ def cartorios():
             return redirect(url_for("cartorios"))
         action = request.form.get("action", "create")
         cartorio_id = request.form.get("cartorio_id")
+        if action == "delete" and cartorio_id:
+            usage = query_db(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM projetos WHERE cartorio_id = %s) AS projetos,
+                    (SELECT COUNT(*) FROM exigencias_cartorio WHERE cartorio_id = %s) AS exigencias,
+                    (SELECT COUNT(*) FROM cartorio_checklist_templates WHERE cartorio_id = %s) AS modelos,
+                    (SELECT COUNT(*) FROM cartorio_checklist_exclusions WHERE cartorio_id = %s) AS exclusoes
+                """,
+                (cartorio_id, cartorio_id, cartorio_id, cartorio_id),
+                one=True,
+            )
+            total_usage = sum(int(usage[key] or 0) for key in ("projetos", "exigencias", "modelos", "exclusoes"))
+            if total_usage:
+                flash("Este cartorio nao pode ser excluido porque possui projetos, exigencias ou checklists vinculados.", "danger")
+            else:
+                execute_db("DELETE FROM cartorios WHERE id = %s", (cartorio_id,))
+                invalidate_runtime_caches()
+                flash("Cartorio/orgao excluido.", "success")
+            return redirect(url_for("cartorios"))
         name = request.form.get("nome", "").strip()
+        cns = request.form.get("cns", "").strip()
+        cidade = request.form.get("cidade", "").strip()
+        uf = request.form.get("uf", "").strip().upper()
+        cnj_verified = request.form.get("catalog_source") == "cnj"
+        single_city_registry = request.form.get("catalog_single_city") == "1"
         values = (
             name,
-            request.form.get("cns", "").strip(),
-            request.form.get("cidade", "").strip(),
-            request.form.get("uf", "").strip().upper(),
+            cns,
+            cidade,
+            uf,
             request.form.get("contato", "").strip(),
             request.form.get("email", "").strip(),
             request.form.get("telefone", "").strip(),
@@ -9249,6 +9373,19 @@ def cartorios():
         )
         if not name:
             flash("Informe o nome do cartorio/orgao.", "danger")
+            return redirect(url_for("cartorios"))
+        # Mantém verificação e gravação na mesma transação. Assim, dois envios
+        # simultâneos não conseguem passar pela checagem antes do INSERT.
+        lock_cur = get_db().execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("cartorios:dedupe",))
+        lock_cur.close()
+        duplicate = _find_duplicate_cartorio(
+            name, cns, cidade, uf,
+            exclude_id=cartorio_id if action == "update" else None,
+            cnj_verified=cnj_verified,
+            single_city_registry=single_city_registry,
+        )
+        if duplicate and action == "update":
+            flash(f"Ja existe outro cadastro correspondente: {duplicate['nome']}.", "danger")
             return redirect(url_for("cartorios"))
         if action == "update" and cartorio_id:
             execute_db(
@@ -9261,6 +9398,12 @@ def cartorios():
                 values + (cartorio_id,),
             )
             flash("Cartorio/orgao atualizado.", "success")
+        elif duplicate and cnj_verified:
+            _update_cartorio_with_catalog_data(duplicate["id"], values)
+            flash(f"O cadastro existente de {duplicate['nome']} foi identificado e completado com os dados oficiais.", "success")
+        elif duplicate:
+            flash(f"Este cartorio ja esta cadastrado como {duplicate['nome']}.", "warning")
+            return redirect(url_for("cartorios"))
         else:
             execute_db(
                 """

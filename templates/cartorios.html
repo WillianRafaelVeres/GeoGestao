@@ -32,6 +32,11 @@
                                 <div class="d-flex gap-1">
                                     <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-cartorio-{{ item.id }}">Editar</button>
                                     <a class="btn btn-outline-primary btn-sm" href="{{ url_for('cartorios_checklist', cartorio_id=item.id) }}" title="Documentacao obrigatoria deste cartorio">Checklist</a>
+                                    <form method="post" onsubmit="return confirm('Excluir este cartório? Esta ação não poderá ser desfeita.');">
+                                        <input type="hidden" name="action" value="delete" />
+                                        <input type="hidden" name="cartorio_id" value="{{ item.id }}" />
+                                        <button class="btn btn-outline-danger btn-sm" type="submit" {% if not can_manage() %}disabled{% endif %}>Excluir</button>
+                                    </form>
                                 </div>
                             </td>
                         </tr>
@@ -47,6 +52,8 @@
         <div class="panel-header"><h2>Novo cartorio/orgao</h2></div>
         <form method="post" class="vstack gap-3" data-cartorio-form data-single-submit>
             <input type="hidden" name="action" value="create" />
+            <input type="hidden" name="catalog_source" value="" data-cartorio-catalog-source />
+            <input type="hidden" name="catalog_single_city" value="0" data-cartorio-catalog-single />
             <div class="cartorio-lookup" data-cartorio-lookup>
                 <div class="row g-2">
                     <div class="col-md-3">
