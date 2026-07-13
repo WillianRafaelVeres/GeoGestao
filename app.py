@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 import csv
+import concurrent.futures
 import gzip
 import hashlib
 import io
@@ -9106,6 +9107,122 @@ def clients():
         ufs=UFS,
         representative_types=REPRESENTATIVE_TYPES,
     )
+
+
+CNJ_JUSTICA_ABERTA_API = "https://justicaabertaapi.cnj.jus.br/v1/api"
+CNJ_CARTORIO_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+
+def _cnj_public_json(path, timeout=12):
+    """Consulta somente endpoints públicos do Justiça Aberta/CNJ."""
+    req = urllib.request.Request(
+        f"{CNJ_JUSTICA_ABERTA_API}{path}",
+        headers={"Accept": "application/json", "User-Agent": "GeoGestao/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _cnj_uf_serventias(uf):
+    uf = (uf or "").strip().upper()
+    if uf not in UFS:
+        return []
+    return get_cached_lookup(
+        f"cnj_serventias_uf:{uf}",
+        lambda: _cnj_public_json(
+            f"/serventias/relatorios/status-por-uf/{quote(uf)}/informacoes-serventia?status=%5B1%5D"
+        ),
+        ttl_seconds=CNJ_CARTORIO_CACHE_TTL_SECONDS,
+    )
+
+
+def _cnj_serventia_dados(cns):
+    digits = only_digits(cns)[:6]
+    if len(digits) != 6:
+        return None
+
+    def load():
+        paths = (
+            f"/serventias/{digits}",
+            f"/serventias/{digits}/localizacao",
+            f"/serventias/{digits}/responsaveis",
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(_cnj_public_json, path) for path in paths]
+            detail, location, responsible = [future.result() for future in futures]
+        if isinstance(responsible, list):
+            responsible = next((row for row in responsible if row.get("ativo")), responsible[0] if responsible else {})
+        if not isinstance(responsible, dict):
+            responsible = {}
+        nature = detail.get("atribuicoes") or ""
+        if "registrodeimoveis" not in normalize_text(nature):
+            return None
+        city = location.get("cidade") or {}
+        address = ", ".join(
+            str(value).strip()
+            for value in (location.get("endereco"), location.get("numero"), location.get("bairro"))
+            if value
+        )
+        return {
+            "id": f"cnj:{digits}",
+            "nome": detail.get("denominacao_fantasia") or detail.get("denominacao_padrao") or "Registro de Imoveis",
+            "cns": digits,
+            "cidade": city.get("nome") or "",
+            "uf": (location.get("uf") or city.get("uf") or "").upper(),
+            "contato": address,
+            "email": location.get("email") or "",
+            "telefone": location.get("telefone") or "",
+            "whatsapp": "",
+            "oficial": responsible.get("nome") or "",
+            "observacoes": "Dados consultados no Justiça Aberta/CNJ.",
+            "fonte": "CNJ/Justiça Aberta",
+        }
+
+    return get_cached_lookup(
+        f"cnj_serventia:{digits}", load, ttl_seconds=CNJ_CARTORIO_CACHE_TTL_SECONDS
+    )
+
+
+@app.route("/api/cartorios/catalogo")
+@login_required
+def api_cartorios_catalogo():
+    uf = (request.args.get("uf") or "").strip().upper()
+    cidade = (request.args.get("cidade") or "").strip()
+    cns = only_digits(request.args.get("cns") or "")[:6]
+    if cns:
+        if len(cns) != 6:
+            return jsonify({"items": [], "message": "Informe os 6 números do CNS."}), 400
+        try:
+            item = _cnj_serventia_dados(cns)
+        except (OSError, ValueError):
+            return jsonify({"items": [], "message": "O Justiça Aberta/CNJ está temporariamente indisponível."}), 503
+        if not item:
+            return jsonify({"items": [], "message": "CNS não encontrado ou não pertence a Registro de Imóveis."}), 404
+        return jsonify({"items": [item], "source": "CNJ/Justiça Aberta"})
+
+    if uf not in UFS or not cidade:
+        return jsonify({"items": [], "message": "Selecione a UF e a cidade."}), 400
+    try:
+        candidates = [
+            row for row in _cnj_uf_serventias(uf)
+            if normalize_text(row.get("cidade")) == normalize_text(cidade)
+        ]
+        items = []
+        # Uma cidade normalmente possui poucas serventias. A consulta paralela
+        # confirma a atribuição oficial e evita incluir tabelionatos ou registro civil.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(candidates)))) as executor:
+            futures = [executor.submit(_cnj_serventia_dados, row.get("cns")) for row in candidates]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    item = future.result()
+                except (OSError, ValueError):
+                    continue
+                if item:
+                    items.append(item)
+        items.sort(key=lambda item: normalize_text(item["nome"]))
+        return jsonify({"items": items, "source": "CNJ/Justiça Aberta"})
+    except (OSError, ValueError):
+        return jsonify({"items": [], "message": "O Justiça Aberta/CNJ está temporariamente indisponível."}), 503
 
 
 @app.route("/cartorios", methods=["GET", "POST"])

@@ -176,7 +176,6 @@ function initSingleSubmitForms() {
 }
 
 function initCartorioLookup() {
-    const catalog = Array.isArray(window.cartorioCatalog) ? window.cartorioCatalog : [];
     document.querySelectorAll("[data-cartorio-lookup]").forEach((lookup) => {
         const form = lookup.closest("[data-cartorio-form]") || lookup.closest("form");
         if (!form) return;
@@ -187,8 +186,8 @@ function initCartorioLookup() {
         const status = lookup.querySelector("[data-cartorio-lookup-status]");
         const applyButton = lookup.querySelector("[data-cartorio-apply]");
         let selectedItem = null;
+        let activeRequest = null;
 
-        const normalize = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
         const cleanCns = (value) => String(value || "").replace(/\D/g, "").slice(0, 6);
         const formatCns = (value) => cleanCns(value).replace(/^(\d{2})(\d)/, "$1.$2").replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2-$3");
         const setStatus = (message, state = "") => {
@@ -196,23 +195,23 @@ function initCartorioLookup() {
             status.textContent = message;
             status.dataset.state = state;
         };
-        const uniqueSorted = (values) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
-        const setOptions = (select, values, placeholder) => {
-            if (!select) return;
-            select.innerHTML = "";
+        const setOffices = (items, placeholder = "Selecione o Registro de Imóveis") => {
+            if (!officeSelect) return;
+            officeSelect.innerHTML = "";
             const first = document.createElement("option");
             first.value = "";
             first.textContent = placeholder;
-            select.appendChild(first);
-            values.forEach((value) => {
+            officeSelect.appendChild(first);
+            items.forEach((item, index) => {
                 const option = document.createElement("option");
-                option.value = value;
-                option.textContent = value;
-                select.appendChild(option);
+                option.value = String(index);
+                option.textContent = item.cns ? `${item.nome} - CNS ${formatCns(item.cns)}` : item.nome;
+                officeSelect.appendChild(option);
             });
-            // A UF sem registros locais ainda precisa permitir interação; o catálogo
-            // pode ser preenchido posteriormente sem deixar o formulário travado.
-            select.disabled = false;
+            officeSelect.disabled = items.length === 0;
+            officeSelect._cartorioItems = items;
+            selectedItem = null;
+            if (applyButton) applyButton.disabled = true;
         };
         const setField = (name, value) => {
             const field = form.querySelector(`[data-cartorio-field="${name}"]`) || form.querySelector(`[name="${name}"]`);
@@ -227,71 +226,81 @@ function initCartorioLookup() {
                 setField(field, item[field] || "");
             });
             if (ufSelect) ufSelect.value = item.uf || "";
-            refreshCities();
             if (citySelect) citySelect.value = item.cidade || "";
-            refreshOffices();
-            if (officeSelect) officeSelect.value = String(item.id || "");
             if (cnsInput) cnsInput.value = formatCns(item.cns || "");
-            setStatus(`Cartorio encontrado: ${item.nome}.`, "success");
+            setStatus(`Dados de ${item.nome} aplicados ao cadastro.`, "success");
             selectedItem = item;
             if (applyButton) applyButton.disabled = true;
         };
-        const refreshCities = () => {
-            const uf = ufSelect?.value || "";
-            const cities = uniqueSorted(catalog.filter((item) => !uf || normalize(item.uf) === normalize(uf)).map((item) => item.cidade));
-            setOptions(citySelect, cities, uf ? "Selecione a cidade" : "Escolha a UF");
-            setOptions(officeSelect, [], "Escolha a cidade");
-            setStatus(cities.length || !uf ? "" : "Nenhum Registro de Imoveis cadastrado nesta UF.", cities.length ? "" : "warning");
-        };
-        const refreshOffices = () => {
-            const uf = ufSelect?.value || "";
-            const city = citySelect?.value || "";
-            const offices = catalog
-                .filter((item) => (!uf || normalize(item.uf) === normalize(uf)) && (!city || normalize(item.cidade) === normalize(city)))
-                .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
-            if (!officeSelect) return;
-            officeSelect.innerHTML = "";
-            const first = document.createElement("option");
-            first.value = "";
-            first.textContent = offices.length ? "Selecione o Registro de Imoveis" : "Nenhum Registro de Imoveis cadastrado";
-            officeSelect.appendChild(first);
-            offices.forEach((item) => {
-                const option = document.createElement("option");
-                option.value = String(item.id);
-                option.textContent = item.cns ? `${item.nome} - CNS ${item.cns}` : item.nome;
-                officeSelect.appendChild(option);
+        const requestCatalog = async (params) => {
+            if (activeRequest) activeRequest.abort();
+            activeRequest = new AbortController();
+            const query = new URLSearchParams(params);
+            const response = await fetch(`/api/cartorios/catalogo?${query}`, {
+                headers: { Accept: "application/json" },
+                signal: activeRequest.signal,
             });
-            officeSelect.disabled = false;
-            setStatus(offices.length || !city ? "" : "Nenhum Registro de Imoveis cadastrado nesta cidade.", offices.length ? "" : "warning");
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.message || "Não foi possível consultar o catálogo oficial.");
+            return Array.isArray(data.items) ? data.items : [];
+        };
+        const refreshOffices = async () => {
+            const uf = ufSelect?.value || "";
+            const city = citySelect?.value?.trim() || "";
+            setOffices([], city ? "Consultando o Justiça Aberta/CNJ..." : "Escolha a cidade");
+            if (!uf || !city) return;
+            setStatus("Consultando Registros de Imóveis no Justiça Aberta/CNJ...", "loading");
+            try {
+                const offices = await requestCatalog({ uf, cidade: city });
+                setOffices(offices, offices.length ? "Selecione o Registro de Imóveis" : "Nenhum Registro de Imóveis encontrado");
+                setStatus(
+                    offices.length ? `${offices.length} Registro(s) de Imóveis encontrado(s).` : "Nenhum Registro de Imóveis encontrado nesta cidade.",
+                    offices.length ? "success" : "warning"
+                );
+            } catch (error) {
+                if (error.name === "AbortError") return;
+                setOffices([], "Consulta indisponível");
+                setStatus(error.message, "error");
+            }
         };
 
-        ufSelect?.addEventListener("change", refreshCities);
+        ufSelect?.addEventListener("change", () => {
+            if (citySelect) citySelect.value = "";
+            setOffices([], "Escolha a cidade");
+            setStatus("");
+        });
         citySelect?.addEventListener("change", refreshOffices);
         officeSelect?.addEventListener("change", () => {
-            selectedItem = catalog.find((entry) => String(entry.id) === officeSelect.value) || null;
+            const index = Number(officeSelect.value);
+            selectedItem = officeSelect.value === "" ? null : officeSelect._cartorioItems?.[index] || null;
             if (applyButton) applyButton.disabled = !selectedItem;
-            if (selectedItem) setStatus(`Cartorio selecionado: ${selectedItem.nome}. Clique em Aplicar para preencher.`, "success");
+            if (selectedItem) setStatus(`Cartório selecionado: ${selectedItem.nome}. Clique em Aplicar para preencher.`, "success");
         });
         applyButton?.addEventListener("click", () => fillForm(selectedItem));
-        cnsInput?.addEventListener("input", () => {
+        cnsInput?.addEventListener("input", async () => {
             const cns = cleanCns(cnsInput.value);
             cnsInput.value = formatCns(cns);
             if (cns.length < 6) {
                 setStatus(cns.length ? `Digite os ${6 - cns.length} numero(s) restantes.` : "");
                 return;
             }
-            setStatus("Consultando CNS...", "loading");
-            const item = catalog.find((entry) => cleanCns(entry.cns) === cns);
-            if (item) {
-                selectedItem = item;
+            setStatus("Consultando CNS no Justiça Aberta/CNJ...", "loading");
+            try {
+                const items = await requestCatalog({ cns });
+                setOffices(items, "Cartório encontrado pelo CNS");
+                selectedItem = items[0] || null;
+                if (!selectedItem) throw new Error("CNS não encontrado ou não pertence a Registro de Imóveis.");
+                if (officeSelect) officeSelect.value = "0";
                 if (applyButton) applyButton.disabled = false;
-                setStatus(`CNS encontrado: ${item.nome}. Clique em Aplicar para preencher.`, "success");
-            } else {
-                setStatus("CNS nao encontrado no catalogo de Registro de Imoveis.", "error");
+                setStatus(`CNS encontrado: ${selectedItem.nome}. Clique em Aplicar para preencher.`, "success");
+            } catch (error) {
+                if (error.name === "AbortError") return;
+                setOffices([], "CNS não encontrado");
+                setStatus(error.message, "error");
             }
         });
 
-        refreshCities();
+        setOffices([], "Escolha a cidade");
     });
 }
 

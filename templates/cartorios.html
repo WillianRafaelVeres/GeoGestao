@@ -51,7 +51,7 @@
                 <div class="row g-2">
                     <div class="col-md-3">
                         <label class="form-label">UF</label>
-                        <select class="form-select" data-cartorio-lookup-uf>
+                        <select class="form-select" data-cartorio-lookup-uf data-city-uf="cartorio_lookup">
                             <option value="">Selecione</option>
                             {% for uf_option in ufs %}
                                 <option value="{{ uf_option }}">{{ uf_option }}</option>
@@ -60,9 +60,7 @@
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">Cidade</label>
-                        <select class="form-select" data-cartorio-lookup-city disabled>
-                            <option value="">Escolha a UF</option>
-                        </select>
+                        <input class="form-control" data-cartorio-lookup-city data-city-input="cartorio_lookup" autocomplete="off" placeholder="Selecione a UF e escolha..." />
                     </div>
                     <div class="col-md-5">
                         <label class="form-label">Registro de Imoveis</label>
@@ -77,7 +75,7 @@
                         <small class="cartorio-lookup-status" data-cartorio-lookup-status aria-live="polite"></small>
                     </div>
                 </div>
-                <small class="text-muted">Use esta busca para reaproveitar dados ja cadastrados. Para importar todos os CNS, use a base oficial do Justica Aberta/CNJ como fonte.</small>
+                <small class="text-muted">Municípios: IBGE. Registros de Imóveis e CNS: base oficial Justiça Aberta/CNJ.</small>
             </div>
             <div><label class="form-label">Nome</label><input class="form-control" name="nome" data-cartorio-field="nome" required /></div>
             <div class="row g-2">
