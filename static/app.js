@@ -185,6 +185,8 @@ function initCartorioLookup() {
         const officeSelect = lookup.querySelector("[data-cartorio-lookup-office]");
         const cnsInput = lookup.querySelector("[data-cartorio-lookup-cns]");
         const status = lookup.querySelector("[data-cartorio-lookup-status]");
+        const applyButton = lookup.querySelector("[data-cartorio-apply]");
+        let selectedItem = null;
 
         const normalize = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
         const cleanCns = (value) => String(value || "").replace(/\D/g, "").slice(0, 6);
@@ -208,7 +210,9 @@ function initCartorioLookup() {
                 option.textContent = value;
                 select.appendChild(option);
             });
-            select.disabled = values.length === 0;
+            // A UF sem registros locais ainda precisa permitir interação; o catálogo
+            // pode ser preenchido posteriormente sem deixar o formulário travado.
+            select.disabled = false;
         };
         const setField = (name, value) => {
             const field = form.querySelector(`[data-cartorio-field="${name}"]`) || form.querySelector(`[name="${name}"]`);
@@ -229,6 +233,8 @@ function initCartorioLookup() {
             if (officeSelect) officeSelect.value = String(item.id || "");
             if (cnsInput) cnsInput.value = formatCns(item.cns || "");
             setStatus(`Cartorio encontrado: ${item.nome}.`, "success");
+            selectedItem = item;
+            if (applyButton) applyButton.disabled = true;
         };
         const refreshCities = () => {
             const uf = ufSelect?.value || "";
@@ -255,16 +261,18 @@ function initCartorioLookup() {
                 option.textContent = item.cns ? `${item.nome} - CNS ${item.cns}` : item.nome;
                 officeSelect.appendChild(option);
             });
-            officeSelect.disabled = offices.length === 0;
+            officeSelect.disabled = false;
             setStatus(offices.length || !city ? "" : "Nenhum Registro de Imoveis cadastrado nesta cidade.", offices.length ? "" : "warning");
         };
 
         ufSelect?.addEventListener("change", refreshCities);
         citySelect?.addEventListener("change", refreshOffices);
         officeSelect?.addEventListener("change", () => {
-            const item = catalog.find((entry) => String(entry.id) === officeSelect.value);
-            fillForm(item);
+            selectedItem = catalog.find((entry) => String(entry.id) === officeSelect.value) || null;
+            if (applyButton) applyButton.disabled = !selectedItem;
+            if (selectedItem) setStatus(`Cartorio selecionado: ${selectedItem.nome}. Clique em Aplicar para preencher.`, "success");
         });
+        applyButton?.addEventListener("click", () => fillForm(selectedItem));
         cnsInput?.addEventListener("input", () => {
             const cns = cleanCns(cnsInput.value);
             cnsInput.value = formatCns(cns);
@@ -275,7 +283,9 @@ function initCartorioLookup() {
             setStatus("Consultando CNS...", "loading");
             const item = catalog.find((entry) => cleanCns(entry.cns) === cns);
             if (item) {
-                fillForm(item);
+                selectedItem = item;
+                if (applyButton) applyButton.disabled = false;
+                setStatus(`CNS encontrado: ${item.nome}. Clique em Aplicar para preencher.`, "success");
             } else {
                 setStatus("CNS nao encontrado no catalogo de Registro de Imoveis.", "error");
             }
