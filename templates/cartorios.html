@@ -67,17 +67,20 @@
                         <select class="form-select" data-cartorio-lookup-office disabled>
                             <option value="">Escolha a cidade</option>
                         </select>
-                        <button class="btn btn-outline-primary mt-2 w-100" type="button" data-cartorio-apply disabled>Aplicar cartório selecionado</button>
+                        <button class="btn btn-outline-primary mt-2 w-100" type="button" data-cartorio-apply-city disabled>Aplicar cartório selecionado</button>
+                        <small class="cartorio-lookup-status" data-cartorio-city-status aria-live="polite"></small>
                     </div>
                     <div class="col-12">
                         <label class="form-label">Ou buscar pelo CNS</label>
-                        <input class="form-control" name="cns" data-cartorio-lookup-cns data-cartorio-field="cns" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="00.000-0" />
-                        <small class="cartorio-lookup-status" data-cartorio-lookup-status aria-live="polite"></small>
+                        <input class="form-control" data-cartorio-lookup-cns inputmode="numeric" maxlength="8" autocomplete="off" placeholder="00.000-0" />
+                        <button class="btn btn-outline-primary mt-2" type="button" data-cartorio-apply-cns disabled>Aplicar dados deste CNS</button>
+                        <small class="cartorio-lookup-status" data-cartorio-cns-status aria-live="polite"></small>
                     </div>
                 </div>
                 <small class="text-muted">Municípios: IBGE. Registros de Imóveis e CNS: base oficial Justiça Aberta/CNJ.</small>
             </div>
             <div><label class="form-label">Nome</label><input class="form-control" name="nome" data-cartorio-field="nome" required /></div>
+            <div><label class="form-label">CNS</label><input class="form-control" name="cns" data-cartorio-field="cns" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="00.000-0" /></div>
             <div class="row g-2">
                 <div class="col-4">
                     <label class="form-label">UF</label>

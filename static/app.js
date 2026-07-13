@@ -183,17 +183,21 @@ function initCartorioLookup() {
         const citySelect = lookup.querySelector("[data-cartorio-lookup-city]");
         const officeSelect = lookup.querySelector("[data-cartorio-lookup-office]");
         const cnsInput = lookup.querySelector("[data-cartorio-lookup-cns]");
-        const status = lookup.querySelector("[data-cartorio-lookup-status]");
-        const applyButton = lookup.querySelector("[data-cartorio-apply]");
-        let selectedItem = null;
-        let activeRequest = null;
+        const cityStatus = lookup.querySelector("[data-cartorio-city-status]");
+        const cnsStatus = lookup.querySelector("[data-cartorio-cns-status]");
+        const cityApplyButton = lookup.querySelector("[data-cartorio-apply-city]");
+        const cnsApplyButton = lookup.querySelector("[data-cartorio-apply-cns]");
+        let selectedCityItem = null;
+        let selectedCnsItem = null;
+        let cityRequest = null;
+        let cnsRequest = null;
 
         const cleanCns = (value) => String(value || "").replace(/\D/g, "").slice(0, 6);
         const formatCns = (value) => cleanCns(value).replace(/^(\d{2})(\d)/, "$1.$2").replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2-$3");
-        const setStatus = (message, state = "") => {
-            if (!status) return;
-            status.textContent = message;
-            status.dataset.state = state;
+        const setStatus = (element, message, state = "") => {
+            if (!element) return;
+            element.textContent = message;
+            element.dataset.state = state;
         };
         const setOffices = (items, placeholder = "Selecione o Registro de Imóveis") => {
             if (!officeSelect) return;
@@ -210,8 +214,8 @@ function initCartorioLookup() {
             });
             officeSelect.disabled = items.length === 0;
             officeSelect._cartorioItems = items;
-            selectedItem = null;
-            if (applyButton) applyButton.disabled = true;
+            selectedCityItem = null;
+            if (cityApplyButton) cityApplyButton.disabled = true;
         };
         const setField = (name, value) => {
             const field = form.querySelector(`[data-cartorio-field="${name}"]`) || form.querySelector(`[name="${name}"]`);
@@ -222,23 +226,20 @@ function initCartorioLookup() {
         };
         const fillForm = (item) => {
             if (!item) return;
-            ["nome", "cidade", "uf", "contato", "email", "telefone", "whatsapp", "oficial", "observacoes"].forEach((field) => {
-                setField(field, item[field] || "");
+            ["nome", "cns", "cidade", "uf", "contato", "email", "telefone", "whatsapp", "oficial", "observacoes"].forEach((field) => {
+                setField(field, field === "cns" ? formatCns(item[field]) : item[field] || "");
             });
-            if (ufSelect) ufSelect.value = item.uf || "";
-            if (citySelect) citySelect.value = item.cidade || "";
-            if (cnsInput) cnsInput.value = formatCns(item.cns || "");
-            setStatus(`Dados de ${item.nome} aplicados ao cadastro.`, "success");
-            selectedItem = item;
-            if (applyButton) applyButton.disabled = true;
         };
-        const requestCatalog = async (params) => {
-            if (activeRequest) activeRequest.abort();
-            activeRequest = new AbortController();
+        const requestCatalog = async (params, mode) => {
+            if (mode === "city" && cityRequest) cityRequest.abort();
+            if (mode === "cns" && cnsRequest) cnsRequest.abort();
+            const controller = new AbortController();
+            if (mode === "city") cityRequest = controller;
+            if (mode === "cns") cnsRequest = controller;
             const query = new URLSearchParams(params);
             const response = await fetch(`/api/cartorios/catalogo?${query}`, {
                 headers: { Accept: "application/json" },
-                signal: activeRequest.signal,
+                signal: controller.signal,
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.message || "Não foi possível consultar o catálogo oficial.");
@@ -249,55 +250,64 @@ function initCartorioLookup() {
             const city = citySelect?.value?.trim() || "";
             setOffices([], city ? "Consultando o Justiça Aberta/CNJ..." : "Escolha a cidade");
             if (!uf || !city) return;
-            setStatus("Consultando Registros de Imóveis no Justiça Aberta/CNJ...", "loading");
+            setStatus(cityStatus, "Consultando Registros de Imóveis no Justiça Aberta/CNJ...", "loading");
             try {
-                const offices = await requestCatalog({ uf, cidade: city });
+                const offices = await requestCatalog({ uf, cidade: city }, "city");
                 setOffices(offices, offices.length ? "Selecione o Registro de Imóveis" : "Nenhum Registro de Imóveis encontrado");
                 setStatus(
+                    cityStatus,
                     offices.length ? `${offices.length} Registro(s) de Imóveis encontrado(s).` : "Nenhum Registro de Imóveis encontrado nesta cidade.",
                     offices.length ? "success" : "warning"
                 );
             } catch (error) {
                 if (error.name === "AbortError") return;
                 setOffices([], "Consulta indisponível");
-                setStatus(error.message, "error");
+                setStatus(cityStatus, error.message, "error");
             }
         };
 
         ufSelect?.addEventListener("change", () => {
             if (citySelect) citySelect.value = "";
             setOffices([], "Escolha a cidade");
-            setStatus("");
+            setStatus(cityStatus, "");
         });
         citySelect?.addEventListener("change", refreshOffices);
         officeSelect?.addEventListener("change", () => {
             const index = Number(officeSelect.value);
-            selectedItem = officeSelect.value === "" ? null : officeSelect._cartorioItems?.[index] || null;
-            if (applyButton) applyButton.disabled = !selectedItem;
-            if (selectedItem) setStatus(`Cartório selecionado: ${selectedItem.nome}. Clique em Aplicar para preencher.`, "success");
+            selectedCityItem = officeSelect.value === "" ? null : officeSelect._cartorioItems?.[index] || null;
+            if (cityApplyButton) cityApplyButton.disabled = !selectedCityItem;
+            if (selectedCityItem) setStatus(cityStatus, `Cartório selecionado: ${selectedCityItem.nome}. Clique em Aplicar para preencher.`, "success");
         });
-        applyButton?.addEventListener("click", () => fillForm(selectedItem));
+        cityApplyButton?.addEventListener("click", () => {
+            fillForm(selectedCityItem);
+            if (selectedCityItem) setStatus(cityStatus, `Dados de ${selectedCityItem.nome} aplicados ao cadastro.`, "success");
+        });
         cnsInput?.addEventListener("input", async () => {
             const cns = cleanCns(cnsInput.value);
             cnsInput.value = formatCns(cns);
             if (cns.length < 6) {
-                setStatus(cns.length ? `Digite os ${6 - cns.length} numero(s) restantes.` : "");
+                selectedCnsItem = null;
+                if (cnsApplyButton) cnsApplyButton.disabled = true;
+                setStatus(cnsStatus, cns.length ? `Digite os ${6 - cns.length} numero(s) restantes.` : "");
                 return;
             }
-            setStatus("Consultando CNS no Justiça Aberta/CNJ...", "loading");
+            setStatus(cnsStatus, "Consultando CNS no Justiça Aberta/CNJ...", "loading");
             try {
-                const items = await requestCatalog({ cns });
-                setOffices(items, "Cartório encontrado pelo CNS");
-                selectedItem = items[0] || null;
-                if (!selectedItem) throw new Error("CNS não encontrado ou não pertence a Registro de Imóveis.");
-                if (officeSelect) officeSelect.value = "0";
-                if (applyButton) applyButton.disabled = false;
-                setStatus(`CNS encontrado: ${selectedItem.nome}. Clique em Aplicar para preencher.`, "success");
+                const items = await requestCatalog({ cns }, "cns");
+                selectedCnsItem = items[0] || null;
+                if (!selectedCnsItem) throw new Error("CNS não encontrado ou não pertence a Registro de Imóveis.");
+                if (cnsApplyButton) cnsApplyButton.disabled = false;
+                setStatus(cnsStatus, `CNS encontrado: ${selectedCnsItem.nome}. Clique em Aplicar dados deste CNS.`, "success");
             } catch (error) {
                 if (error.name === "AbortError") return;
-                setOffices([], "CNS não encontrado");
-                setStatus(error.message, "error");
+                selectedCnsItem = null;
+                if (cnsApplyButton) cnsApplyButton.disabled = true;
+                setStatus(cnsStatus, error.message, "error");
             }
+        });
+        cnsApplyButton?.addEventListener("click", () => {
+            fillForm(selectedCnsItem);
+            if (selectedCnsItem) setStatus(cnsStatus, `Dados de ${selectedCnsItem.nome} aplicados ao cadastro.`, "success");
         });
 
         setOffices([], "Escolha a cidade");
