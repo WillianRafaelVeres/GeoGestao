@@ -188,13 +188,20 @@
                                 {{ field_text('CNPJ', 'pj_cnpj', format_cnpj(pj.cnpj), 'text', 'cnpj') }}
                                 {{ field_text('E-mail', 'pj_email', pj.email, 'email') }}
                                 {{ field_text('Telefone', 'pj_telefone', format_phone(pj.telefone), 'text', 'phone') }}
-                                {{ field_text('CEP', 'pj_cep', format_cep(pj.cep), 'text', 'cep', '', '', 'data-cep-prefix="pj"') }}
+                                <label>Tipo de endereco
+                                    <select name="pj_tipo_endereco" data-address-mode>
+                                        {% set pj_tipo_endereco = pj.tipo_endereco or 'URBANO' %}
+                                        <option value="URBANO" {% if pj_tipo_endereco == 'URBANO' %}selected{% endif %}>Urbano</option>
+                                        <option value="RURAL" {% if pj_tipo_endereco == 'RURAL' %}selected{% endif %}>Rural</option>
+                                    </select>
+                                </label>
+                                {{ field_text('CEP (se houver)', 'pj_cep', format_cep(pj.cep), 'text', 'cep', '', '', 'data-cep-prefix="pj"') }}
                                 {{ uf_select('UF', 'pj_uf', pj.uf, '', 'data-city-uf="pj"') }}
                                 {{ field_text('Cidade', 'pj_cidade', pj.cidade, 'text', '', '', '', 'data-city-input="pj"') }}
-                                {{ field_text('Bairro', 'pj_bairro', pj.bairro) }}
-                                {{ field_text('Logradouro', 'pj_logradouro', pj.logradouro) }}
-                                {{ field_text('Numero', 'pj_numero', pj.numero) }}
-                                {{ field_text('Complemento', 'pj_complemento', pj.complemento) }}
+                                {{ field_text('Bairro/localidade', 'pj_bairro', pj.bairro) }}
+                                {{ field_text('Logradouro/estrada/acesso', 'pj_logradouro', pj.logradouro) }}
+                                {{ field_text('Numero (se houver)', 'pj_numero', pj.numero) }}
+                                {{ field_text('Complemento/ponto de referencia', 'pj_complemento', pj.complemento) }}
                             </div>
                             <div class="city-warning" data-city-warning="pj">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
@@ -205,13 +212,20 @@
                                 <small>Para pessoa juridica, use o endereco da empresa.</small>
                             </div>
                             <div class="form-grid four">
-                                {{ field_text('CEP', 'pf_end_cep', format_cep(endereco.cep), 'text', 'cep', '', '', 'data-cep-prefix="pf_end"') }}
+                                <label>Tipo de endereco
+                                    <select name="pf_end_tipo_endereco" data-address-mode>
+                                        {% set pf_end_tipo_endereco = endereco.tipo_endereco or 'URBANO' %}
+                                        <option value="URBANO" {% if pf_end_tipo_endereco == 'URBANO' %}selected{% endif %}>Urbano</option>
+                                        <option value="RURAL" {% if pf_end_tipo_endereco == 'RURAL' %}selected{% endif %}>Rural</option>
+                                    </select>
+                                </label>
+                                {{ field_text('CEP (se houver)', 'pf_end_cep', format_cep(endereco.cep), 'text', 'cep', '', '', 'data-cep-prefix="pf_end"') }}
                                 {{ uf_select('UF', 'pf_end_uf', endereco.uf, '', 'data-city-uf="pf_end"') }}
                                 {{ field_text('Cidade', 'pf_end_cidade', endereco.cidade, 'text', '', '', '', 'data-city-input="pf_end"') }}
-                                {{ field_text('Bairro', 'pf_end_bairro', endereco.bairro) }}
-                                {{ field_text('Logradouro', 'pf_end_logradouro', endereco.logradouro) }}
-                                {{ field_text('Numero', 'pf_end_numero', endereco.numero) }}
-                                {{ field_text('Complemento', 'pf_end_complemento', endereco.complemento) }}
+                                {{ field_text('Bairro/localidade', 'pf_end_bairro', endereco.bairro) }}
+                                {{ field_text('Logradouro/estrada/acesso', 'pf_end_logradouro', endereco.logradouro) }}
+                                {{ field_text('Numero (se houver)', 'pf_end_numero', endereco.numero) }}
+                                {{ field_text('Complemento/ponto de referencia', 'pf_end_complemento', endereco.complemento) }}
                             </div>
                             <div class="city-warning" data-city-warning="pf_end">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
@@ -243,6 +257,7 @@
                                                 <input type="hidden" name="rep_cidade_nascimento" value="{{ rep.cidade_nascimento or '' }}" data-rep-value="cidade_nascimento">
                                                 <input type="hidden" name="rep_email" value="{{ rep.email or '' }}" data-rep-value="email">
                                                 <input type="hidden" name="rep_telefone" value="{{ format_phone(rep.telefone) }}" data-rep-value="telefone">
+                                                <input type="hidden" name="rep_tipo_endereco" value="{{ rep.tipo_endereco or 'URBANO' }}" data-rep-value="tipo_endereco">
                                                 <input type="hidden" name="rep_cep" value="{{ format_cep(rep.cep) }}" data-rep-value="cep">
                                                 <input type="hidden" name="rep_uf" value="{{ rep.uf or '' }}" data-rep-value="uf">
                                                 <input type="hidden" name="rep_cidade" value="{{ rep.cidade or '' }}" data-rep-value="cidade">
@@ -310,7 +325,13 @@
                                         </label>
                                         <label>E-mail<input type="email" data-rep-field="email"></label>
                                         <label>Telefone<input type="text" data-mask="phone" data-rep-field="telefone"></label>
-                                        <label>CEP<input type="text" data-mask="cep" data-rep-field="cep"></label>
+                                        <label>Tipo de endereco
+                                            <select data-rep-field="tipo_endereco" data-address-mode>
+                                                <option value="URBANO">Urbano</option>
+                                                <option value="RURAL">Rural</option>
+                                            </select>
+                                        </label>
+                                        <label>CEP (se houver)<input type="text" data-mask="cep" data-rep-field="cep"></label>
                                         <label>UF
                                             <select data-rep-field="uf">
                                                 <option value="">UF</option>
@@ -318,10 +339,10 @@
                                             </select>
                                         </label>
                                         <label>Cidade<input type="text" data-rep-field="cidade"></label>
-                                        <label>Bairro<input type="text" data-rep-field="bairro"></label>
-                                        <label>Logradouro<input type="text" data-rep-field="logradouro"></label>
-                                        <label>Numero<input type="text" data-rep-field="numero"></label>
-                                        <label>Complemento<input type="text" data-rep-field="complemento"></label>
+                                        <label>Bairro/localidade<input type="text" data-rep-field="bairro"></label>
+                                        <label>Logradouro/estrada/acesso<input type="text" data-rep-field="logradouro"></label>
+                                        <label>Numero (se houver)<input type="text" data-rep-field="numero"></label>
+                                        <label>Complemento/ponto de referencia<input type="text" data-rep-field="complemento"></label>
                                         <label class="span-2">Texto adicional/habilitacao<input type="text" data-rep-field="texto_adicional" placeholder="Ex.: profissional habilitado, CFTA no ..."></label>
                                     </div>
                                     <div class="representative-popout-actions">
@@ -350,6 +371,7 @@
                                         <input type="hidden" name="rep_cidade_nascimento" value="" data-rep-value="cidade_nascimento">
                                         <input type="hidden" name="rep_email" value="" data-rep-value="email">
                                         <input type="hidden" name="rep_telefone" value="" data-rep-value="telefone">
+                                        <input type="hidden" name="rep_tipo_endereco" value="URBANO" data-rep-value="tipo_endereco">
                                         <input type="hidden" name="rep_cep" value="" data-rep-value="cep">
                                         <input type="hidden" name="rep_uf" value="" data-rep-value="uf">
                                         <input type="hidden" name="rep_cidade" value="" data-rep-value="cidade">

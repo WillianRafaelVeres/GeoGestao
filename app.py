@@ -971,6 +971,7 @@ def init_db():
             razao_social TEXT,
             nome_fantasia TEXT,
             cnpj TEXT,
+            tipo_endereco TEXT DEFAULT 'URBANO',
             logradouro TEXT,
             uf TEXT,
             cidade TEXT,
@@ -988,6 +989,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS enderecos_proprietario (
             id SERIAL PRIMARY KEY,
             pessoa_fisica_id INTEGER NOT NULL UNIQUE,
+            tipo_endereco TEXT DEFAULT 'URBANO',
             logradouro TEXT,
             uf TEXT,
             cidade TEXT,
@@ -1022,6 +1024,7 @@ def init_db():
             email TEXT,
             telefone TEXT,
             texto_adicional TEXT,
+            tipo_endereco TEXT DEFAULT 'URBANO',
             logradouro TEXT,
             uf TEXT,
             cidade TEXT,
@@ -8230,6 +8233,10 @@ def form_decimal(name):
     return float(value) if value not in (None, "") else None
 
 
+def db_has_column(table_name, column_name):
+    return column_name in table_columns(get_db(), table_name)
+
+
 REPRESENTATIVE_FORM_FIELDS = [
     "id",
     "tipo_representacao",
@@ -8249,6 +8256,7 @@ REPRESENTATIVE_FORM_FIELDS = [
     "cidade_nascimento",
     "email",
     "telefone",
+    "tipo_endereco",
     "cep",
     "uf",
     "cidade",
@@ -8265,6 +8273,11 @@ def representative_type(value):
     return value if value in REPRESENTATIVE_TYPES else "PROCURADOR"
 
 
+def address_type(value):
+    value = (value or "").strip().upper()
+    return value if value in {"URBANO", "RURAL"} else "URBANO"
+
+
 def parse_representantes_form(form):
     rows = []
     lists = {
@@ -8278,6 +8291,7 @@ def parse_representantes_form(form):
             values = lists[field]
             row[field] = values[index].strip() if index < len(values) and values[index] is not None else ""
         row["tipo_representacao"] = representative_type(row.get("tipo_representacao"))
+        row["tipo_endereco"] = address_type(row.get("tipo_endereco"))
         row["cpf"] = only_digits(row.get("cpf"))
         row["cep"] = only_digits(row.get("cep"))
         if any(row.get(field) for field in row if field != "tipo_representacao"):
@@ -8304,6 +8318,7 @@ def parse_representantes_form(form):
                 "cidade_nascimento": form.get("proc_cidade_nascimento", "").strip(),
                 "email": form.get("proc_email", "").strip(),
                 "telefone": form.get("proc_telefone", "").strip(),
+                "tipo_endereco": address_type(form.get("proc_tipo_endereco")),
                 "cep": only_digits(form.get("proc_cep")),
                 "uf": form.get("proc_uf", "").strip(),
                 "cidade": form.get("proc_cidade", "").strip(),
@@ -8591,7 +8606,9 @@ def upsert_conjuge(pessoa_fisica_id, now):
 
 def upsert_endereco_pf(pessoa_fisica_id, now):
     existing = query_db("SELECT id FROM enderecos_proprietario WHERE pessoa_fisica_id = %s", (pessoa_fisica_id,), one=True)
+    supports_tipo_endereco = db_has_column("enderecos_proprietario", "tipo_endereco")
     values = (
+        address_type(get_form_value("pf_end_tipo_endereco")),
         get_form_value("pf_end_logradouro") or None,
         get_form_value("pf_end_uf") or None,
         get_form_value("pf_end_cidade") or None,
@@ -8601,32 +8618,54 @@ def upsert_endereco_pf(pessoa_fisica_id, now):
         get_form_value("pf_end_complemento") or None,
         now,
     )
+    legacy_values = values[1:]
     if existing:
-        execute_db(
-            """
-            UPDATE enderecos_proprietario
-            SET logradouro = %s, uf = %s, cidade = %s, bairro = %s, cep = %s, numero = %s, complemento = %s, atualizado_em = %s
-            WHERE id = %s
-            """,
-            values + (existing["id"],),
-        )
+        if supports_tipo_endereco:
+            execute_db(
+                """
+                UPDATE enderecos_proprietario
+                SET tipo_endereco = %s, logradouro = %s, uf = %s, cidade = %s, bairro = %s, cep = %s, numero = %s, complemento = %s, atualizado_em = %s
+                WHERE id = %s
+                """,
+                values + (existing["id"],),
+            )
+        else:
+            execute_db(
+                """
+                UPDATE enderecos_proprietario
+                SET logradouro = %s, uf = %s, cidade = %s, bairro = %s, cep = %s, numero = %s, complemento = %s, atualizado_em = %s
+                WHERE id = %s
+                """,
+                legacy_values + (existing["id"],),
+            )
         return existing["id"]
+    if supports_tipo_endereco:
+        return execute_db(
+            """
+            INSERT INTO enderecos_proprietario
+                (tipo_endereco, logradouro, uf, cidade, bairro, cep, numero, complemento, atualizado_em, pessoa_fisica_id, criado_em)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            values + (pessoa_fisica_id, now),
+        )
     return execute_db(
         """
         INSERT INTO enderecos_proprietario
             (logradouro, uf, cidade, bairro, cep, numero, complemento, atualizado_em, pessoa_fisica_id, criado_em)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        values + (pessoa_fisica_id, now),
+        legacy_values + (pessoa_fisica_id, now),
     )
 
 
 def upsert_pessoa_juridica(cliente_id, now):
     existing = query_db("SELECT id FROM pessoas_juridicas WHERE cliente_id = %s", (cliente_id,), one=True)
+    supports_tipo_endereco = db_has_column("pessoas_juridicas", "tipo_endereco")
     values = (
         get_form_value("pj_razao_social") or None,
         get_form_value("pj_nome_fantasia") or None,
         only_digits(get_form_value("pj_cnpj")) or None,
+        address_type(get_form_value("pj_tipo_endereco")),
         get_form_value("pj_logradouro") or None,
         get_form_value("pj_uf") or None,
         get_form_value("pj_cidade") or None,
@@ -8638,17 +8677,39 @@ def upsert_pessoa_juridica(cliente_id, now):
         get_form_value("pj_telefone") or None,
         now,
     )
+    legacy_values = values[:3] + values[4:]
     if existing:
-        execute_db(
-            """
-            UPDATE pessoas_juridicas
-            SET razao_social = %s, nome_fantasia = %s, cnpj = %s, logradouro = %s, uf = %s, cidade = %s, bairro = %s,
-                cep = %s, numero = %s, complemento = %s, email = %s, telefone = %s, atualizado_em = %s
-            WHERE id = %s
-            """,
-            values + (existing["id"],),
-        )
+        if supports_tipo_endereco:
+            execute_db(
+                """
+                UPDATE pessoas_juridicas
+                SET razao_social = %s, nome_fantasia = %s, cnpj = %s, tipo_endereco = %s, logradouro = %s, uf = %s, cidade = %s, bairro = %s,
+                    cep = %s, numero = %s, complemento = %s, email = %s, telefone = %s, atualizado_em = %s
+                WHERE id = %s
+                """,
+                values + (existing["id"],),
+            )
+        else:
+            execute_db(
+                """
+                UPDATE pessoas_juridicas
+                SET razao_social = %s, nome_fantasia = %s, cnpj = %s, logradouro = %s, uf = %s, cidade = %s, bairro = %s,
+                    cep = %s, numero = %s, complemento = %s, email = %s, telefone = %s, atualizado_em = %s
+                WHERE id = %s
+                """,
+                legacy_values + (existing["id"],),
+            )
         return existing["id"]
+    if supports_tipo_endereco:
+        return execute_db(
+            """
+            INSERT INTO pessoas_juridicas
+                (razao_social, nome_fantasia, cnpj, tipo_endereco, logradouro, uf, cidade, bairro, cep, numero, complemento,
+                 email, telefone, atualizado_em, cliente_id, criado_em)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            values + (cliente_id, now),
+        )
     return execute_db(
         """
         INSERT INTO pessoas_juridicas
@@ -8656,57 +8717,73 @@ def upsert_pessoa_juridica(cliente_id, now):
              email, telefone, atualizado_em, cliente_id, criado_em)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        values + (cliente_id, now),
+        legacy_values + (cliente_id, now),
     )
 
 
 def sync_procuradores(cliente_id, now):
     representantes = parse_representantes_form(request.form)
     db = get_db()
+    supports_tipo_endereco = db_has_column("procuradores", "tipo_endereco")
     try:
         db.execute("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
         for index, representante in enumerate(representantes):
-            db.execute(
-                """
-                INSERT INTO procuradores
-                    (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
-                     profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
-                     data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional,
-                     logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    cliente_id,
-                    representative_type(representante.get("tipo_representacao")),
-                    1 if index == 0 else 0,
-                    representante.get("sexo") or None,
-                    representante.get("nome_completo") or None,
-                    representante.get("estado_civil") or None,
-                    representante.get("regime_casamento") or None,
-                    representante.get("profissao_ocupacao") or None,
-                    representante.get("nacionalidade") or None,
-                    representante.get("rg") or None,
-                    representante.get("orgao_expedidor_rg") or None,
-                    only_digits(representante.get("cpf")) or None,
-                    representante.get("nome_pai") or None,
-                    representante.get("nome_mae") or None,
-                    representante.get("data_nascimento") or None,
-                    representante.get("uf_nascimento") or None,
-                    representante.get("cidade_nascimento") or None,
-                    representante.get("email") or None,
-                    representante.get("telefone") or None,
-                    representante.get("texto_adicional") or None,
-                    representante.get("logradouro") or None,
-                    representante.get("uf") or None,
-                    representante.get("cidade") or None,
-                    representante.get("bairro") or None,
-                    only_digits(representante.get("cep")) or None,
-                    representante.get("numero") or None,
-                    representante.get("complemento") or None,
-                    now,
-                    now,
-                ),
+            values = (
+                cliente_id,
+                representative_type(representante.get("tipo_representacao")),
+                1 if index == 0 else 0,
+                representante.get("sexo") or None,
+                representante.get("nome_completo") or None,
+                representante.get("estado_civil") or None,
+                representante.get("regime_casamento") or None,
+                representante.get("profissao_ocupacao") or None,
+                representante.get("nacionalidade") or None,
+                representante.get("rg") or None,
+                representante.get("orgao_expedidor_rg") or None,
+                only_digits(representante.get("cpf")) or None,
+                representante.get("nome_pai") or None,
+                representante.get("nome_mae") or None,
+                representante.get("data_nascimento") or None,
+                representante.get("uf_nascimento") or None,
+                representante.get("cidade_nascimento") or None,
+                representante.get("email") or None,
+                representante.get("telefone") or None,
+                representante.get("texto_adicional") or None,
+                address_type(representante.get("tipo_endereco")),
+                representante.get("logradouro") or None,
+                representante.get("uf") or None,
+                representante.get("cidade") or None,
+                representante.get("bairro") or None,
+                only_digits(representante.get("cep")) or None,
+                representante.get("numero") or None,
+                representante.get("complemento") or None,
+                now,
+                now,
             )
+            if supports_tipo_endereco:
+                db.execute(
+                    """
+                    INSERT INTO procuradores
+                        (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
+                         profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
+                         data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional, tipo_endereco,
+                         logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    values,
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT INTO procuradores
+                        (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
+                         profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
+                         data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional,
+                         logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    values[:20] + values[21:],
+                )
         db.commit()
         invalidate_runtime_caches()
     except Exception:

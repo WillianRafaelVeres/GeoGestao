@@ -391,6 +391,8 @@ function initRepresentativeManagers() {
             });
             const typeField = popout.querySelector('[data-rep-field="tipo_representacao"]');
             if (typeField && !typeField.value) typeField.value = "PROCURADOR";
+            const addressTypeField = popout.querySelector('[data-rep-field="tipo_endereco"]');
+            if (addressTypeField && !addressTypeField.value) addressTypeField.value = "URBANO";
             if (title) title.textContent = row ? "Editar responsavel" : "Novo responsavel";
             popout.classList.remove("is-hidden");
             const first = popout.querySelector('[data-rep-field="nome_completo"]');

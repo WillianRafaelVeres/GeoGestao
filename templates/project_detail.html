@@ -626,10 +626,19 @@ async function selecionarPasta() {
     btn.disabled = true;
     btn.textContent = 'Selecionando...';
     try {
+        const response = await fetch('/api/select-folder', { method: 'POST' });
+        const data = await response.json();
+        if (response.ok && data.path) {
+            input.value = data.path;
+            return;
+        }
+        if (response.ok && data.path === null) return;
+        if (!response.ok && data.error) console.warn(data.error);
+
         if (window.showDirectoryPicker) {
             const handle = await window.showDirectoryPicker();
             input.value = handle.name;
-            alert('Pasta selecionada. Por seguranca, o navegador pode informar apenas o nome; cole o caminho completo se necessario.');
+            alert('O navegador informou apenas o nome da pasta. Cole o caminho completo do Dropbox antes de salvar.');
             return;
         }
         const picker = document.createElement('input');
@@ -640,7 +649,7 @@ async function selecionarPasta() {
             const file = picker.files && picker.files[0];
             if (file && file.webkitRelativePath) {
                 input.value = file.webkitRelativePath.split('/')[0];
-                alert('Pasta selecionada. Cole o caminho completo se precisar abrir pelo servidor/local.');
+                alert('O navegador informou apenas o nome da pasta. Cole o caminho completo do Dropbox antes de salvar.');
             }
             picker.remove();
         }, { once: true });

@@ -384,15 +384,20 @@ def get_cliente_pendencias(cliente_context):
         if pj.get("cnpj") and not validate_cnpj(pj.get("cnpj")):
             push(obrigatorias, obrigatorias_por_secao, "Pessoa juridica", "CNPJ invalido", "pj_cnpj", message="Informe um CNPJ valido.")
             pj_ok = False
+        pj_rural = is_rural_address(pj)
         for label, value, field in [
-            ("CEP", pj.get("cep"), "pj_cep"),
             ("UF", pj.get("uf"), "pj_uf"),
             ("Cidade", pj.get("cidade"), "pj_cidade"),
-            ("Bairro", pj.get("bairro"), "pj_bairro"),
-            ("Logradouro", pj.get("logradouro"), "pj_logradouro"),
-            ("Numero", pj.get("numero"), "pj_numero"),
+            ("Logradouro/estrada/acesso", pj.get("logradouro"), "pj_logradouro"),
         ]:
             pj_ok = require("Endereco da empresa", label, value, field) and pj_ok
+        if not pj_rural:
+            for label, value, field in [
+                ("CEP", pj.get("cep"), "pj_cep"),
+                ("Bairro", pj.get("bairro"), "pj_bairro"),
+                ("Numero", pj.get("numero"), "pj_numero"),
+            ]:
+                pj_ok = require("Endereco da empresa", label, value, field) and pj_ok
         if pj.get("cep") and not validate_cep(pj.get("cep")):
             push(obrigatorias, obrigatorias_por_secao, "Endereco da empresa", "CEP invalido", "pj_cep", message="Informe o CEP com 8 digitos.")
             pj_ok = False
@@ -442,15 +447,20 @@ def get_cliente_pendencias(cliente_context):
             complete_sections.add("Pessoa fisica")
 
         end_ok = True
+        endereco_rural = is_rural_address(endereco)
         for label, value, field in [
-            ("CEP", endereco.get("cep"), "pf_end_cep"),
             ("UF", endereco.get("uf"), "pf_end_uf"),
             ("Cidade", endereco.get("cidade"), "pf_end_cidade"),
-            ("Bairro", endereco.get("bairro"), "pf_end_bairro"),
-            ("Logradouro", endereco.get("logradouro"), "pf_end_logradouro"),
-            ("Numero", endereco.get("numero"), "pf_end_numero"),
+            ("Logradouro/estrada/acesso", endereco.get("logradouro"), "pf_end_logradouro"),
         ]:
             end_ok = require("Endereco do proprietario", label, value, field) and end_ok
+        if not endereco_rural:
+            for label, value, field in [
+                ("CEP", endereco.get("cep"), "pf_end_cep"),
+                ("Bairro", endereco.get("bairro"), "pf_end_bairro"),
+                ("Numero", endereco.get("numero"), "pf_end_numero"),
+            ]:
+                end_ok = require("Endereco do proprietario", label, value, field) and end_ok
         if endereco.get("cep") and not validate_cep(endereco.get("cep")):
             push(obrigatorias, obrigatorias_por_secao, "Endereco do proprietario", "CEP invalido", "pf_end_cep", message="Informe o CEP com 8 digitos.")
             end_ok = False
@@ -483,15 +493,19 @@ def get_cliente_pendencias(cliente_context):
                 complete_sections.add("Conjuge")
 
     if quem_assina == "PROCURADOR" or tipo_cliente == "PESSOA_JURIDICA":
+        procurador_rural = is_rural_address(procurador)
         proc_ok = all([
             require("Procurador/representante", "Nome completo", procurador.get("nome_completo"), "proc_nome_completo"),
             require("Procurador/representante", "CPF", procurador.get("cpf"), "proc_cpf"),
-            require("Procurador/representante", "CEP", procurador.get("cep"), "proc_cep"),
             require("Procurador/representante", "UF", procurador.get("uf"), "proc_uf"),
             require("Procurador/representante", "Cidade", procurador.get("cidade"), "proc_cidade"),
-            require("Procurador/representante", "Logradouro", procurador.get("logradouro"), "proc_logradouro"),
-            require("Procurador/representante", "Numero", procurador.get("numero"), "proc_numero"),
+            require("Procurador/representante", "Logradouro/estrada/acesso", procurador.get("logradouro"), "proc_logradouro"),
         ])
+        if not procurador_rural:
+            proc_ok = all([
+                require("Procurador/representante", "CEP", procurador.get("cep"), "proc_cep"),
+                require("Procurador/representante", "Numero", procurador.get("numero"), "proc_numero"),
+            ]) and proc_ok
         if procurador.get("cpf") and not validate_cpf(procurador.get("cpf")):
             push(obrigatorias, obrigatorias_por_secao, "Procurador/representante", "CPF invalido", "proc_cpf", message="Informe um CPF valido.")
             proc_ok = False
@@ -570,6 +584,10 @@ def requires_conjuge(estado_civil, regime_casamento, incluir_conjuge=False):
     if estado_civil not in ("CASADO", "UNIAO_ESTAVEL"):
         return False
     return regime_casamento in CONJUGE_REQUIRED_REGIMES
+
+
+def is_rural_address(address):
+    return (address or {}).get("tipo_endereco") == "RURAL"
 
 
 def build_flexoes_genero(sexo):
