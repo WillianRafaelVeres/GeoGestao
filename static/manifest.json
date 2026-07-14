@@ -8,9 +8,10 @@
   "description": "Gestao de projetos, etapas, prazos e produtividade para topografia.",
   "icons": [
     {
-      "src": "/static/icon.svg",
-      "sizes": "192x192",
-      "type": "image/svg+xml"
+      "src": "/static/geogestao-logo.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }
