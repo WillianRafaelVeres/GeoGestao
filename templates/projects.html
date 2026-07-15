@@ -1517,7 +1517,11 @@ function toggleCheck(cb, itemId, stageId) {
         if (bar) bar.style.width = (total ? Math.round(done * 100 / total) : 0) + '%';
     }
     cb.disabled = true;
-    fetch(`/api/project-checklist/${itemId}/toggle`, { method: 'POST' })
+    fetch(`/api/project-checklist/${itemId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concluido: cb.checked })
+    })
     .then(async r => {
         const data = await r.json();
         if (!r.ok || !data.ok) throw new Error(data.error || 'Falha ao salvar checklist.');

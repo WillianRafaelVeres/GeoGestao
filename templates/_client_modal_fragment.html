@@ -1,0 +1,5 @@
+{% from '_client_modals.html' import cliente_modal, pendencias_modal with context %}
+<div data-client-modal-fragment="{{ row.id }}">
+    {{ cliente_modal('modal-client-' ~ row.id, row.nome_exibicao or row.nome or 'Cliente', context) }}
+    {{ pendencias_modal(row, context, meta) }}
+</div>

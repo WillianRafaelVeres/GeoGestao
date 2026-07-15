@@ -403,6 +403,8 @@ def add_static_version(endpoint, values):
 DB_POOL_MINCONN = int(os.environ.get("GEOGESTAO_DB_POOL_MINCONN", "1"))
 DB_POOL_MAXCONN = int(os.environ.get("GEOGESTAO_DB_POOL_MAXCONN", "10"))
 DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("GEOGESTAO_DB_STATEMENT_TIMEOUT_MS", "30000"))
+DB_LOCK_TIMEOUT_MS = int(os.environ.get("GEOGESTAO_DB_LOCK_TIMEOUT_MS", "5000"))
+DB_IDLE_TRANSACTION_TIMEOUT_MS = int(os.environ.get("GEOGESTAO_DB_IDLE_TRANSACTION_TIMEOUT_MS", "15000"))
 DB_IDLE_PING_SECONDS = int(os.environ.get("GEOGESTAO_DB_IDLE_PING_SECONDS", "240"))
 USER_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_USER_CACHE_TTL_SECONDS", "60"))
 PERF_LOG_ENABLED = os.environ.get("GEOGESTAO_PERF_LOG", "0") == "1"
@@ -423,6 +425,15 @@ _lookup_cache = {}
 _due_statuses_next_refresh = 0.0
 _refreshing_due_statuses = False
 _due_refresh_lock = threading.Lock()
+
+STABLE_LOOKUP_CACHE_KEYS = frozenset({
+    "process_initial_stage_options_rows",
+    "active_stage_models",
+    "active_users",
+    "cartorio_options",
+    "matrix_static_options",
+    "process_type_options",
+})
 
 
 class PgConn:
@@ -496,7 +507,19 @@ class _AppConnection(psycopg2.extensions.connection):
 
 def _configure_connection(conn):
     with conn.cursor() as cur:
-        cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+        cur.execute(
+            """
+            SELECT
+                set_config('statement_timeout', %s, false),
+                set_config('lock_timeout', %s, false),
+                set_config('idle_in_transaction_session_timeout', %s, false)
+            """,
+            (
+                str(DB_STATEMENT_TIMEOUT_MS),
+                str(DB_LOCK_TIMEOUT_MS),
+                str(DB_IDLE_TRANSACTION_TIMEOUT_MS),
+            ),
+        )
     conn.commit()
     conn.geogestao_configured = True
     conn.geogestao_last_used = time.monotonic()
@@ -692,17 +715,45 @@ def apply_response_optimizations(response):
 
 def query_db(query, args=(), one=False):
     cur = get_db().execute(query, args)
-    rows = cur.fetchall()
-    cur.close()
-    return (rows[0] if rows else None) if one else rows
+    try:
+        if one:
+            return cur.fetchone()
+        return cur.fetchall()
+    finally:
+        cur.close()
 
 
 def invalidate_runtime_caches():
-    global _reports_cache, _lookup_cache, _due_statuses_next_refresh
+    global _reports_cache, _lookup_cache
     _reports_cache = {"expires_at": 0.0, "value": None}
-    _lookup_cache = {}
-    if not _refreshing_due_statuses:
-        _due_statuses_next_refresh = 0.0
+    # Dados operacionais mudam a cada acao, mas catalogo CNJ, usuario logado e
+    # opcoes estruturais nao mudam ao marcar um checklist ou criar uma nota.
+    # Preserva-los evita novas viagens ao banco logo depois de cada clique.
+    _lookup_cache = {
+        key: value
+        for key, value in _lookup_cache.items()
+        if (
+            key in STABLE_LOOKUP_CACHE_KEYS
+            or (isinstance(key, str) and key.startswith("cnj_"))
+            or (isinstance(key, tuple) and key and key[0] == "logged_user")
+        )
+    }
+
+
+def invalidate_lookup_entries(*keys, prefixes=()):
+    """Invalida somente lookups cujo dado-base realmente mudou."""
+    global _lookup_cache
+    wanted = set(keys)
+    _lookup_cache = {
+        key: value
+        for key, value in _lookup_cache.items()
+        if key not in wanted
+        and not any(
+            (isinstance(key, str) and key.startswith(prefix))
+            or (isinstance(key, tuple) and key and str(key[0]).startswith(prefix))
+            for prefix in prefixes
+        )
+    }
 
 
 def get_cached_lookup(key, loader, ttl_seconds=None):
@@ -725,8 +776,6 @@ def execute_db(query, args=()):
         if is_insert and 'RETURNING' not in q.upper():
             q += ' RETURNING id'
         _execute_cursor(cur, q, args if args else ())
-        db.commit()
-        invalidate_runtime_caches()
         last_id = None
         if is_insert:
             try:
@@ -734,12 +783,40 @@ def execute_db(query, args=()):
                 last_id = row[0] if row else None
             except Exception:
                 pass
+        if has_request_context():
+            # Uma acao do usuario pode chamar execute_db varias vezes. O commit
+            # unico no fim do request reduz viagens ao Supabase e torna a acao
+            # atomica: ou todos os passos persistem, ou nenhum persiste.
+            g._db_write_pending = True
+        else:
+            db.commit()
+            invalidate_runtime_caches()
         return last_id
     except Exception:
         db.rollback()
+        if has_request_context():
+            g._db_write_pending = False
         raise
     finally:
         cur.close()
+
+
+@app.after_request
+def commit_request_writes(response):
+    if not getattr(g, "_db_write_pending", False):
+        return response
+    db = getattr(g, "_database", None)
+    if db is None:
+        return response
+    try:
+        if response.status_code < 400:
+            db.commit()
+            invalidate_runtime_caches()
+        else:
+            db.rollback()
+    finally:
+        g._db_write_pending = False
+    return response
 
 
 def table_columns(db, table_name):
@@ -5532,176 +5609,226 @@ def dashboard():
     in_7 = (today + timedelta(days=7)).isoformat()
     today_iso = today.isoformat()
 
-    dashboard_counts = query_db(
+    # O banco e remoto. Todos os blocos do dashboard voltam em uma unica
+    # viagem; os prazos tambem sao agregados uma vez por projeto.
+    dashboard_data = query_db(
         """
+        WITH external_deadlines AS (
+            SELECT projeto_id, MIN(prazo_resposta) AS external_deadline
+            FROM exigencias_cartorio
+            WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+              AND COALESCE(prazo_resposta, '') != ''
+            GROUP BY projeto_id
+        ),
+        pending_deadlines AS (
+            SELECT projeto_id, MIN(prazo) AS pending_deadline
+            FROM pendencias
+            WHERE lower(COALESCE(status, '')) NOT IN ('resolvida', 'cancelada')
+              AND COALESCE(prazo, '') != ''
+            GROUP BY projeto_id
+        ),
+        priority_scored AS (
+            SELECT
+                p.id,
+                p.codigo,
+                p.nome,
+                COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(c.nome, ''), p.proprietario) AS base_cliente_nome,
+                em.nome AS etapa_nome,
+                pe.status AS etapa_status,
+                ed.external_deadline,
+                LEAST(NULLIF(pe.prazo, ''), pd.pending_deadline, ed.external_deadline) AS operational_deadline,
+                stale_age.stale_days,
+                CASE
+                    WHEN stale_age.stale_days >= 30 THEN 2 + FLOOR((stale_age.stale_days - 30) / 30.0)
+                    WHEN stale_age.stale_days >= 15 THEN 1
+                    ELSE 0
+                END AS stale_rank,
+                COALESCE(u.nome, ug.nome) AS responsavel_nome,
+                COALESCE(p.ordem_prioridade, 99999) AS sort_priority,
+                COALESCE(p.criado_em, '') AS sort_created,
+                CASE
+                    WHEN LEAST(NULLIF(pe.prazo, ''), pd.pending_deadline, ed.external_deadline) < %s THEN 0
+                    WHEN LEAST(NULLIF(pe.prazo, ''), pd.pending_deadline, ed.external_deadline) IS NOT NULL THEN 1
+                    ELSE 2
+                END AS deadline_rank
+            FROM projetos p
+            LEFT JOIN clientes c ON c.id = p.cliente_id
+            LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+            LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            LEFT JOIN usuarios u ON u.id = pe.responsavel_id
+            LEFT JOIN usuarios ug ON ug.id = p.responsavel_geral_id
+            LEFT JOIN external_deadlines ed ON ed.projeto_id = p.id
+            LEFT JOIN pending_deadlines pd ON pd.projeto_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT GREATEST(
+                    0,
+                    %s::date - COALESCE(
+                        NULLIF(left(p.atualizado_em, 10), ''),
+                        NULLIF(left(p.criado_em, 10), ''),
+                        %s
+                    )::date
+                ) AS stale_days
+            ) stale_age ON TRUE
+            WHERE lower(COALESCE(p.status, '')) NOT IN ('concluido', 'cancelado')
+        ),
+        priority_base AS (
+            SELECT *
+            FROM priority_scored
+            ORDER BY
+                deadline_rank,
+                operational_deadline ASC NULLS LAST,
+                CASE WHEN operational_deadline IS NULL THEN
+                    stale_rank
+                    ELSE 0
+                END DESC,
+                sort_priority,
+                sort_created,
+                id
+            LIMIT 5
+        ),
+        priority_rows AS (
+            SELECT
+                pb.id,
+                pb.codigo,
+                pb.nome,
+                COALESCE(owner_names.names, pb.base_cliente_nome) AS cliente_nome,
+                COALESCE(owner_names.names, pb.base_cliente_nome, '') AS proprietarios_nomes,
+                pb.etapa_nome,
+                pb.etapa_status,
+                pb.external_deadline,
+                pb.operational_deadline,
+                pb.stale_days,
+                pb.stale_rank,
+                pb.responsavel_nome,
+                pb.deadline_rank,
+                pb.sort_priority,
+                pb.sort_created
+            FROM priority_base pb
+            LEFT JOIN LATERAL (
+                SELECT string_agg(
+                    COALESCE(
+                        NULLIF(oc.nome_exibicao, ''),
+                        NULLIF(opf.nome_completo, ''),
+                        NULLIF(opj.razao_social, ''),
+                        NULLIF(oc.nome, ''),
+                        'Cliente #' || pp.cliente_id::text
+                    ),
+                    ' / ' ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
+                ) AS names
+                FROM projeto_proprietarios pp
+                JOIN clientes oc ON oc.id = pp.cliente_id
+                LEFT JOIN pessoas_fisicas opf ON opf.cliente_id = oc.id
+                LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
+                WHERE pp.projeto_id = pb.id
+            ) owner_names ON TRUE
+        ),
+        bottleneck_rows AS (
+            SELECT em.id AS etapa_id, em.nome AS etapa_nome, em.ordem AS etapa_ordem, COUNT(pe.id) AS total
+            FROM projetos p
+            JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            WHERE lower(pe.status) NOT IN ('concluido', 'cancelado')
+              AND em.ativa = 1
+            GROUP BY em.id, em.nome, em.ordem
+            ORDER BY total DESC, em.ordem
+            LIMIT 8
+        ),
+        exigencia_rows AS (
+            SELECT e.*, p.nome AS projeto_nome, c.nome AS cartorio_nome, u.nome AS responsavel_nome
+            FROM exigencias_cartorio e
+            JOIN projetos p ON p.id = e.projeto_id
+            LEFT JOIN cartorios c ON c.id = e.cartorio_id
+            LEFT JOIN usuarios u ON u.id = e.responsavel_id
+            WHERE lower(e.status) NOT IN ('concluido', 'cancelado')
+            ORDER BY COALESCE(e.prazo_resposta, '9999-12-31'), e.id
+            LIMIT 6
+        ),
+        pendencia_rows AS (
+            SELECT pd.descricao, pd.prazo, pd.status, pd.origem,
+                   p.id AS projeto_id, p.nome AS projeto_nome,
+                   u.nome AS responsavel_nome, pd.id
+            FROM pendencias pd
+            JOIN projetos p ON p.id = pd.projeto_id
+            LEFT JOIN usuarios u ON u.id = pd.responsavel_id
+            WHERE lower(pd.status) NOT IN ('resolvida', 'cancelada')
+            ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
+            LIMIT 6
+        )
         SELECT
             (SELECT COUNT(*) FROM projetos) AS total_projects,
             (
-                SELECT COUNT(*)
-                FROM projetos
+                SELECT COUNT(*) FROM projetos
                 WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
             ) AS active_projects,
             (
-                SELECT COUNT(*)
-                FROM exigencias_cartorio
+                SELECT COUNT(*) FROM exigencias_cartorio
                 WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
                   AND COALESCE(prazo_resposta, '') != '' AND prazo_resposta < %s
             ) AS overdue,
             (
                 SELECT COUNT(*)
-                FROM projeto_etapas
-                WHERE lower(status) = 'aguardando externo'
-                  AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+                FROM projetos p
+                JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+                WHERE lower(pe.status) = 'aguardando externo'
             ) AS waiting_external,
             (
-                SELECT COUNT(*)
-                FROM exigencias_cartorio
+                SELECT COUNT(*) FROM exigencias_cartorio
                 WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
                   AND prazo_resposta BETWEEN %s AND %s
             ) AS due_soon_count,
             (
-                SELECT COUNT(*)
-                FROM exigencias_cartorio
+                SELECT COUNT(*) FROM exigencias_cartorio
                 WHERE lower(status) NOT IN ('concluido', 'cancelado')
             ) AS exigencias_count,
             (
-                SELECT COUNT(*)
-                FROM pendencias
+                SELECT COUNT(*) FROM pendencias
                 WHERE lower(status) NOT IN ('resolvida', 'cancelada')
-            ) AS pendencias_count
+            ) AS pendencias_count,
+            COALESCE((
+                SELECT jsonb_agg(
+                    to_jsonb(pr) - 'deadline_rank' - 'sort_priority' - 'sort_created'
+                    ORDER BY pr.deadline_rank,
+                             pr.operational_deadline ASC NULLS LAST,
+                             CASE WHEN pr.operational_deadline IS NULL THEN pr.stale_rank ELSE 0 END DESC,
+                             pr.sort_priority, pr.sort_created, pr.id
+                )
+                FROM priority_rows pr
+            ), '[]'::jsonb) AS priority_projects,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(br) - 'etapa_ordem' ORDER BY br.total DESC, br.etapa_ordem)
+                FROM bottleneck_rows br
+            ), '[]'::jsonb) AS bottlenecks,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(er) ORDER BY COALESCE(er.prazo_resposta, '9999-12-31'), er.id)
+                FROM exigencia_rows er
+            ), '[]'::jsonb) AS exigencias,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(pr) ORDER BY COALESCE(pr.prazo, '9999-12-31'), pr.id)
+                FROM pendencia_rows pr
+            ), '[]'::jsonb) AS pendencias
         """,
-        (today_iso, today_iso, in_7),
+        (today_iso, today_iso, today_iso, today_iso, today_iso, in_7),
         one=True,
     )
-    # As 5 prioridades — topo da ordem da matriz, somente projetos ativos.
-    priority_projects = query_db(
-        """
-        SELECT p.id, p.codigo, p.nome,
-               COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(c.nome, ''), p.proprietario) AS cliente_nome,
-               em.nome AS etapa_nome, pe.status AS etapa_status,
-               deadline.external_deadline,
-               deadline.operational_deadline,
-               stale.stale_days,
-               stale.stale_rank,
-               COALESCE(u.nome, ug.nome) AS responsavel_nome
-        FROM projetos p
-        LEFT JOIN clientes c ON c.id = p.cliente_id
-        LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
-        LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        LEFT JOIN usuarios u ON u.id = pe.responsavel_id
-        LEFT JOIN usuarios ug ON ug.id = p.responsavel_geral_id
-        LEFT JOIN LATERAL (
-            SELECT
-                (
-                    SELECT MIN(e.prazo_resposta)
-                    FROM exigencias_cartorio e
-                    WHERE e.projeto_id = p.id
-                      AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
-                      AND COALESCE(e.prazo_resposta, '') != ''
-                ) AS external_deadline,
-                LEAST(
-                    NULLIF(pe.prazo, ''),
-                    (
-                        SELECT MIN(pd.prazo)
-                        FROM pendencias pd
-                        WHERE pd.projeto_id = p.id
-                          AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
-                          AND COALESCE(pd.prazo, '') != ''
-                    ),
-                    (
-                        SELECT MIN(e.prazo_resposta)
-                        FROM exigencias_cartorio e
-                        WHERE e.projeto_id = p.id
-                          AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
-                          AND COALESCE(e.prazo_resposta, '') != ''
-                    )
-                ) AS operational_deadline
-        ) deadline ON TRUE
-        LEFT JOIN LATERAL (
-            SELECT
-                GREATEST(
-                    0,
-                    %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date
-                ) AS stale_days,
-                CASE
-                    WHEN GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) >= 30
-                        THEN 2 + FLOOR((GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) - 30) / 30)
-                    WHEN GREATEST(0, %s::date - COALESCE(NULLIF(left(p.atualizado_em, 10), ''), NULLIF(left(p.criado_em, 10), ''), %s)::date) >= 15
-                        THEN 1
-                    ELSE 0
-                END AS stale_rank
-        ) stale ON TRUE
-        WHERE lower(COALESCE(p.status, '')) NOT IN ('concluido', 'cancelado')
-        ORDER BY
-            CASE
-                WHEN deadline.operational_deadline < %s THEN 0
-                WHEN deadline.operational_deadline IS NOT NULL THEN 1
-                ELSE 2
-            END,
-            deadline.operational_deadline ASC NULLS LAST,
-            CASE WHEN deadline.operational_deadline IS NULL THEN stale.stale_rank ELSE 0 END DESC,
-            COALESCE(p.ordem_prioridade, 99999),
-            COALESCE(p.criado_em, ''),
-            p.id
-        LIMIT 5
-        """,
-        [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso],
-    )
-    attach_project_owner_names(priority_projects)
-    # Quantos projetos em cada etapa (gargalo).
-    bottlenecks = query_db(
-        """
-        SELECT em.id AS etapa_id, em.nome AS etapa_nome, COUNT(pe.id) AS total
-        FROM projeto_etapas pe
-        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE lower(pe.status) NOT IN ('concluido', 'cancelado')
-          AND em.ativa = 1
-          AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
-        GROUP BY em.id, em.nome
-        ORDER BY total DESC, em.ordem
-        LIMIT 8
-        """
-    )
+    priority_projects = dashboard_data["priority_projects"] or []
+    bottlenecks = dashboard_data["bottlenecks"] or []
     total_bottlenecks = max([row["total"] for row in bottlenecks] or [1])
-    exigencias = query_db(
-        """
-        SELECT e.*, p.nome AS projeto_nome, c.nome AS cartorio_nome, u.nome AS responsavel_nome
-        FROM exigencias_cartorio e
-        JOIN projetos p ON p.id = e.projeto_id
-        LEFT JOIN cartorios c ON c.id = e.cartorio_id
-        LEFT JOIN usuarios u ON u.id = e.responsavel_id
-        WHERE lower(e.status) NOT IN ('concluido', 'cancelado')
-        ORDER BY COALESCE(e.prazo_resposta, '9999-12-31'), e.id
-        LIMIT 6
-        """
-    )
-    pendencias = query_db(
-        """
-        SELECT pd.descricao, pd.prazo, pd.status, pd.origem,
-               p.id AS projeto_id, p.nome AS projeto_nome,
-               u.nome AS responsavel_nome
-        FROM pendencias pd
-        JOIN projetos p ON p.id = pd.projeto_id
-        LEFT JOIN usuarios u ON u.id = pd.responsavel_id
-        WHERE lower(pd.status) NOT IN ('resolvida', 'cancelada')
-        ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
-        LIMIT 6
-        """
-    )
+    exigencias = dashboard_data["exigencias"] or []
+    pendencias = dashboard_data["pendencias"] or []
     return render_template(
         "dashboard.html",
-        total_projects=dashboard_counts["total_projects"],
-        active_projects=dashboard_counts["active_projects"],
-        overdue=dashboard_counts["overdue"],
-        waiting_external=dashboard_counts["waiting_external"],
-        due_soon_count=dashboard_counts["due_soon_count"],
+        total_projects=dashboard_data["total_projects"],
+        active_projects=dashboard_data["active_projects"],
+        overdue=dashboard_data["overdue"],
+        waiting_external=dashboard_data["waiting_external"],
+        due_soon_count=dashboard_data["due_soon_count"],
         priority_projects=priority_projects,
         bottlenecks=bottlenecks,
         total_bottlenecks=total_bottlenecks,
         exigencias=exigencias,
-        exigencias_count=dashboard_counts["exigencias_count"],
+        exigencias_count=dashboard_data["exigencias_count"],
         pendencias=pendencias,
-        pendencias_count=dashboard_counts["pendencias_count"],
+        pendencias_count=dashboard_data["pendencias_count"],
         today_iso=today_iso,
     )
 
@@ -6278,6 +6405,7 @@ def api_add_cartorio():
             get_db().commit()
             return {"id": duplicate["id"], "nome": duplicate["nome"], "existing": True}, 200
         cartorio_id = execute_db("INSERT INTO cartorios (nome) VALUES (%s)", (nome,))
+        invalidate_lookup_entries("cartorio_options", "matrix_static_options")
         invalidate_runtime_caches()
         return {"id": cartorio_id, "nome": nome}, 201
     except Exception:
@@ -6562,31 +6690,33 @@ def api_add_cliente():
         return {"error": str(e)}, 500
 
 
-def get_project_financial_context(project):
+def get_project_financial_context(project, costs=None, payments=None):
     # O detalhe do projeto e uma rota quente. Criacao/inspecao de schema pertence
     # ao modulo financeiro e nao pode bloquear cada novo worker ao abrir projeto.
     project_id = project["id"]
-    costs = query_db(
-        """
-        SELECT pc.*, u.nome AS usuario_nome
-        FROM projeto_custos pc
-        LEFT JOIN usuarios u ON u.id = pc.usuario_id
-        WHERE pc.projeto_id = %s
-          AND lower(COALESCE(pc.status, '')) != 'cancelado'
-        ORDER BY COALESCE(pc.data_custo, '') DESC, pc.id DESC
-        """,
-        (project_id,),
-    )
-    payments = query_db(
-        """
-        SELECT pg.*, u.nome AS usuario_nome
-        FROM projeto_pagamentos pg
-        LEFT JOIN usuarios u ON u.id = pg.usuario_id
-        WHERE pg.projeto_id = %s
-        ORDER BY COALESCE(pg.data_pagamento, '') DESC, pg.id DESC
-        """,
-        (project_id,),
-    )
+    if costs is None:
+        costs = query_db(
+            """
+            SELECT pc.*, u.nome AS usuario_nome
+            FROM projeto_custos pc
+            LEFT JOIN usuarios u ON u.id = pc.usuario_id
+            WHERE pc.projeto_id = %s
+              AND lower(COALESCE(pc.status, '')) != 'cancelado'
+            ORDER BY COALESCE(pc.data_custo, '') DESC, pc.id DESC
+            """,
+            (project_id,),
+        )
+    if payments is None:
+        payments = query_db(
+            """
+            SELECT pg.*, u.nome AS usuario_nome
+            FROM projeto_pagamentos pg
+            LEFT JOIN usuarios u ON u.id = pg.usuario_id
+            WHERE pg.projeto_id = %s
+            ORDER BY COALESCE(pg.data_pagamento, '') DESC, pg.id DESC
+            """,
+            (project_id,),
+        )
     contract_value = float(project["valor"] or 0.0)
     total_costs = sum(float(cost["valor"] or 0.0) for cost in costs)
     total_paid = sum(float(payment["valor"] or 0.0) for payment in payments)
@@ -6631,7 +6761,23 @@ def project_detail(project_id):
                 NULLIF(pj.razao_social, ''),
                 NULLIF(c.nome, ''),
                 NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
+            ) AS cliente_principal_nome,
+            COALESCE(
+                owner_data.names,
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, ''),
+                NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
             ) AS cliente_nome,
+            owner_data.names AS proprietarios_nomes,
+            COALESCE(owner_data.items, '[]'::jsonb) AS project_owners,
+            EXISTS (
+                SELECT 1
+                FROM projeto_etapas workflow_stage
+                WHERE workflow_stage.projeto_id = p.id
+                  AND COALESCE(workflow_stage.stage_key, '') != ''
+            ) AS workflow_initialized,
             ct.nome AS cartorio_nome,
             tp.nome AS tipo_processo_nome,
             u.nome AS responsavel_geral_nome
@@ -6642,6 +6788,38 @@ def project_detail(project_id):
         LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
         LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
+        LEFT JOIN LATERAL (
+            SELECT
+                string_agg(
+                    COALESCE(
+                        NULLIF(oc.nome_exibicao, ''),
+                        NULLIF(opf.nome_completo, ''),
+                        NULLIF(opj.razao_social, ''),
+                        NULLIF(oc.nome, ''),
+                        'Cliente #' || pp.cliente_id::text
+                    ),
+                    ' / ' ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
+                ) AS names,
+                jsonb_agg(
+                    jsonb_build_object(
+                        'id', pp.cliente_id,
+                        'nome', COALESCE(
+                            NULLIF(oc.nome_exibicao, ''),
+                            NULLIF(opf.nome_completo, ''),
+                            NULLIF(opj.razao_social, ''),
+                            NULLIF(oc.nome, ''),
+                            'Cliente #' || pp.cliente_id::text
+                        ),
+                        'principal', pp.principal,
+                        'ordem', pp.ordem
+                    ) ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
+                ) AS items
+            FROM projeto_proprietarios pp
+            JOIN clientes oc ON oc.id = pp.cliente_id
+            LEFT JOIN pessoas_fisicas opf ON opf.cliente_id = oc.id
+            LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
+            WHERE pp.projeto_id = p.id
+        ) owner_data ON TRUE
         WHERE p.id = %s
         """,
         (project_id,),
@@ -6651,23 +6829,16 @@ def project_detail(project_id):
         flash("Projeto nao encontrado.", "danger")
         return redirect(url_for("projects"))
 
-    project["cliente_principal_nome"] = project["cliente_nome"]
-    project_owners = load_project_owners_bulk([project_id]).get(project_id, [])
-    if project_owners:
-        project["proprietarios_nomes"] = " / ".join(owner["nome"] for owner in project_owners)
-        project["cliente_nome"] = project["proprietarios_nomes"]
-
-    db = get_db()
-    workflow_initialized = project_has_workflow_initialized_db(db, project_id)
-    if not scalar(db, "SELECT COUNT(*) FROM project_checklist_items WHERE project_id = %s", (project_id,)):
-        create_project_checklist_from_template(db, project_id, project["tipo_servico"])
-        db.commit()
-        invalidate_runtime_caches()
-    else:
-        updated_links = sync_project_checklist_stage_links(db, project_id)
-        if updated_links:
-            db.commit()
-            invalidate_runtime_caches()
+    project_owners = project["project_owners"] or []
+    if not project_owners and project["cliente_id"]:
+        project_owners = [{
+            "id": project["cliente_id"],
+            "nome": project["cliente_principal_nome"] or project["proprietario"],
+            "principal": 1,
+            "ordem": 0,
+        }]
+    project["proprietarios_nomes"] = project["proprietarios_nomes"] or project["cliente_nome"] or ""
+    workflow_initialized = bool(project["workflow_initialized"])
 
     etapas = load_stage_rows(project_id)
     detail_data = query_db(
@@ -6712,9 +6883,38 @@ def project_detail(project_id):
                 SELECT jsonb_agg(to_jsonb(h) ORDER BY h.entered_at, h.id)
                 FROM project_stage_history h
                 WHERE h.project_id = %s
-            ), '[]'::jsonb) AS stage_history
+            ), '[]'::jsonb) AS stage_history,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY COALESCE(x.data_custo, '') DESC, x.id DESC)
+                FROM (
+                    SELECT pc.*, u.nome AS usuario_nome
+                    FROM projeto_custos pc
+                    LEFT JOIN usuarios u ON u.id = pc.usuario_id
+                    WHERE %s
+                      AND pc.projeto_id = %s
+                      AND lower(COALESCE(pc.status, '')) != 'cancelado'
+                ) x
+            ), '[]'::jsonb) AS costs,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY COALESCE(x.data_pagamento, '') DESC, x.id DESC)
+                FROM (
+                    SELECT pg.*, u.nome AS usuario_nome
+                    FROM projeto_pagamentos pg
+                    LEFT JOIN usuarios u ON u.id = pg.usuario_id
+                    WHERE %s AND pg.projeto_id = %s
+                ) x
+            ), '[]'::jsonb) AS payments
         """,
-        (project_id, project_id, project_id, project_id),
+        (
+            project_id,
+            project_id,
+            project_id,
+            project_id,
+            can_admin(),
+            project_id,
+            can_admin(),
+            project_id,
+        ),
         one=True,
     )
     exigencias = detail_data["exigencias"]
@@ -6734,7 +6934,15 @@ def project_detail(project_id):
         for row in stage_history_rows
     ]
     project_open_days = format_days(calculate_days_between(project["criado_em"])) if project["criado_em"] else "-"
-    financeiro_context = get_project_financial_context(project) if can_admin() else None
+    financeiro_context = (
+        get_project_financial_context(
+            project,
+            costs=detail_data["costs"],
+            payments=detail_data["payments"],
+        )
+        if can_admin()
+        else None
+    )
     return render_template(
         "project_detail.html",
         project=project,
@@ -7699,47 +7907,99 @@ def api_add_checklist_item():
 @app.route("/api/checklist/<int:item_id>/toggle", methods=["POST"])
 @login_required
 def api_toggle_checklist(item_id):
+    payload = request.get_json(silent=True)
+    desired_state = None
+    if isinstance(payload, dict) and "concluido" in payload:
+        if not isinstance(payload["concluido"], bool):
+            return jsonify({"ok": False, "error": "O campo concluido deve ser verdadeiro ou falso."}), 400
+        desired_state = payload["concluido"]
     now = app_now_iso()
-    toggled = query_db(
-        """
-        UPDATE checklist_itens
-        SET concluido = CASE WHEN concluido = 1 THEN 0 ELSE 1 END,
-            concluido_por = CASE WHEN concluido = 1 THEN NULL ELSE %s END,
-            concluido_em = CASE WHEN concluido = 1 THEN NULL ELSE %s END
-        WHERE id = %s
-        RETURNING projeto_etapa_id, concluido
-        """,
-        (g.user["id"], now, item_id),
-        one=True,
-    )
-    if not toggled:
-        get_db().rollback()
-        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     result = query_db(
         """
-        WITH counts AS (
-            SELECT COUNT(*) AS total,
-                   COUNT(*) FILTER (WHERE concluido = 1) AS done
-            FROM checklist_itens
-            WHERE projeto_etapa_id = %s
-        ), updated AS (
+        WITH requested AS (
+            SELECT %s::boolean AS desired
+        ), target AS (
+            SELECT
+                ci.id,
+                ci.projeto_etapa_id,
+                COALESCE(ci.concluido, 0) AS old_concluido,
+                CASE
+                    WHEN requested.desired IS NULL
+                        THEN CASE WHEN COALESCE(ci.concluido, 0) = 1 THEN 0 ELSE 1 END
+                    WHEN requested.desired THEN 1
+                    ELSE 0
+                END AS new_concluido
+            FROM checklist_itens ci
+            CROSS JOIN requested
+            WHERE ci.id = %s
+            FOR UPDATE OF ci
+        ), updated_item AS (
+            UPDATE checklist_itens ci
+            SET concluido = target.new_concluido,
+                concluido_por = CASE WHEN target.new_concluido = 1 THEN %s ELSE NULL END,
+                concluido_em = CASE WHEN target.new_concluido = 1 THEN %s ELSE NULL END
+            FROM target
+            WHERE ci.id = target.id
+              AND target.old_concluido IS DISTINCT FROM target.new_concluido
+            RETURNING ci.id, ci.projeto_etapa_id, ci.concluido
+        ), effective_item AS (
+            SELECT id, projeto_etapa_id, concluido
+            FROM updated_item
+
+            UNION ALL
+
+            SELECT target.id, target.projeto_etapa_id, target.new_concluido
+            FROM target
+            WHERE NOT EXISTS (SELECT 1 FROM updated_item)
+        ), counts AS (
+            SELECT
+                effective_item.projeto_etapa_id,
+                COUNT(ci.id) AS total,
+                COUNT(ci.id) FILTER (
+                    WHERE CASE
+                        WHEN ci.id = effective_item.id THEN effective_item.concluido
+                        ELSE COALESCE(ci.concluido, 0)
+                    END = 1
+                ) AS done
+            FROM effective_item
+            JOIN checklist_itens ci
+              ON ci.projeto_etapa_id = effective_item.projeto_etapa_id
+            GROUP BY effective_item.id, effective_item.projeto_etapa_id, effective_item.concluido
+        ), calculated AS (
+            SELECT
+                projeto_etapa_id,
+                done,
+                total,
+                CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress
+            FROM counts
+        ), updated_stage AS (
             UPDATE projeto_etapas pe
-            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
-            FROM counts c
-            WHERE pe.id = %s
+            SET progresso = calculated.progress
+            FROM calculated
+            WHERE pe.id = calculated.projeto_etapa_id
+              AND pe.progresso IS DISTINCT FROM calculated.progress
+            RETURNING pe.id
         )
-        SELECT done, total,
-               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress
-        FROM counts
+        SELECT
+            effective_item.concluido,
+            calculated.done,
+            calculated.total,
+            calculated.progress
+        FROM effective_item
+        JOIN calculated
+          ON calculated.projeto_etapa_id = effective_item.projeto_etapa_id
         """,
-        (toggled["projeto_etapa_id"], toggled["projeto_etapa_id"]),
+        (desired_state, item_id, g.user["id"], now),
         one=True,
     )
+    if not result:
+        get_db().rollback()
+        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     get_db().commit()
     invalidate_runtime_caches()
     return jsonify({
         "ok": True,
-        "concluido": bool(toggled["concluido"]),
+        "concluido": bool(result["concluido"]),
         "progress": result["progress"],
         "done": result["done"],
         "total": result["total"],
@@ -7779,71 +8039,152 @@ def api_add_project_note(project_id):
 @login_required
 def api_toggle_project_checklist(item_id):
     """Marca/desmarca um item do checklist do processo (usado no popup da matriz)."""
+    payload = request.get_json(silent=True)
+    desired_state = None
+    if isinstance(payload, dict) and "concluido" in payload:
+        if not isinstance(payload["concluido"], bool):
+            return jsonify({"ok": False, "error": "O campo concluido deve ser verdadeiro ou falso."}), 400
+        desired_state = payload["concluido"]
     now = app_now_iso()
-    toggled = query_db(
-        """
-        UPDATE project_checklist_items
-        SET status = CASE WHEN status = %s THEN %s ELSE %s END,
-            completed_at = CASE WHEN status = %s THEN NULL ELSE %s END,
-            completed_by = CASE WHEN status = %s THEN NULL ELSE %s END,
-            updated_at = %s
-        WHERE id = %s
-        RETURNING project_stage_id, status
-        """,
-        (
-            CHECKLIST_STATUS_DONE,
-            CHECKLIST_STATUS_NOT_STARTED,
-            CHECKLIST_STATUS_DONE,
-            CHECKLIST_STATUS_DONE,
-            now,
-            CHECKLIST_STATUS_DONE,
-            g.user["id"],
-            now,
-            item_id,
-        ),
-        one=True,
-    )
-    if not toggled:
-        get_db().rollback()
-        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     result = query_db(
         """
-        WITH counts AS (
+        WITH requested AS (
             SELECT
-                COUNT(*) FILTER (WHERE active = 1 AND status != %s) AS total,
-                COUNT(*) FILTER (WHERE active = 1 AND status = %s) AS done,
+                %s::boolean AS desired,
+                %s::text AS done_status,
+                %s::text AS pending_status,
+                %s::text AS not_applicable_status
+        ), target AS (
+            SELECT
+                pci.id,
+                pci.project_stage_id,
+                pci.status AS old_status,
+                requested.done_status,
+                requested.not_applicable_status,
+                CASE
+                    WHEN requested.desired IS NULL THEN
+                        CASE
+                            WHEN pci.status = requested.done_status THEN requested.pending_status
+                            ELSE requested.done_status
+                        END
+                    WHEN requested.desired THEN requested.done_status
+                    ELSE requested.pending_status
+                END AS new_status
+            FROM project_checklist_items pci
+            CROSS JOIN requested
+            WHERE pci.id = %s
+            FOR UPDATE OF pci
+        ), updated_item AS (
+            UPDATE project_checklist_items pci
+            SET status = target.new_status,
+                completed_at = CASE WHEN target.new_status = target.done_status THEN %s ELSE NULL END,
+                completed_by = CASE WHEN target.new_status = target.done_status THEN %s ELSE NULL END,
+                updated_at = %s
+            FROM target
+            WHERE pci.id = target.id
+              AND target.old_status IS DISTINCT FROM target.new_status
+            RETURNING pci.id, pci.project_stage_id, pci.status
+        ), effective_item AS (
+            SELECT
+                updated_item.id,
+                updated_item.project_stage_id,
+                updated_item.status,
+                target.done_status,
+                target.not_applicable_status
+            FROM updated_item
+            JOIN target ON target.id = updated_item.id
+
+            UNION ALL
+
+            SELECT
+                target.id,
+                target.project_stage_id,
+                target.new_status,
+                target.done_status,
+                target.not_applicable_status
+            FROM target
+            WHERE NOT EXISTS (SELECT 1 FROM updated_item)
+        ), counts AS (
+            SELECT
+                effective_item.project_stage_id,
                 COUNT(*) FILTER (
-                    WHERE active = 1 AND blocks_stage_completion = 1
-                      AND status NOT IN (%s, %s)
+                    WHERE pci.active = 1
+                      AND CASE
+                          WHEN pci.id = effective_item.id THEN effective_item.status
+                          ELSE pci.status
+                      END != effective_item.not_applicable_status
+                ) AS total,
+                COUNT(*) FILTER (
+                    WHERE pci.active = 1
+                      AND CASE
+                          WHEN pci.id = effective_item.id THEN effective_item.status
+                          ELSE pci.status
+                      END = effective_item.done_status
+                ) AS done,
+                COUNT(*) FILTER (
+                    WHERE pci.active = 1
+                      AND pci.blocks_stage_completion = 1
+                      AND CASE
+                          WHEN pci.id = effective_item.id THEN effective_item.status
+                          ELSE pci.status
+                      END NOT IN (effective_item.done_status, effective_item.not_applicable_status)
                 ) AS required_pending
-            FROM project_checklist_items
-            WHERE project_stage_id = %s
-        ), updated AS (
+            FROM effective_item
+            JOIN project_checklist_items pci
+              ON pci.project_stage_id = effective_item.project_stage_id
+            GROUP BY
+                effective_item.id,
+                effective_item.project_stage_id,
+                effective_item.status,
+                effective_item.done_status,
+                effective_item.not_applicable_status
+        ), calculated AS (
+            SELECT
+                project_stage_id,
+                done,
+                total,
+                required_pending,
+                CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress
+            FROM counts
+        ), updated_stage AS (
             UPDATE projeto_etapas pe
-            SET progresso = CASE WHEN c.total > 0 THEN FLOOR(c.done * 100.0 / c.total)::int ELSE 0 END
-            FROM counts c
-            WHERE pe.id = %s
+            SET progresso = calculated.progress
+            FROM calculated
+            WHERE pe.id = calculated.project_stage_id
+              AND pe.progresso IS DISTINCT FROM calculated.progress
+            RETURNING pe.id
         )
-        SELECT done, total,
-               CASE WHEN total > 0 THEN FLOOR(done * 100.0 / total)::int ELSE 0 END AS progress,
-               required_pending
-        FROM counts
+        SELECT
+            effective_item.status,
+            effective_item.done_status,
+            calculated.done,
+            calculated.total,
+            calculated.progress,
+            calculated.required_pending
+        FROM effective_item
+        JOIN calculated
+          ON calculated.project_stage_id = effective_item.project_stage_id
         """,
         (
-            CHECKLIST_STATUS_NOT_APPLICABLE,
+            desired_state,
             CHECKLIST_STATUS_DONE,
-            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_STARTED,
             CHECKLIST_STATUS_NOT_APPLICABLE,
-            toggled["project_stage_id"],
-            toggled["project_stage_id"],
+            item_id,
+            now,
+            g.user["id"],
+            now,
         ),
         one=True,
     )
+    if not result:
+        get_db().rollback()
+        return jsonify({"ok": False, "error": "Item nao encontrado"}), 404
     get_db().commit()
     invalidate_runtime_caches()
     return jsonify({
         "ok": True,
-        "concluido": toggled["status"] == CHECKLIST_STATUS_DONE,
+        "concluido": result["status"] == result["done_status"],
         "progress": result["progress"],
         "done": result["done"],
         "total": result["total"],
@@ -8099,6 +8440,69 @@ def load_cliente_documental(cliente_id):
         context["imoveis"][0] if context["imoveis"] else {},
         context["vertices_by_imovel"].get(context["imoveis"][0]["id"], []) if context["imoveis"] else [],
     )
+    return context
+
+
+def load_cliente_modal_context(cliente_id):
+    """Carrega somente os dados exibidos nos modais de cliente, em um round trip."""
+    row = query_db(
+        """
+        SELECT
+            row_to_json(c) AS cliente,
+            row_to_json(pf) AS pessoa_fisica,
+            row_to_json(cg) AS conjuge,
+            row_to_json(pj) AS pessoa_juridica,
+            row_to_json(ep) AS endereco,
+            COALESCE(proc.items, '[]'::json) AS procuradores
+        FROM clientes c
+        LEFT JOIN LATERAL (
+            SELECT * FROM pessoas_fisicas
+            WHERE cliente_id = c.id
+            ORDER BY id
+            LIMIT 1
+        ) pf ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT * FROM conjuges
+            WHERE pessoa_fisica_id = pf.id
+            ORDER BY id
+            LIMIT 1
+        ) cg ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT * FROM pessoas_juridicas
+            WHERE cliente_id = c.id
+            ORDER BY id
+            LIMIT 1
+        ) pj ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT * FROM enderecos_proprietario
+            WHERE pessoa_fisica_id = pf.id
+            ORDER BY id
+            LIMIT 1
+        ) ep ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT json_agg(row_to_json(p) ORDER BY p.principal DESC, p.id) AS items
+            FROM procuradores p
+            WHERE p.cliente_id = c.id
+        ) proc ON TRUE
+        WHERE c.id = %s
+        """,
+        (cliente_id,),
+        one=True,
+    )
+    if not row:
+        return None
+
+    procuradores = row["procuradores"] or []
+    context = {
+        "cliente": row["cliente"] or {},
+        "pessoa_fisica": row["pessoa_fisica"] or {},
+        "conjuge": row["conjuge"] or {},
+        "pessoa_juridica": row["pessoa_juridica"] or {},
+        "endereco": row["endereco"] or {},
+        "procurador": procuradores[0] if procuradores else {},
+        "procuradores": procuradores,
+    }
+    context["cliente_pendencias"] = get_cliente_pendencias(context)
     return context
 
 
@@ -8994,10 +9398,21 @@ def empty_cliente_context():
 @login_required
 def my_missions():
     refresh_due_statuses()
-    stage_rows = query_db(
+    missions = [dict(row) for row in query_db(
         """
-        SELECT pe.id, pe.projeto_id, pe.status, pe.prazo, pe.progresso, pe.subetapa_ativa,
-               p.nome AS projeto_nome, p.caminho_pasta, em.nome AS etapa_nome, p.prioridade
+        SELECT
+            'stage'::text AS kind,
+            pe.id,
+            pe.projeto_id AS project_id,
+            em.nome AS title,
+            p.nome AS project,
+            COALESCE(NULLIF(pe.subetapa_ativa, ''), em.nome) AS stage,
+            pe.status,
+            pe.prazo,
+            p.prioridade AS priority,
+            COALESCE(pe.progresso, 0) AS progress,
+            p.caminho_pasta AS folder,
+            NULL::text AS origin
         FROM projeto_etapas pe
         JOIN projetos p ON p.id = pe.projeto_id
         JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
@@ -9005,81 +9420,51 @@ def my_missions():
           AND pe.id = p.etapa_atual_id
           AND lower(pe.status) NOT IN ('concluido', 'cancelado')
           AND em.ativa = 1
-        """,
-        (g.user["id"],),
-    )
-    task_rows = query_db(
-        """
-        SELECT t.*, p.nome AS projeto_nome, p.caminho_pasta, em.nome AS etapa_nome
+
+        UNION ALL
+
+        SELECT
+            'task'::text AS kind,
+            t.id,
+            t.projeto_id AS project_id,
+            t.titulo AS title,
+            p.nome AS project,
+            COALESCE(NULLIF(em.nome, ''), 'Tarefa avulsa') AS stage,
+            t.status,
+            t.prazo,
+            t.prioridade AS priority,
+            0 AS progress,
+            p.caminho_pasta AS folder,
+            NULL::text AS origin
         FROM tarefas t
         JOIN projetos p ON p.id = t.projeto_id
         LEFT JOIN projeto_etapas pe ON pe.id = t.projeto_etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE t.responsavel_id = %s AND lower(COALESCE(t.status, '')) NOT IN ('concluido', 'cancelado')
-        """,
-        (g.user["id"],),
-    )
-    pending_rows = query_db(
-        """
-        SELECT pd.*, p.nome AS projeto_nome, p.caminho_pasta, em.nome AS etapa_nome, p.prioridade
+
+        UNION ALL
+
+        SELECT
+            'pending'::text AS kind,
+            pd.id,
+            pd.projeto_id AS project_id,
+            pd.descricao AS title,
+            p.nome AS project,
+            COALESCE(NULLIF(em.nome, ''), 'Pendencia vinculada ao projeto') AS stage,
+            pd.status,
+            pd.prazo,
+            p.prioridade AS priority,
+            0 AS progress,
+            p.caminho_pasta AS folder,
+            pd.origem AS origin
         FROM pendencias pd
         JOIN projetos p ON p.id = pd.projeto_id
         LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE pd.responsavel_id = %s AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
         """,
-        (g.user["id"],),
-    )
-    missions = []
-    for row in stage_rows:
-        missions.append(
-            {
-                "kind": "stage",
-                "id": row["id"],
-                "project_id": row["projeto_id"],
-                "title": row["etapa_nome"],
-                "project": row["projeto_nome"],
-                "stage": row["subetapa_ativa"] or row["etapa_nome"],
-                "status": row["status"],
-                "prazo": row["prazo"],
-                "priority": row["prioridade"],
-                "progress": row["progresso"] or 0,
-                "folder": row["caminho_pasta"],
-            }
-        )
-    for row in task_rows:
-        missions.append(
-            {
-                "kind": "task",
-                "id": row["id"],
-                "project_id": row["projeto_id"],
-                "title": row["titulo"],
-                "project": row["projeto_nome"],
-                "stage": row["etapa_nome"] or "Tarefa avulsa",
-                "status": row["status"],
-                "prazo": row["prazo"],
-                "priority": row["prioridade"],
-                "progress": 0,
-                "folder": row["caminho_pasta"],
-            }
-        )
-    for row in pending_rows:
-        missions.append(
-            {
-                "kind": "pending",
-                "id": row["id"],
-                "project_id": row["projeto_id"],
-                "title": row["descricao"],
-                "project": row["projeto_nome"],
-                "stage": row["etapa_nome"] or "Pendencia vinculada ao projeto",
-                "status": row["status"],
-                "prazo": row["prazo"],
-                "priority": row["prioridade"],
-                "progress": 0,
-                "folder": row["caminho_pasta"],
-                "origin": row["origem"],
-            }
-        )
+        (g.user["id"], g.user["id"], g.user["id"]),
+    )]
 
     def mission_sort_key(mission):
         due = mission["prazo"] or "9999-12-31"
@@ -9170,18 +9555,11 @@ def clients():
         """,
         params,
     )
-    client_contexts = load_clientes_documental_batch(rows)
-    client_meta = {
-        client_id: context["cliente_pendencias"]
-        for client_id, context in client_contexts.items()
-    }
     return render_template(
         "clients.html",
         clients=rows,
         filters=filters,
         active=empty_cliente_context(),
-        client_contexts=client_contexts,
-        client_meta=client_meta,
         tipos_cliente=TIPOS_CLIENTE,
         quem_assina_options=QUEM_ASSINA,
         sexos=SEXOS,
@@ -9191,6 +9569,37 @@ def clients():
         ufs=UFS,
         representative_types=REPRESENTATIVE_TYPES,
     )
+
+
+@app.route("/clients/<int:client_id>/fragment")
+@login_required
+def client_modal_fragment(client_id):
+    context = load_cliente_modal_context(client_id)
+    if not context:
+        return "Cliente nao encontrado.", 404
+
+    row = context["cliente"]
+    response = Response(
+        render_template(
+            "_client_modal_fragment.html",
+            row=row,
+            context=context,
+            meta=context["cliente_pendencias"],
+            tipos_cliente=TIPOS_CLIENTE,
+            quem_assina_options=QUEM_ASSINA,
+            sexos=SEXOS,
+            estados_civis=ESTADOS_CIVIS,
+            regimes_casamento=REGIMES_CASAMENTO,
+            status_cadastro_options=STATUS_CADASTRO,
+            ufs=UFS,
+            representative_types=REPRESENTATIVE_TYPES,
+        ),
+        mimetype="text/html",
+    )
+    # Os dados sao pessoais: o cache curto vive na memoria da aba, nunca em proxy.
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Cookie"
+    return response
 
 
 CNJ_JUSTICA_ABERTA_API = "https://justicaabertaapi.cnj.jus.br/v1/api"
@@ -9408,6 +9817,7 @@ def cartorios():
         if not can_manage():
             flash("Permissao negada.", "danger")
             return redirect(url_for("cartorios"))
+        invalidate_lookup_entries("cartorio_options", "matrix_static_options")
         action = request.form.get("action", "create")
         cartorio_id = request.form.get("cartorio_id")
         if action == "delete" and cartorio_id:
@@ -9834,6 +10244,11 @@ def users():
                     except psycopg2.errors.ForeignKeyViolation:
                         execute_db("UPDATE usuarios SET ativo = 0, cargo = COALESCE(NULLIF(cargo, ''), 'Excluido') WHERE id = %s", (user_id,))
                         flash("Usuario possui historico vinculado e foi mantido inativo.", "warning")
+        invalidate_lookup_entries(
+            "active_users",
+            "matrix_static_options",
+            prefixes=("logged_user",),
+        )
         return redirect(url_for("users"))
     rows = query_db("SELECT * FROM usuarios ORDER BY ativo DESC, lower(nome)")
     pending_users = [row for row in rows if not row["ativo"] and row["perfil_acesso"] == "consulta" and not (row["cargo"] or "").strip()]

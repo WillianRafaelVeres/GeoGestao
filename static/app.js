@@ -33,7 +33,11 @@ async function toggleChecklist(btn) {
         counter.textContent = `${done}/${total}`;
     }
     try {
-        const resp = await fetch(`/api/checklist/${itemId}/toggle`, { method: "POST" });
+        const resp = await fetch(`/api/checklist/${itemId}/toggle`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ concluido: !wasChecked }),
+        });
         if (!resp.ok) throw new Error("Falha");
         const data = await resp.json();
         if (data.concluido) {
@@ -148,6 +152,7 @@ window.addEventListener("DOMContentLoaded", () => {
     initDocumentalClientForm();
     initRepresentativeManagers();
     initClientLiveSearch();
+    initClientLazyModals();
     initProjectClientAutocompletes();
     initProjectOwnerManagers();
     initCartorioLookup();
@@ -331,8 +336,9 @@ function initMatrixLiveFilters() {
     });
 }
 
-function initRepresentativeManagers() {
-    document.querySelectorAll("[data-representative-manager]").forEach((manager) => {
+function initRepresentativeManagers(root = document) {
+    root.querySelectorAll("[data-representative-manager]").forEach((manager) => {
+        if (manager.dataset.representativeManagerReady === "1") return;
         const list = manager.querySelector("[data-rep-list]");
         const empty = manager.querySelector("[data-rep-empty]");
         const addButton = manager.querySelector("[data-rep-add]");
@@ -343,6 +349,7 @@ function initRepresentativeManagers() {
         let editingRow = null;
 
         if (!list || !popout || !template) return;
+        manager.dataset.representativeManagerReady = "1";
 
         const fields = Array.from(popout.querySelectorAll("[data-rep-field]"));
 
@@ -514,6 +521,165 @@ function initClientLiveSearch() {
             link.href = `${url.pathname}${url.search}`;
         });
     }
+}
+
+function initClientLazyModals() {
+    const host = document.querySelector("[data-client-modal-host]");
+    const triggers = Array.from(document.querySelectorAll("[data-client-modal-trigger]"));
+    if (!host || !triggers.length || !window.bootstrap) return;
+
+    const cacheTtlMs = 30 * 1000;
+    const responseCache = new Map();
+    let activeRequest = null;
+
+    function getCached(clientId) {
+        const cached = responseCache.get(clientId);
+        if (!cached) return null;
+        if (cached.expiresAt <= Date.now()) {
+            responseCache.delete(clientId);
+            return null;
+        }
+        return cached.html;
+    }
+
+    async function loadHtml(trigger, interactive = false) {
+        const clientId = trigger.dataset.clientId;
+        const url = trigger.dataset.clientModalUrl;
+        if (!clientId || !url) throw new Error("Cliente invalido.");
+
+        const cached = getCached(clientId);
+        if (cached) return cached;
+        if (activeRequest && activeRequest.clientId === clientId) {
+            if (interactive) activeRequest.interactive = true;
+            return activeRequest.promise;
+        }
+        if (activeRequest) {
+            if (activeRequest.interactive && !interactive) return null;
+            activeRequest.controller.abort();
+        }
+
+        const controller = new AbortController();
+        const requestState = { clientId, controller, interactive, promise: null };
+        requestState.promise = fetch(url, {
+            method: "GET",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+            signal: controller.signal,
+        }).then(async (response) => {
+            if (response.redirected && new URL(response.url, window.location.origin).pathname === "/login") {
+                window.location.assign(response.url);
+                throw new Error("Sua sessao expirou. Redirecionando para o login.");
+            }
+            if (!response.ok) {
+                const message = (await response.text()).trim();
+                throw new Error(message || "Nao foi possivel carregar o cliente.");
+            }
+            const html = await response.text();
+            const version = Date.now();
+            responseCache.set(clientId, {
+                html,
+                expiresAt: Date.now() + cacheTtlMs,
+                version,
+            });
+            window.setTimeout(() => evictExpiredFragment(clientId, version), cacheTtlMs + 250);
+            return html;
+        }).finally(() => {
+            if (activeRequest === requestState) activeRequest = null;
+        });
+        activeRequest = requestState;
+        return requestState.promise;
+    }
+
+    function initializeFragment(root) {
+        if (window.CityService) window.CityService.initPickers(root);
+        initDocumentalClientForm(root);
+        initRepresentativeManagers(root);
+        initPendingFocusShortcuts(root);
+    }
+
+    function disposeFragment(wrapper) {
+        if (!wrapper) return;
+        wrapper.querySelectorAll(".modal").forEach((modal) => {
+            bootstrap.Modal.getInstance(modal)?.dispose();
+        });
+        wrapper.remove();
+    }
+
+    function evictExpiredFragment(clientId, version) {
+        const cached = responseCache.get(clientId);
+        if (!cached || cached.version !== version || cached.expiresAt > Date.now()) return;
+        responseCache.delete(clientId);
+        const wrapper = host.querySelector(`[data-client-modal-fragment="${clientId}"]`);
+        if (!wrapper) return;
+        const openedModal = wrapper.querySelector(".modal.show");
+        if (!openedModal) {
+            disposeFragment(wrapper);
+            return;
+        }
+        openedModal.addEventListener("hidden.bs.modal", () => {
+            window.setTimeout(() => {
+                if (!wrapper.querySelector(".modal.show")) disposeFragment(wrapper);
+            }, 300);
+        }, { once: true });
+    }
+
+    function installFragment(clientId, html) {
+        let wrapper = host.querySelector(`[data-client-modal-fragment="${clientId}"]`);
+        const cached = responseCache.get(clientId);
+        const version = cached ? String(cached.version) : "";
+        if (wrapper && wrapper.dataset.clientModalVersion === version) return wrapper;
+        if (wrapper) disposeFragment(wrapper);
+
+        const template = document.createElement("template");
+        template.innerHTML = String(html || "").trim();
+        wrapper = template.content.querySelector(`[data-client-modal-fragment="${clientId}"]`);
+        if (!wrapper) throw new Error("Resposta invalida ao carregar o cliente.");
+        host.appendChild(template.content);
+        wrapper = host.querySelector(`[data-client-modal-fragment="${clientId}"]`);
+        wrapper.dataset.clientModalVersion = version;
+        initializeFragment(wrapper);
+        return wrapper;
+    }
+
+    function setLoading(trigger, loading) {
+        if (!trigger.dataset.originalText) trigger.dataset.originalText = trigger.textContent;
+        trigger.classList.toggle("is-loading", loading);
+        trigger.setAttribute("aria-busy", loading ? "true" : "false");
+        trigger.textContent = loading ? "Carregando..." : trigger.dataset.originalText;
+    }
+
+    async function openFromTrigger(trigger) {
+        setLoading(trigger, true);
+        try {
+            const clientId = trigger.dataset.clientId;
+            const html = await loadHtml(trigger, true);
+            const wrapper = installFragment(clientId, html);
+            const prefix = trigger.dataset.clientModalKind === "pending" ? "modal-pendencias-" : "modal-client-";
+            const modalElement = wrapper.querySelector(`#${prefix}${clientId}`);
+            if (!modalElement) throw new Error("Modal do cliente nao encontrado.");
+            bootstrap.Modal.getOrCreateInstance(modalElement).show();
+        } catch (error) {
+            if (error && error.name === "AbortError") return;
+            alert(error.message || "Nao foi possivel carregar o cliente.");
+        } finally {
+            setLoading(trigger, false);
+        }
+    }
+
+    function preload(trigger) {
+        loadHtml(trigger, false).catch((error) => {
+            if (!error || error.name !== "AbortError") {
+                console.warn("Falha ao pre-carregar cliente:", error);
+            }
+        });
+    }
+
+    triggers.forEach((trigger) => {
+        trigger.addEventListener("pointerenter", () => preload(trigger));
+        trigger.addEventListener("focus", () => preload(trigger));
+        trigger.addEventListener("click", () => openFromTrigger(trigger));
+    });
 }
 
 function initProjectClientAutocompletes(root = document) {
@@ -772,8 +938,8 @@ function escapeHtml(value) {
     return element.innerHTML;
 }
 
-function initDocumentalClientForm() {
-    const forms = document.querySelectorAll(".cliente-form");
+function initDocumentalClientForm(root = document) {
+    const forms = root.querySelectorAll(".cliente-form");
     if (!forms.length) return;
 
     const spouseRequiredRegimes = [
@@ -788,6 +954,8 @@ function initDocumentalClientForm() {
     const spouseOptionalRegimes = ["SEPARACAO_TOTAL", "SEPARACAO_OBRIGATORIA"];
 
     forms.forEach((form) => {
+        if (form.dataset.documentalClientReady === "1") return;
+        form.dataset.documentalClientReady = "1";
         const tipoCliente = form.querySelector('[data-role="tipo-cliente"]');
         const quemAssina = form.querySelector('[data-role="quem-assina"]');
         const estadoCivil = form.querySelector('[data-role="estado-civil"]');
@@ -904,7 +1072,7 @@ function initDocumentalClientForm() {
         }
     });
 
-    initPendingFocusShortcuts();
+    initPendingFocusShortcuts(root);
 
     function updateCityWarnings(form) {
         // A validacao de cidade x UF vive no CityService (lista oficial do IBGE).
@@ -968,11 +1136,14 @@ function setCepStatus(status, message, state) {
     status.dataset.state = state || "";
 }
 
-function initPendingFocusShortcuts() {
-    document.querySelectorAll("[data-pending-focus]").forEach((button) => {
+function initPendingFocusShortcuts(root = document) {
+    root.querySelectorAll("[data-pending-focus]").forEach((button) => {
+        if (button.dataset.pendingFocusReady === "1") return;
+        button.dataset.pendingFocusReady = "1";
         button.addEventListener("click", () => {
             const pendingModalEl = button.closest(".modal");
-            const editModalEl = document.querySelector(button.dataset.editModal);
+            const fragment = button.closest("[data-client-modal-fragment]");
+            const editModalEl = (fragment && fragment.querySelector(button.dataset.editModal)) || document.querySelector(button.dataset.editModal);
             if (!editModalEl || !window.bootstrap) return;
 
             const openEdit = () => {

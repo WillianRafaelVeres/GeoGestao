@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from statistics import median
@@ -95,36 +96,64 @@ def build_paths(path_arg: str) -> list[str]:
 class QueryProbe:
     def __init__(self) -> None:
         self.original = geogestao._execute_cursor
+        self.measured_thread_id: int | None = None
         self.reset()
 
     def reset(self) -> None:
         self.count = 0
         self.seconds = 0.0
 
+    def start_measurement(self) -> None:
+        self.reset()
+        self.measured_thread_id = threading.get_ident()
+
+    def stop_measurement(self) -> None:
+        self.measured_thread_id = None
+
     def install(self) -> None:
         def wrapper(cur, query, args=()):
-            start = time.perf_counter()
+            should_record = threading.get_ident() == self.measured_thread_id
+            start = time.perf_counter() if should_record else 0.0
             try:
                 return self.original(cur, query, args)
             finally:
-                self.count += 1
-                self.seconds += time.perf_counter() - start
+                if should_record:
+                    self.count += 1
+                    self.seconds += time.perf_counter() - start
 
         geogestao._execute_cursor = wrapper
 
     def uninstall(self) -> None:
+        self.stop_measurement()
         geogestao._execute_cursor = self.original
 
 
+def wait_for_background_refresh(timeout_seconds: float = 10.0) -> None:
+    """Let a refresh triggered by warm-up finish before timed samples start."""
+    deadline = time.monotonic() + timeout_seconds
+    while getattr(geogestao, "_refreshing_due_statuses", False):
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
+
+
 def measure_path(client, probe: QueryProbe, path: str, runs: int) -> dict:
+    # Warm caches and lazy route state without including this request in results.
+    probe.stop_measurement()
+    client.get(path)
+    wait_for_background_refresh()
+
     samples = []
     statuses = []
     sizes = []
     for _ in range(runs):
-        probe.reset()
-        start = time.perf_counter()
-        response = client.get(path)
-        total_ms = (time.perf_counter() - start) * 1000
+        probe.start_measurement()
+        try:
+            start = time.perf_counter()
+            response = client.get(path)
+            total_ms = (time.perf_counter() - start) * 1000
+        finally:
+            probe.stop_measurement()
         samples.append(
             {
                 "total_ms": total_ms,
