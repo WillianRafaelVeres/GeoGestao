@@ -411,6 +411,7 @@ PERF_LOG_ENABLED = os.environ.get("GEOGESTAO_PERF_LOG", "0") == "1"
 REPORTS_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_REPORTS_CACHE_TTL_SECONDS", "60"))
 DUE_STATUS_REFRESH_TTL_SECONDS = int(os.environ.get("GEOGESTAO_DUE_STATUS_REFRESH_TTL_SECONDS", "300"))
 LOOKUP_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_LOOKUP_CACHE_TTL_SECONDS", "120"))
+ROUTE_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_ROUTE_CACHE_TTL_SECONDS", "3"))
 PASSWORD_RESET_TOKEN_MINUTES = int(os.environ.get("GEOGESTAO_PASSWORD_RESET_MINUTES", "30"))
 SMTP_HOST = os.environ.get("GEOGESTAO_SMTP_HOST", "").strip()
 SMTP_PORT = int(os.environ.get("GEOGESTAO_SMTP_PORT", "587"))
@@ -447,6 +448,13 @@ class PgConn:
     def execute(self, query, args=()):
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         _execute_cursor(cur, query, args if args else ())
+        if has_request_context():
+            command = str(query).lstrip().split(None, 1)[0].upper() if str(query).strip() else ""
+            if command in {"INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP", "TRUNCATE"}:
+                # Alguns fluxos legados escrevem diretamente pela conexao em
+                # vez de usar execute_db(). Ainda assim, a resposta precisa
+                # invalidar snapshots dinâmicos e concluir a transação.
+                g._db_write_pending = True
         return cur
 
     def execute_statements(self, script):
@@ -814,6 +822,9 @@ def commit_request_writes(response):
             invalidate_runtime_caches()
         else:
             db.rollback()
+            # Um fluxo legado pode ter feito commit intermediario antes de
+            # produzir o erro. Invalidar e barato e impede leitura obsoleta.
+            invalidate_runtime_caches()
     finally:
         g._db_write_pending = False
     return response
@@ -3337,110 +3348,170 @@ def calculate_stopped_projects(projects, open_pending_by_project):
 
 
 def build_reports_context():
-    # ---------- Projetos enriquecidos ----------
-    projects = query_db(
+    # O relatório agrega bastante informação, mas ela cabe em um único payload.
+    # Montar cada bloco em SELECT separado fazia o primeiro acesso pagar sete
+    # viagens ao banco remoto; os cálculos Python abaixo permanecem os mesmos.
+    payload = query_db(
         """
-        SELECT DISTINCT
-            p.*,
-            COALESCE(NULLIF(c.nome_exibicao, ''), NULLIF(pf.nome_completo, ''), NULLIF(pj.razao_social, ''), NULLIF(c.nome, ''), NULLIF(p.proprietario, '')) AS cliente_nome,
-            ct.nome AS cartorio_nome,
-            cpe.data_inicio AS stage_data_inicio,
-            cpe.status AS current_stage_status,
-            COALESCE(cpe.stage_name, cem.nome) AS current_stage_name,
-            COALESCE(cpe.stage_order, cem.ordem) AS current_stage_order,
-            cpe.stage_key AS current_stage_template_key,
-            u_stage.id AS current_responsible_id,
-            u_stage.nome AS current_responsible_name,
-            u_project.nome AS responsavel_geral_nome,
-            COALESCE(h.entered_at, cpe.data_inicio, p.atualizado_em, p.criado_em) AS current_entered_at
-        FROM projetos p
-        LEFT JOIN clientes c ON c.id = p.cliente_id
-        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
-        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
-        LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
-        LEFT JOIN projeto_etapas cpe ON cpe.id = p.etapa_atual_id
-        LEFT JOIN etapas_modelo cem ON cem.id = cpe.etapa_modelo_id
-        LEFT JOIN usuarios u_stage ON u_stage.id = cpe.responsavel_id
-        LEFT JOIN usuarios u_project ON u_project.id = p.responsavel_geral_id
-        LEFT JOIN project_stage_history h ON h.project_id = p.id AND h.stage_id = p.etapa_atual_id AND h.exited_at IS NULL
-        ORDER BY p.nome
-        """
-    )
-    attach_project_owner_names(projects)
-    project_dicts = []
-    for p in projects:
-        item = dict(p)
-        raw_current_key = item.get("current_stage_template_key")
-        item["current_stage_key"] = (
-            PROCESS_STAGE_TO_LEGACY_STAGE.get(raw_current_key, stage_key(item.get("current_stage_name") or ""))
-            if raw_current_key
-            else stage_key(item.get("current_stage_name") or "")
+        WITH owner_source AS (
+            SELECT pp.projeto_id, pp.cliente_id, pp.principal, pp.ordem
+            FROM projeto_proprietarios pp
+            UNION ALL
+            SELECT p.id, p.cliente_id, 1, 0
+            FROM projetos p
+            WHERE p.cliente_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM projeto_proprietarios pp WHERE pp.projeto_id = p.id
+              )
+        ),
+        owner_names AS (
+            SELECT
+                owners.projeto_id,
+                string_agg(
+                    COALESCE(
+                        NULLIF(c.nome_exibicao, ''), NULLIF(pf.nome_completo, ''),
+                        NULLIF(pj.razao_social, ''), NULLIF(c.nome, ''),
+                        'Cliente #' || owners.cliente_id::text
+                    ),
+                    ' / ' ORDER BY owners.principal DESC, owners.ordem, owners.cliente_id
+                ) AS names
+            FROM owner_source owners
+            JOIN clientes c ON c.id = owners.cliente_id
+            LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+            LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+            GROUP BY owners.projeto_id
+        ),
+        project_rows AS (
+            SELECT DISTINCT
+                p.*,
+                COALESCE(
+                    owner_names.names, NULLIF(c.nome_exibicao, ''),
+                    NULLIF(pf.nome_completo, ''), NULLIF(pj.razao_social, ''),
+                    NULLIF(c.nome, ''), NULLIF(p.proprietario, '')
+                ) AS cliente_nome,
+                ct.nome AS cartorio_nome,
+                cpe.data_inicio AS stage_data_inicio,
+                cpe.status AS current_stage_status,
+                COALESCE(cpe.stage_name, cem.nome) AS current_stage_name,
+                COALESCE(cpe.stage_order, cem.ordem) AS current_stage_order,
+                cpe.stage_key AS current_stage_template_key,
+                u_stage.id AS current_responsible_id,
+                u_stage.nome AS current_responsible_name,
+                u_project.nome AS responsavel_geral_nome,
+                COALESCE(h.entered_at, cpe.data_inicio, p.atualizado_em, p.criado_em) AS current_entered_at,
+                COALESCE(
+                    owner_names.names, NULLIF(c.nome_exibicao, ''),
+                    NULLIF(pf.nome_completo, ''), NULLIF(pj.razao_social, ''),
+                    NULLIF(c.nome, ''), NULLIF(p.proprietario, ''), ''
+                ) AS proprietarios_nomes
+            FROM projetos p
+            LEFT JOIN clientes c ON c.id = p.cliente_id
+            LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+            LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+            LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+            LEFT JOIN projeto_etapas cpe ON cpe.id = p.etapa_atual_id
+            LEFT JOIN etapas_modelo cem ON cem.id = cpe.etapa_modelo_id
+            LEFT JOIN usuarios u_stage ON u_stage.id = cpe.responsavel_id
+            LEFT JOIN usuarios u_project ON u_project.id = p.responsavel_geral_id
+            LEFT JOIN project_stage_history h
+                ON h.project_id = p.id
+               AND h.stage_id = p.etapa_atual_id
+               AND h.exited_at IS NULL
+            LEFT JOIN owner_names ON owner_names.projeto_id = p.id
+        ),
+        project_stage_rows AS (
+            SELECT
+                pe.projeto_id, pe.stage_key, pe.applicability, pe.data_inicio,
+                pe.external_actor_type, pe.id AS __sort_id,
+                COALESCE(pe.stage_order, em.ordem) AS __sort_order
+            FROM projeto_etapas pe
+            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            WHERE em.ativa = 1 AND COALESCE(pe.show_in_project, 1) = 1
+        ),
+        checklist_counts AS (
+            SELECT pci.project_id, COUNT(*) AS total
+            FROM project_checklist_items pci
+            WHERE pci.active = 1
+              AND pci.status NOT IN (%s, %s)
+              AND pci.requirement_level = %s
+            GROUP BY pci.project_id
+        ),
+        pending_rows AS (
+            SELECT projeto_id, COUNT(*) AS total
+            FROM pendencias
+            WHERE lower(status) NOT IN ('resolvida', 'cancelada')
+            GROUP BY projeto_id
         )
-        project_dicts.append(item)
-
-    # ---------- Etapas dos projetos (com applicability) ----------
-    project_stages = query_db(
-        """
         SELECT
-            pe.id,
-            pe.projeto_id,
-            pe.stage_key,
-            pe.stage_name,
-            pe.applicability,
-            pe.status,
-            pe.data_inicio,
-            pe.data_fim,
-            pe.external_actor_type,
-            pe.workflow_active,
-            pe.responsavel_id
-        FROM projeto_etapas pe
-        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-        WHERE em.ativa = 1
-          AND COALESCE(pe.show_in_project, 1) = 1
-        ORDER BY pe.projeto_id, COALESCE(pe.stage_order, em.ordem), pe.id
-        """
-    )
-    project_stage_dicts = [dict(s) for s in project_stages]
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(r) ORDER BY r.nome) FROM project_rows r
+            ), '[]'::jsonb) AS projects,
+            COALESCE((
+                SELECT jsonb_agg(
+                    to_jsonb(r) - '__sort_order' - '__sort_id'
+                    ORDER BY r.projeto_id, r.__sort_order, r.__sort_id
+                ) FROM project_stage_rows r
+            ), '[]'::jsonb) AS project_stages,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(r) ORDER BY r.project_id)
+                FROM checklist_counts r
+            ), '[]'::jsonb) AS checklist_counts,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(h) ORDER BY h.entered_at)
+                FROM (
+                    SELECT project_id, stage_key, stage_name, entered_at,
+                           exited_at, responsible_id, responsible_name
+                    FROM project_stage_history
+                ) h
+            ), '[]'::jsonb) AS histories,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(r) ORDER BY r.projeto_id) FROM pending_rows r
+            ), '[]'::jsonb) AS pending_rows,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(em) ORDER BY em.ordem)
+                FROM etapas_modelo em WHERE em.ativa = 1
+            ), '[]'::jsonb) AS legacy_stages
+        """,
+        (
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            REQUIREMENT_REQUIRED,
+        ),
+        one=True,
+    ) or {}
 
-    # ---------- Checklist dos projetos ----------
-    checklist_items = query_db(
-        """
-        SELECT
-            pci.id,
-            pci.project_id,
-            pci.project_stage_id,
-            pci.stage_key,
-            pci.stage_name,
-            pci.title,
-            pci.status,
-            pci.requirement_level,
-            pci.criticality,
-            pci.blocks_stage_completion,
-            pci.blocks_process_completion,
-            pci.responsible_name,
-            pci.created_at,
-            pci.updated_at
-        FROM project_checklist_items pci
-        WHERE pci.active = 1
-        ORDER BY pci.project_id, pci.order_index, pci.id
-        """
-    )
-    checklist_dicts = [dict(it) for it in checklist_items]
-
-    # ---------- Historico de etapas ----------
-    histories = query_db("SELECT * FROM project_stage_history ORDER BY entered_at")
-    history_dicts = [dict(h) for h in histories]
-
-    # ---------- Pendencias abertas ----------
-    pending_rows = query_db(
-        """
-        SELECT projeto_id, COUNT(*) AS total
-        FROM pendencias
-        WHERE lower(status) NOT IN ('resolvida', 'cancelada')
-        GROUP BY projeto_id
-        """
-    )
-    open_pending_by_project = {row["projeto_id"]: row["total"] for row in pending_rows}
+    project_dicts = [dict(row) for row in payload.get("projects") or []]
+    project_stage_dicts = [dict(row) for row in payload.get("project_stages") or []]
+    # Os relatórios exibidos usam somente a contagem de checklist obrigatório
+    # pendente por projeto. Transferir centenas de linhas completas custava mais
+    # que a própria consulta; os registros sintéticos preservam exatamente as
+    # contagens usadas pelos cálculos sem transportar campos que a tela não lê.
+    checklist_dicts = [
+        {
+            "project_id": int(row["project_id"]),
+            "status": "PENDENTE",
+            "requirement_level": REQUIREMENT_REQUIRED,
+        }
+        for row in payload.get("checklist_counts") or []
+        for _ in range(int(row["total"] or 0))
+    ]
+    history_dicts = [dict(row) for row in payload.get("histories") or []]
+    for project in project_dicts:
+        if project.get("valor") is not None:
+            project["valor"] = float(project["valor"])
+        raw_current_key = project.get("current_stage_template_key")
+        project["current_stage_key"] = (
+            PROCESS_STAGE_TO_LEGACY_STAGE.get(
+                raw_current_key,
+                stage_key(project.get("current_stage_name") or ""),
+            )
+            if raw_current_key
+            else stage_key(project.get("current_stage_name") or "")
+        )
+    open_pending_by_project = {
+        int(row["projeto_id"]): int(row["total"])
+        for row in payload.get("pending_rows") or []
+    }
 
     # ---------- Metricas novas (Fase 5) ----------
     stage_metrics_v2 = calculate_stage_metrics_v2(
@@ -3460,7 +3531,7 @@ def build_reports_context():
     stopped_projects_v2 = calculate_stopped_projects_v2(
         project_dicts, project_stage_dicts, open_pending_by_project, checklist_dicts
     )
-    checklist_pending_report = calculate_checklist_pending_report(project_dicts, checklist_dicts)
+    checklist_pending_report = []
     bottlenecks_v2 = build_bottleneck_suggestions_v2(stage_metrics_v2)[:6]
 
     summary = build_operational_summary_v2(
@@ -3473,12 +3544,11 @@ def build_reports_context():
     )
 
     # ---------- Metricas legadas (compatibilidade) ----------
-    stages_legacy = query_db("SELECT * FROM etapas_modelo WHERE ativa = 1 ORDER BY ordem")
-    stage_metrics_legacy = calculate_stage_metrics(list(stages_legacy), project_dicts, history_dicts)
+    stages_legacy = [dict(row) for row in payload.get("legacy_stages") or []]
+    stage_metrics_legacy = calculate_stage_metrics(stages_legacy, project_dicts, history_dicts)
     responsible_metrics_legacy = calculate_responsible_metrics(project_dicts, history_dicts)
     city_metrics_legacy = calculate_city_metrics(project_dicts)
     registry_metrics_legacy = calculate_registry_metrics(project_dicts, history_dicts, open_pending_by_project)
-    stopped_legacy = calculate_stopped_projects(project_dicts, open_pending_by_project)
 
     return {
         # Visao geral
@@ -4336,6 +4406,13 @@ def load_matrix_stage_rows_bulk(projects, global_stages=None):
                     t.projeto_etapa_id,
                     CASE t.prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
                     COALESCE(t.prazo, '9999-12-31')
+            ),
+            pending_stats AS (
+                SELECT pd.etapa_id, COUNT(*) AS total
+                FROM pendencias pd
+                JOIN selected_stages ss ON ss.id = pd.etapa_id
+                WHERE lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
+                GROUP BY pd.etapa_id
             )
             SELECT
                 pe.*,
@@ -4354,7 +4431,8 @@ def load_matrix_stage_rows_bulk(projects, global_stages=None):
                 END AS checklist_done,
                 COALESCE(pci_next.title, ci_next.titulo) AS proximo_checklist,
                 COALESCE(pci_stats.required_pending, 0) AS required_pending,
-                task_next.titulo AS tarefa_ativa
+                task_next.titulo AS tarefa_ativa,
+                COALESCE(pending_stats.total, 0) AS pending_count
             FROM projeto_etapas pe
             JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
             LEFT JOIN usuarios u ON u.id = pe.responsavel_id
@@ -4363,6 +4441,7 @@ def load_matrix_stage_rows_bulk(projects, global_stages=None):
             LEFT JOIN ci_stats ON ci_stats.projeto_etapa_id = pe.id
             LEFT JOIN ci_next ON ci_next.projeto_etapa_id = pe.id
             LEFT JOIN task_next ON task_next.projeto_etapa_id = pe.id
+            LEFT JOIN pending_stats ON pending_stats.etapa_id = pe.id
             WHERE pe.projeto_id IN ({placeholders})
               AND em.ativa = 1
               AND COALESCE(pe.show_in_project, 1) = 1
@@ -4424,12 +4503,61 @@ def load_matrix_stage_rows_bulk(projects, global_stages=None):
                     "checklist_total": 0,
                     "checklist_done": 0,
                     "required_pending": 0,
+                    "pending_count": 0,
                     "proximo_checklist": None,
                     "tarefa_ativa": None,
                     "workflow_active": 0,
                     "show_in_project": 0,
                 })
         rows_by_project[project_id] = project_rows
+    return rows_by_project
+
+
+def build_matrix_rows_from_active_stages(projects, global_stages):
+    """Monta a grade usando o resumo da etapa atual já trazido na query principal.
+
+    A matriz exibe detalhes apenas da etapa ativa. As demais células são marcadores
+    visuais; portanto, não há motivo para buscar novamente todas as etapas e
+    estatísticas em uma segunda viagem ao banco.
+    """
+    stages = [dict(stage) for stage in global_stages]
+    external_model_id = next(
+        (stage["id"] for stage in stages if stage_key(stage["nome"]) == "cartorio"),
+        None,
+    )
+    rows_by_project = {}
+    for project in projects:
+        active_stage = project.get("active_stage") or None
+        active_model_id = active_stage.get("etapa_modelo_id") if active_stage else None
+        if active_stage and external_model_id and (
+            (active_stage.get("stage_key") or "") == "PREFEITURA"
+            or stage_key(active_stage.get("legacy_etapa_nome") or "") == "prefeitura"
+        ):
+            active_model_id = external_model_id
+
+        project_rows = []
+        for global_stage in stages:
+            if active_stage and global_stage["id"] == active_model_id:
+                row = dict(active_stage)
+                row["etapa_ordem"] = global_stage["ordem"]
+                row["etapa_nome"] = global_stage["nome"]
+                project_rows.append(row)
+                continue
+            project_rows.append({
+                "id": None,
+                "projeto_id": project["id"],
+                "etapa_modelo_id": global_stage["id"],
+                "etapa_nome": global_stage["nome"],
+                "legacy_etapa_nome": global_stage["nome"],
+                "etapa_ordem": global_stage["ordem"],
+                "status": "nao aplicavel",
+                "responsavel_nome": None,
+                "prazo": None,
+                "pending_count": 0,
+                "workflow_active": 0,
+                "show_in_project": 0,
+            })
+        rows_by_project[project["id"]] = project_rows
     return rows_by_project
 
 
@@ -5611,8 +5739,10 @@ def dashboard():
 
     # O banco e remoto. Todos os blocos do dashboard voltam em uma unica
     # viagem; os prazos tambem sao agregados uma vez por projeto.
-    dashboard_data = query_db(
-        """
+    dashboard_data = get_cached_lookup(
+        ("route_dashboard", today_iso),
+        lambda: query_db(
+            """
         WITH external_deadlines AS (
             SELECT projeto_id, MIN(prazo_resposta) AS external_deadline
             FROM exigencias_cartorio
@@ -5806,9 +5936,11 @@ def dashboard():
                 SELECT jsonb_agg(to_jsonb(pr) ORDER BY COALESCE(pr.prazo, '9999-12-31'), pr.id)
                 FROM pendencia_rows pr
             ), '[]'::jsonb) AS pendencias
-        """,
-        (today_iso, today_iso, today_iso, today_iso, today_iso, in_7),
-        one=True,
+            """,
+            (today_iso, today_iso, today_iso, today_iso, today_iso, in_7),
+            one=True,
+        ),
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
     priority_projects = dashboard_data["priority_projects"] or []
     bottlenecks = dashboard_data["bottlenecks"] or []
@@ -5844,34 +5976,9 @@ def projects():
     sql_filters = []
     params = []
     q = filters.get("q", "").strip()
-    if q:
-        sql_filters.append(
-            """
-            (
-                p.nome LIKE %s OR p.codigo LIKE %s OR p.proprietario LIKE %s OR p.cidade LIKE %s
-                OR c.nome LIKE %s OR c.nome_exibicao LIKE %s
-                OR pf.nome_completo LIKE %s OR pf.cpf LIKE %s
-                OR pj.razao_social LIKE %s OR pj.nome_fantasia LIKE %s OR pj.cnpj LIKE %s
-                OR pr.nome_completo LIKE %s OR pr.cpf LIKE %s
-                OR ct.nome LIKE %s OR ct.cidade LIKE %s OR ct.uf LIKE %s
-                OR p.tipo_servico LIKE %s OR p.tipo_servico_legado LIKE %s OR tp.nome LIKE %s OR tp.categoria LIKE %s
-                OR u.nome LIKE %s OR ur.nome LIKE %s
-                OR EXISTS (
-                    SELECT 1
-                    FROM projeto_proprietarios pp_search
-                    JOIN clientes c_search ON c_search.id = pp_search.cliente_id
-                    LEFT JOIN pessoas_fisicas pf_search ON pf_search.cliente_id = c_search.id
-                    LEFT JOIN pessoas_juridicas pj_search ON pj_search.cliente_id = c_search.id
-                    WHERE pp_search.projeto_id = p.id
-                      AND concat_ws(' ', c_search.nome, c_search.nome_exibicao, pf_search.nome_completo,
-                                    pf_search.cpf, pj_search.razao_social, pj_search.nome_fantasia,
-                                    pj_search.cnpj) ILIKE %s
-                )
-            )
-            """
-        )
-        like_q = f"%{q}%"
-        params.extend([like_q] * 23)
+    # A pesquisa textual usa o índice já entregue em cada linha e responde a
+    # cada tecla no navegador. Os demais filtros continuam SQL, sem mudança de
+    # resultado ou de controles para o usuário.
     if filters.get("cidade"):
         sql_filters.append("p.cidade LIKE %s")
         params.append(f"%{filters['cidade']}%")
@@ -5990,11 +6097,25 @@ def projects():
             sort_criado_em,
             p.id
     """
-    projetos = query_db(
-        f"""
+    project_cache_filters = tuple(
+        sorted((key, value) for key, value in filters.items() if key != "q")
+    )
+    projetos = get_cached_lookup(
+        ("route_projects", project_cache_filters, today_iso),
+        lambda: query_db(
+            f"""
         SELECT
-            p.*,
+            p.id,
+            p.codigo,
+            p.nome,
+            p.proprietario,
+            p.cidade,
+            p.tipo_servico,
+            p.servicos_adicionais,
+            p.etapa_atual_id,
+            p.status,
             COALESCE(
+                NULLIF(owners.nomes, ''),
                 NULLIF(c.nome_exibicao, ''),
                 NULLIF(pf.nome_completo, ''),
                 NULLIF(pj.razao_social, ''),
@@ -6008,16 +6129,59 @@ def projects():
             tp.usa_orgao_externo AS tipo_processo_orgao_externo,
             u.nome AS responsavel_nome,
             ur.nome AS responsavel_etapa_nome,
+            concat_ws(
+                ' ', p.nome, p.codigo, p.proprietario, p.cidade, p.uf,
+                c.nome, c.nome_exibicao, pf.nome_completo, pf.cpf,
+                pj.razao_social, pj.nome_fantasia, pj.cnpj,
+                pr.nome_completo, pr.cpf,
+                ct.nome, ct.cidade, ct.uf,
+                p.tipo_servico, p.tipo_servico_legado, tp.nome, tp.categoria,
+                u.nome, ur.nome, pea.stage_name, pea_em.nome, pea.status,
+                owners.search_text
+            ) AS search_text,
+            CASE
+                WHEN pea.id IS NULL OR pea_em.id IS NULL OR COALESCE(pea.show_in_project, 1) != 1 THEN NULL
+                ELSE jsonb_build_object(
+                    'id', pea.id,
+                    'projeto_id', pea.projeto_id,
+                    'etapa_modelo_id', pea.etapa_modelo_id,
+                    'etapa_nome', COALESCE(pea.stage_name, pea_em.nome),
+                    'etapa_ordem', COALESCE(pea.stage_order, pea_em.ordem),
+                    'legacy_etapa_nome', pea_em.nome,
+                    'legacy_etapa_ordem', pea_em.ordem,
+                    'stage_key', pea.stage_key,
+                    'status', pea.status,
+                    'prazo', pea.prazo,
+                    'responsavel_nome', ur.nome,
+                    'pending_count', COALESCE(active_pending.total, 0),
+                    'workflow_active', COALESCE(pea.workflow_active, 1),
+                    'show_in_project', COALESCE(pea.show_in_project, 1)
+                )
+            END AS active_stage,
             COALESCE(p.ordem_prioridade, 99999) AS sort_ordem_prioridade,
-            COALESCE(p.criado_em, '') AS sort_criado_em,
-            deadline.external_deadline,
-            deadline.operational_deadline,
-            stale.stale_days,
-            stale.stale_rank
+            COALESCE(p.criado_em, '') AS sort_criado_em
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
         LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        LEFT JOIN LATERAL (
+            SELECT
+                string_agg(
+                    COALESCE(NULLIF(oc.nome_exibicao, ''), NULLIF(opf.nome_completo, ''),
+                             NULLIF(opj.razao_social, ''), NULLIF(oc.nome, '')),
+                    ' / ' ORDER BY opp.principal DESC, opp.ordem, opp.cliente_id
+                ) AS nomes,
+                string_agg(
+                    concat_ws(' ', oc.nome, oc.nome_exibicao, opf.nome_completo,
+                              opf.cpf, opj.razao_social, opj.nome_fantasia, opj.cnpj),
+                    ' ' ORDER BY opp.principal DESC, opp.ordem, opp.cliente_id
+                ) AS search_text
+            FROM projeto_proprietarios opp
+            JOIN clientes oc ON oc.id = opp.cliente_id
+            LEFT JOIN pessoas_fisicas opf ON opf.cliente_id = oc.id
+            LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
+            WHERE opp.projeto_id = p.id
+        ) owners ON TRUE
         LEFT JOIN LATERAL (
             SELECT *
             FROM procuradores
@@ -6029,7 +6193,14 @@ def projects():
         LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
         LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
         LEFT JOIN projeto_etapas pea ON pea.id = p.etapa_atual_id
+        LEFT JOIN etapas_modelo pea_em ON pea_em.id = pea.etapa_modelo_id AND pea_em.ativa = 1
         LEFT JOIN usuarios ur ON ur.id = pea.responsavel_id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS total
+            FROM pendencias pd_active
+            WHERE pd_active.etapa_id = pea.id
+              AND lower(COALESCE(pd_active.status, '')) NOT IN ('resolvida', 'cancelada')
+        ) active_pending ON TRUE
         LEFT JOIN LATERAL (
             SELECT
                 (
@@ -6074,110 +6245,15 @@ def projects():
         {where_clause}
         ORDER BY
             {order_clause}
-        """,
-        [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso] + params + [today_iso],
+            """,
+            [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso] + params + [today_iso],
+        ),
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
-    attach_project_owner_names(projetos)
     matrix_options = get_matrix_static_options()
     etapas = matrix_options["etapas"]
-    matrix_rows_by_project = load_matrix_stage_rows_bulk(projetos, etapas)
+    matrix_rows_by_project = build_matrix_rows_from_active_stages(projetos, etapas)
     matrix = [(project, matrix_rows_by_project.get(project["id"], [])) for project in projetos]
-    active_stage_ids = [project["etapa_atual_id"] for project, _ in matrix if project["etapa_atual_id"]]
-    matrix_checklists = {}
-    pending_by_stage = {}
-    pending_by_project = {}
-    notes_by_project = {}
-    external_controls_by_project = {}
-    if active_stage_ids:
-        placeholders = ",".join("%s" for _ in active_stage_ids)
-        # Checklist do processo (por tipo) — somente a tarefa, sem selos, agrupado por etapa do projeto.
-        for item in query_db(
-            f"""
-            SELECT id, project_stage_id AS projeto_etapa_id, title AS titulo,
-                   CASE WHEN status = %s THEN 1 ELSE 0 END AS concluido
-            FROM project_checklist_items
-            WHERE project_stage_id IN ({placeholders}) AND active = 1 AND status != %s
-            ORDER BY project_stage_id, order_index, id
-            """,
-            [CHECKLIST_STATUS_DONE] + active_stage_ids + [CHECKLIST_STATUS_NOT_APPLICABLE],
-        ):
-            matrix_checklists.setdefault(item["projeto_etapa_id"], []).append(item)
-    project_ids = [project["id"] for project, _ in matrix]
-    if project_ids:
-        placeholders = ",".join("%s" for _ in project_ids)
-        for auxiliary in query_db(
-            f"""
-            SELECT 'pending' AS kind,
-                   to_jsonb(pd) || jsonb_build_object('responsavel_nome', u.nome) AS payload,
-                   pd.projeto_id,
-                   COALESCE(pd.prazo, '9999-12-31') AS sort_date,
-                   pd.id AS sort_id
-            FROM pendencias pd
-            LEFT JOIN usuarios u ON u.id = pd.responsavel_id
-            WHERE pd.projeto_id IN ({placeholders})
-              AND lower(pd.status) NOT IN ('resolvida', 'cancelada')
-
-            UNION ALL
-
-            SELECT 'note' AS kind,
-                   to_jsonb(e) || jsonb_build_object('usuario_nome', un.nome) AS payload,
-                   e.projeto_id,
-                   COALESCE(e.criado_em, '') AS sort_date,
-                   e.id AS sort_id
-            FROM eventos_historico e
-            LEFT JOIN usuarios un ON un.id = e.usuario_id
-            WHERE e.projeto_id IN ({placeholders}) AND e.tipo_evento = 'anotacao'
-
-            UNION ALL
-
-            SELECT 'external' AS kind,
-                   to_jsonb(ex) || jsonb_build_object('responsavel_nome', ue.nome) AS payload,
-                   ex.projeto_id,
-                   COALESCE(ex.prazo_resposta, ex.data_protocolo, '9999-12-31') AS sort_date,
-                   ex.id AS sort_id
-            FROM exigencias_cartorio ex
-            LEFT JOIN usuarios ue ON ue.id = ex.responsavel_id
-            WHERE ex.projeto_id IN ({placeholders})
-              AND COALESCE(ex.tipo_registro, 'exigencia') = 'protocolo'
-            ORDER BY projeto_id, kind, sort_date, sort_id
-            """,
-            project_ids + project_ids + project_ids,
-        ):
-            item = auxiliary["payload"]
-            if auxiliary["kind"] == "pending":
-                pending_by_stage.setdefault(item["etapa_id"], []).append(item)
-                pending_by_project.setdefault(item["projeto_id"], []).append(item)
-            elif auxiliary["kind"] == "note":
-                notes_by_project.setdefault(item["projeto_id"], []).insert(0, item)
-            else:
-                external_controls_by_project.setdefault(item["projeto_id"], {}).setdefault(EXTERNAL_PROTOCOL_SCOPE, []).append(item)
-    # Proxima etapa real de cada projeto (mesma regra de get_next_applicable_stage),
-    # em lote. A matriz nao serve para isso: ela colapsa etapas por modelo global e
-    # a ordem global pode ter saltos (modelos desativados), escondendo a proxima etapa.
-    next_stage_by_project = {}
-    if project_ids:
-        placeholders = ",".join("%s" for _ in project_ids)
-        for stage in query_db(
-            f"""
-            SELECT DISTINCT ON (pe.projeto_id)
-                pe.projeto_id,
-                pe.id,
-                COALESCE(pe.stage_name, em.nome) AS etapa_nome
-            FROM projetos p
-            JOIN projeto_etapas cur ON cur.id = p.etapa_atual_id
-            JOIN etapas_modelo cem ON cem.id = cur.etapa_modelo_id
-            JOIN projeto_etapas pe ON pe.projeto_id = p.id
-            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-            WHERE p.id IN ({placeholders})
-              AND COALESCE(pe.show_in_project, 1) = 1
-              AND COALESCE(pe.workflow_active, 1) = 1
-              AND lower(pe.status) NOT IN ('concluido', 'cancelado', 'nao aplicavel')
-              AND COALESCE(pe.stage_order, em.ordem) > COALESCE(cur.stage_order, cem.ordem)
-            ORDER BY pe.projeto_id, COALESCE(pe.stage_order, em.ordem), pe.id
-            """,
-            project_ids,
-        ):
-            next_stage_by_project[stage["projeto_id"]] = stage
     summary_counts = get_matrix_summary_counts(today_iso, in_7)
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
@@ -6189,22 +6265,259 @@ def projects():
     return render_template(
         "projects.html",
         projects=matrix,
-        matrix_checklists=matrix_checklists,
-        pending_by_stage=pending_by_stage,
-        pending_by_project=pending_by_project,
-        next_stage_by_project=next_stage_by_project,
-        notes_by_project=notes_by_project,
-        external_controls_by_project=external_controls_by_project,
         summary=summary,
         etapas=etapas,
         usuarios=matrix_options["usuarios"],
         cartorios=matrix_options["cartorios"],
         process_types=matrix_options["process_types"],
-        external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
-        external_orgao_labels=EXTERNAL_ORGAO_LABELS,
         filters=filters,
         today_iso=today_iso,
     )
+
+
+def load_project_matrix_modal_context(project_id):
+    # Todos os dados do modal voltam em uma única viagem ao Supabase. O HTML
+    # continua idêntico; somente a montagem interna deixa de pagar cinco RTTs.
+    row = query_db(
+        """
+        WITH project_row AS (
+            SELECT
+                p.*,
+                COALESCE(
+                    NULLIF(owners.nomes, ''),
+                    NULLIF(c.nome_exibicao, ''),
+                    NULLIF(pf.nome_completo, ''),
+                    NULLIF(pj.razao_social, ''),
+                    NULLIF(c.nome, ''),
+                    NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
+                ) AS cliente_nome,
+                ct.nome AS cartorio_nome,
+                u.nome AS responsavel_nome
+            FROM projetos p
+            LEFT JOIN clientes c ON c.id = p.cliente_id
+            LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+            LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+            LEFT JOIN LATERAL (
+                SELECT string_agg(
+                    COALESCE(NULLIF(oc.nome_exibicao, ''), NULLIF(opf.nome_completo, ''),
+                             NULLIF(opj.razao_social, ''), NULLIF(oc.nome, '')),
+                    ' / ' ORDER BY opp.principal DESC, opp.ordem, opp.cliente_id
+                ) AS nomes
+                FROM projeto_proprietarios opp
+                JOIN clientes oc ON oc.id = opp.cliente_id
+                LEFT JOIN pessoas_fisicas opf ON opf.cliente_id = oc.id
+                LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
+                WHERE opp.projeto_id = p.id
+            ) owners ON TRUE
+            LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+            LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
+            WHERE p.id = %s
+        ),
+        active_stage AS (
+            SELECT
+                pe.*,
+                COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+                COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
+                em.nome AS legacy_etapa_nome,
+                em.ordem AS legacy_etapa_ordem,
+                ur.nome AS responsavel_nome,
+                CASE
+                    WHEN COALESCE(pci.active_count, 0) > 0 THEN COALESCE(pci.total, 0)
+                    ELSE COALESCE(ci.total, 0)
+                END AS checklist_total,
+                CASE
+                    WHEN COALESCE(pci.active_count, 0) > 0 THEN COALESCE(pci.done, 0)
+                    ELSE COALESCE(ci.done, 0)
+                END AS checklist_done,
+                COALESCE(pci.next_title, ci.next_title) AS proximo_checklist,
+                COALESCE(pci.required_pending, 0) AS required_pending,
+                task_next.titulo AS tarefa_ativa,
+                COALESCE(pending_stats.total, 0) AS pending_count
+            FROM project_row p
+            JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id AND em.ativa = 1
+            LEFT JOIN usuarios ur ON ur.id = pe.responsavel_id
+            LEFT JOIN LATERAL (
+                SELECT
+                    COUNT(*) AS active_count,
+                    COUNT(*) FILTER (WHERE status != %s) AS total,
+                    COUNT(*) FILTER (WHERE status = %s) AS done,
+                    COUNT(*) FILTER (
+                        WHERE requirement_level = %s
+                          AND blocks_stage_completion = 1
+                          AND status NOT IN (%s, %s)
+                    ) AS required_pending,
+                    (array_agg(title ORDER BY order_index, id)
+                        FILTER (WHERE status NOT IN (%s, %s)))[1] AS next_title
+                FROM project_checklist_items
+                WHERE project_stage_id = pe.id AND active = 1
+            ) pci ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE concluido = 1) AS done,
+                    (array_agg(titulo ORDER BY id) FILTER (WHERE concluido = 0))[1] AS next_title
+                FROM checklist_itens
+                WHERE projeto_etapa_id = pe.id
+            ) ci ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT titulo
+                FROM tarefas
+                WHERE projeto_etapa_id = pe.id
+                  AND lower(COALESCE(status, '')) != 'concluido'
+                ORDER BY
+                    CASE prioridade WHEN 'Alta' THEN 0 WHEN 'Media' THEN 1 WHEN 'Baixa' THEN 2 ELSE 3 END,
+                    COALESCE(prazo, '9999-12-31'), id
+                LIMIT 1
+            ) task_next ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS total
+                FROM pendencias
+                WHERE etapa_id = pe.id
+                  AND lower(COALESCE(status, '')) NOT IN ('resolvida', 'cancelada')
+            ) pending_stats ON TRUE
+            WHERE COALESCE(pe.show_in_project, 1) = 1
+        )
+        SELECT
+            row_to_json(p) AS project,
+            (SELECT row_to_json(s) FROM active_stage s) AS active_stage,
+            COALESCE((
+                SELECT jsonb_agg(
+                    jsonb_build_object(
+                        'id', pci.id,
+                        'projeto_etapa_id', pci.project_stage_id,
+                        'titulo', pci.title,
+                        'concluido', CASE WHEN pci.status = %s THEN 1 ELSE 0 END
+                    ) ORDER BY pci.order_index, pci.id
+                )
+                FROM project_checklist_items pci
+                WHERE pci.project_stage_id = p.etapa_atual_id
+                  AND pci.active = 1
+                  AND pci.status != %s
+            ), '[]'::jsonb) AS matrix_checklist,
+            COALESCE((
+                SELECT jsonb_agg(
+                    to_jsonb(pd) || jsonb_build_object('responsavel_nome', up.nome)
+                    ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
+                )
+                FROM pendencias pd
+                LEFT JOIN usuarios up ON up.id = pd.responsavel_id
+                WHERE pd.projeto_id = p.id
+                  AND lower(pd.status) NOT IN ('resolvida', 'cancelada')
+            ), '[]'::jsonb) AS pendings,
+            COALESCE((
+                SELECT jsonb_agg(
+                    to_jsonb(ev) || jsonb_build_object('usuario_nome', un.nome)
+                    ORDER BY ev.criado_em DESC, ev.id DESC
+                )
+                FROM eventos_historico ev
+                LEFT JOIN usuarios un ON un.id = ev.usuario_id
+                WHERE ev.projeto_id = p.id AND ev.tipo_evento = 'anotacao'
+            ), '[]'::jsonb) AS notes,
+            COALESCE((
+                SELECT jsonb_agg(
+                    to_jsonb(ex) || jsonb_build_object('responsavel_nome', ue.nome)
+                    ORDER BY COALESCE(ex.prazo_resposta, ex.data_protocolo, '9999-12-31'), ex.id
+                )
+                FROM exigencias_cartorio ex
+                LEFT JOIN usuarios ue ON ue.id = ex.responsavel_id
+                WHERE ex.projeto_id = p.id
+                  AND COALESCE(ex.tipo_registro, 'exigencia') = 'protocolo'
+            ), '[]'::jsonb) AS external_records,
+            (
+                SELECT to_jsonb(next_stage)
+                FROM (
+                    SELECT pe.id, COALESCE(pe.stage_name, em.nome) AS etapa_nome
+                    FROM projeto_etapas cur
+                    JOIN etapas_modelo cem ON cem.id = cur.etapa_modelo_id
+                    JOIN projeto_etapas pe ON pe.projeto_id = p.id
+                    JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                    WHERE cur.id = p.etapa_atual_id
+                      AND COALESCE(pe.show_in_project, 1) = 1
+                      AND COALESCE(pe.workflow_active, 1) = 1
+                      AND lower(pe.status) NOT IN ('concluido', 'cancelado', 'nao aplicavel')
+                      AND COALESCE(pe.stage_order, em.ordem) > COALESCE(cur.stage_order, cem.ordem)
+                    ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+                    LIMIT 1
+                ) next_stage
+            ) AS next_stage
+        FROM project_row p
+        """,
+        (
+            project_id,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            CHECKLIST_STATUS_DONE,
+            REQUIREMENT_REQUIRED,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+            CHECKLIST_STATUS_DONE,
+            CHECKLIST_STATUS_NOT_APPLICABLE,
+        ),
+        one=True,
+    )
+    if not row or not row["project"] or not row["active_stage"]:
+        return None
+
+    project = row["project"]
+    project["active_stage"] = row["active_stage"]
+    matrix_options = get_matrix_static_options()
+    etapas_projeto = build_matrix_rows_from_active_stages(
+        [project], matrix_options["etapas"]
+    ).get(project_id, [])
+    active_stage_id = project.get("etapa_atual_id")
+    pendings = row["pendings"] or []
+    notes = row["notes"] or []
+    external_records = row["external_records"] or []
+    next_stage = row["next_stage"]
+    return {
+        "project": project,
+        "etapas_projeto": etapas_projeto,
+        "matrix_checklists": {active_stage_id: row["matrix_checklist"] or []},
+        "pending_by_project": {project_id: pendings} if pendings else {},
+        "notes_by_project": {project_id: notes} if notes else {},
+        "external_controls_by_project": (
+            {project_id: {EXTERNAL_PROTOCOL_SCOPE: external_records}}
+            if external_records
+            else {}
+        ),
+        "next_stage_by_project": {project_id: next_stage} if next_stage else {},
+        "matrix_options": matrix_options,
+    }
+
+
+@app.route("/projects/<int:project_id>/fragment")
+@login_required
+def project_modal_fragment(project_id):
+    context = load_project_matrix_modal_context(project_id)
+    if not context:
+        return "Projeto nao encontrado.", 404
+
+    matrix_next = request.args.get("next", "")
+    if not matrix_next.startswith("/projects") or matrix_next.startswith("//"):
+        matrix_next = url_for("projects")
+    response = Response(
+        render_template(
+            "_project_modal_fragment.html",
+            project=context["project"],
+            etapas_projeto=context["etapas_projeto"],
+            matrix_checklists=context["matrix_checklists"],
+            pending_by_project=context["pending_by_project"],
+            notes_by_project=context["notes_by_project"],
+            external_controls_by_project=context["external_controls_by_project"],
+            next_stage_by_project=context["next_stage_by_project"],
+            usuarios=context["matrix_options"]["usuarios"],
+            external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
+            external_orgao_labels=EXTERNAL_ORGAO_LABELS,
+            matrix_next=matrix_next,
+            today_iso=app_today().isoformat(),
+        ),
+        mimetype="text/html",
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Cookie"
+    return response
 
 
 @app.route("/projects/export")
@@ -6751,8 +7064,10 @@ def get_project_financial_context(project, costs=None, payments=None):
 @login_required
 def project_detail(project_id):
     refresh_due_statuses()
-    project = query_db(
-        """
+    project = get_cached_lookup(
+        ("route_project_header", int(project_id)),
+        lambda: query_db(
+            """
         SELECT
             p.*,
             COALESCE(
@@ -6821,9 +7136,11 @@ def project_detail(project_id):
             WHERE pp.projeto_id = p.id
         ) owner_data ON TRUE
         WHERE p.id = %s
-        """,
-        (project_id,),
-        one=True,
+            """,
+            (project_id,),
+            one=True,
+        ),
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
     if not project:
         flash("Projeto nao encontrado.", "danger")
@@ -6839,11 +7156,31 @@ def project_detail(project_id):
         }]
     project["proprietarios_nomes"] = project["proprietarios_nomes"] or project["cliente_nome"] or ""
     workflow_initialized = bool(project["workflow_initialized"])
+    is_admin = bool(can_admin())
 
-    etapas = load_stage_rows(project_id)
-    detail_data = query_db(
-        """
+    detail_data = get_cached_lookup(
+        ("route_project_detail", int(project_id), is_admin),
+        lambda: query_db(
+            """
         SELECT
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY x.etapa_ordem, x.id)
+                FROM (
+                    SELECT
+                        pe.*,
+                        COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+                        COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
+                        em.nome AS legacy_etapa_nome,
+                        em.ordem AS legacy_etapa_ordem,
+                        u.nome AS responsavel_nome
+                    FROM projeto_etapas pe
+                    JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                    LEFT JOIN usuarios u ON u.id = pe.responsavel_id
+                    WHERE pe.projeto_id = %s
+                      AND em.ativa = 1
+                      AND COALESCE(pe.show_in_project, 1) = 1
+                ) x
+            ), '[]'::jsonb) AS etapas,
             COALESCE((
                 SELECT jsonb_agg(to_jsonb(x) ORDER BY
                     CASE COALESCE(x.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
@@ -6904,19 +7241,23 @@ def project_detail(project_id):
                     WHERE %s AND pg.projeto_id = %s
                 ) x
             ), '[]'::jsonb) AS payments
-        """,
-        (
-            project_id,
-            project_id,
-            project_id,
-            project_id,
-            can_admin(),
-            project_id,
-            can_admin(),
-            project_id,
+            """,
+            (
+                project_id,
+                project_id,
+                project_id,
+                project_id,
+                project_id,
+                is_admin,
+                project_id,
+                is_admin,
+                project_id,
+            ),
+            one=True,
         ),
-        one=True,
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
+    etapas = detail_data["etapas"] or []
     exigencias = detail_data["exigencias"]
     pendencias = detail_data["pendencias"]
     historico = detail_data["historico"]
@@ -6940,7 +7281,7 @@ def project_detail(project_id):
             costs=detail_data["costs"],
             payments=detail_data["payments"],
         )
-        if can_admin()
+        if is_admin
         else None
     )
     return render_template(
@@ -8241,13 +8582,35 @@ def api_add_project_checklist_item():
     return jsonify({"ok": True, "id": item_id, "titulo": titulo, "concluido": False, "progress": progress, "done": done, "total": total})
 
 
+def _quick_action_wants_json():
+    accept = (request.headers.get("Accept") or "").lower()
+    requested_with = (request.headers.get("X-Requested-With") or "").lower()
+    return "application/json" in accept or requested_with == "xmlhttprequest"
+
+
+def _quick_action_error(message, redirect_url, status_code=400):
+    if _quick_action_wants_json():
+        return jsonify({"ok": False, "error": message, "message": message}), status_code
+    flash(message, "danger")
+    return redirect(redirect_url)
+
+
+def _quick_action_success(message, redirect_url, payload=None):
+    if _quick_action_wants_json():
+        response = {"ok": True, "message": message}
+        if payload:
+            response.update(payload)
+        return jsonify(response)
+    flash(message, "success")
+    return redirect(redirect_url)
+
+
 @app.route("/stage/<int:stage_id>/quick", methods=["POST"])
 @login_required
 def stage_quick(stage_id):
     stage = load_project_stage_for_action(stage_id)
     if not stage:
-        flash("Etapa nao encontrada.", "danger")
-        return redirect(url_for("projects"))
+        return _quick_action_error("Etapa nao encontrada.", url_for("projects"), 404)
     action = request.form.get("quick_action")
     status = stage["status"]
     progress = stage["progresso"] or 0
@@ -8261,12 +8624,18 @@ def stage_quick(stage_id):
         status = "atencao"
     elif action == "finish":
         if is_office_elaboration_stage(stage) and count_blocking_checklist_pending(stage_id):
-            flash("Conclua os documentos do cartorio antes de concluir a etapa Escritorio.", "danger")
-            return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
+            return _quick_action_error(
+                "Conclua os documentos do cartorio antes de concluir a etapa Escritorio.",
+                request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]),
+                409,
+            )
         can_finish_external, external_message = can_finish_external_stage(stage["projeto_id"], stage)
         if not can_finish_external:
-            flash(external_message, "danger")
-            return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
+            return _quick_action_error(
+                external_message,
+                request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]),
+                409,
+            )
         status = "concluido"
         progress = 100
         data_fim = app_now_iso()
@@ -8280,10 +8649,23 @@ def stage_quick(stage_id):
         next_stage = advance_project_after_stage_completion(stage["projeto_id"], completed_stage, stage["responsavel_id"])
     record_event(stage["projeto_id"], "acao_rapida_etapa", f"Acao rapida em {stage['etapa_nome']}: {STATUS_META.get(status, {}).get('label', status)}.")
     if next_stage:
-        flash(f"Etapa concluida. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+        message = f"Etapa concluida. Projeto avancou para {next_stage['etapa_nome']}."
     else:
-        flash("Etapa atualizada.", "success")
-    return redirect(request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]))
+        message = "Etapa atualizada."
+    return _quick_action_success(
+        message,
+        request.form.get("next") or url_for("project_detail", project_id=stage["projeto_id"]),
+        {
+            "mission_kind": "stage",
+            "mission_id": stage_id,
+            "status": status,
+            "next_stage": (
+                {"id": next_stage["id"], "nome": next_stage["etapa_nome"]}
+                if next_stage
+                else None
+            ),
+        },
+    )
 
 
 @app.route("/task/<int:task_id>/quick", methods=["POST"])
@@ -8291,8 +8673,7 @@ def stage_quick(stage_id):
 def task_quick(task_id):
     task = query_db("SELECT * FROM tarefas WHERE id = %s", (task_id,), one=True)
     if not task:
-        flash("Tarefa nao encontrada.", "danger")
-        return redirect(url_for("my_missions"))
+        return _quick_action_error("Tarefa nao encontrada.", url_for("my_missions"), 404)
     action = request.form.get("quick_action")
     status = task["status"] or "nao iniciado"
     data_inicio = task["data_inicio"]
@@ -8337,14 +8718,30 @@ def task_quick(task_id):
                     task["responsavel_id"],
                 )
                 if next_stage:
-                    flash(f"Retirada registrada. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+                    message = f"Retirada registrada. Projeto avancou para {next_stage['etapa_nome']}."
                 else:
-                    flash("Retirada registrada.", "success")
+                    message = "Retirada registrada."
                 record_event(task["projeto_id"], "retirada_orgao_externo", f"Protocolo #{protocol['id']} retirado via Minhas missoes.")
-                return redirect(request.form.get("next") or url_for("my_missions"))
+                return _quick_action_success(
+                    message,
+                    request.form.get("next") or url_for("my_missions"),
+                    {
+                        "mission_kind": "task",
+                        "mission_id": task_id,
+                        "status": status,
+                        "next_stage": (
+                            {"id": next_stage["id"], "nome": next_stage["etapa_nome"]}
+                            if next_stage
+                            else None
+                        ),
+                    },
+                )
     record_event(task["projeto_id"], "acao_rapida_tarefa", f"Tarefa {task['titulo']} atualizada para {STATUS_META.get(status, {}).get('label', status)}.")
-    flash("Tarefa atualizada.", "success")
-    return redirect(request.form.get("next") or url_for("my_missions"))
+    return _quick_action_success(
+        "Tarefa atualizada.",
+        request.form.get("next") or url_for("my_missions"),
+        {"mission_kind": "task", "mission_id": task_id, "status": status},
+    )
 
 
 @app.route("/pending/<int:pending_id>/quick", methods=["POST"])
@@ -8352,8 +8749,7 @@ def task_quick(task_id):
 def pending_quick(pending_id):
     pending = query_db("SELECT * FROM pendencias WHERE id = %s", (pending_id,), one=True)
     if not pending:
-        flash("Pendencia nao encontrada.", "danger")
-        return redirect(url_for("my_missions"))
+        return _quick_action_error("Pendencia nao encontrada.", url_for("my_missions"), 404)
     action = request.form.get("quick_action")
     status = pending["status"]
     resolved_at = pending["data_resolucao"]
@@ -8370,8 +8766,11 @@ def pending_quick(pending_id):
         (status, resolved_at, app_now_iso(), pending_id),
     )
     record_event(pending["projeto_id"], "pendencia_atualizada", f"Pendencia #{pending_id} atualizada para {status}.")
-    flash("Pendencia atualizada.", "success")
-    return redirect(request.form.get("next") or url_for("my_missions"))
+    return _quick_action_success(
+        "Pendencia atualizada.",
+        request.form.get("next") or url_for("my_missions"),
+        {"mission_kind": "pending", "mission_id": pending_id, "status": status},
+    )
 
 
 def get_first_imovel_for_client(cliente_id):
@@ -9398,8 +9797,10 @@ def empty_cliente_context():
 @login_required
 def my_missions():
     refresh_due_statuses()
-    missions = [dict(row) for row in query_db(
-        """
+    missions = get_cached_lookup(
+        ("route_my_missions", int(g.user["id"])),
+        lambda: [dict(row) for row in query_db(
+            """
         SELECT
             'stage'::text AS kind,
             pe.id,
@@ -9462,9 +9863,11 @@ def my_missions():
         LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
         LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
         WHERE pd.responsavel_id = %s AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
-        """,
-        (g.user["id"], g.user["id"], g.user["id"]),
-    )]
+            """,
+            (g.user["id"], g.user["id"], g.user["id"]),
+        )],
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
+    )
 
     def mission_sort_key(mission):
         due = mission["prazo"] or "9999-12-31"
@@ -9516,10 +9919,13 @@ def clients():
     if filters.get("com_procurador") == "1":
         where.append("pr.id IS NOT NULL")
     where_clause = "WHERE " + " AND ".join(where) if where else ""
-    rows = query_db(
-        f"""
-        SELECT
-            c.*,
+    client_cache_filters = tuple(sorted(filters.items()))
+    rows = get_cached_lookup(
+        ("route_clients", client_cache_filters),
+        lambda: query_db(
+            f"""
+            SELECT
+                c.*,
             pf.cpf AS pf_cpf,
             pf.nome_completo AS pf_nome_completo,
             pf.email AS pf_email_doc,
@@ -9552,8 +9958,10 @@ def clients():
         ) pr ON TRUE
         {where_clause}
         ORDER BY lower(COALESCE(NULLIF(c.nome_exibicao, ''), c.nome, '')), lower(COALESCE(c.nome, ''))
-        """,
-        params,
+            """,
+            params,
+        ),
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
     return render_template(
         "clients.html",
@@ -9903,14 +10311,18 @@ def cartorios():
             flash("Cartorio/orgao cadastrado.", "success")
         invalidate_runtime_caches()
         return redirect(url_for("cartorios"))
-    rows = query_db(
-        """
-        SELECT c.*, COUNT(p.id) AS projetos
+    rows = get_cached_lookup(
+        "route_cartorios",
+        lambda: query_db(
+            """
+            SELECT c.*, COUNT(p.id) AS projetos
         FROM cartorios c
         LEFT JOIN projetos p ON p.cartorio_id = c.id
         GROUP BY c.id
         ORDER BY c.nome
-        """
+            """
+        ),
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
     cartorio_catalog = [
         {
@@ -10250,7 +10662,11 @@ def users():
             prefixes=("logged_user",),
         )
         return redirect(url_for("users"))
-    rows = query_db("SELECT * FROM usuarios ORDER BY ativo DESC, lower(nome)")
+    rows = get_cached_lookup(
+        "route_users",
+        lambda: query_db("SELECT * FROM usuarios ORDER BY ativo DESC, lower(nome)"),
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
+    )
     pending_users = [row for row in rows if not row["ativo"] and row["perfil_acesso"] == "consulta" and not (row["cargo"] or "").strip()]
     active_users = [row for row in rows if row["ativo"]]
     return render_template("users.html", users=rows, pending_users=pending_users, active_users=active_users)
@@ -10730,8 +11146,10 @@ def financeiro_definir_valor(project_id):
 @login_required
 def cartorio_board():
     refresh_due_statuses()
-    exigencias = query_db(
-        """
+    exigencias = get_cached_lookup(
+        "route_cartorio_board",
+        lambda: query_db(
+            """
         SELECT e.*, p.nome AS projeto_nome, p.id AS projeto_id, c.nome AS cartorio_nome, u.nome AS responsavel_nome
         FROM exigencias_cartorio e
         JOIN projetos p ON p.id = e.projeto_id
@@ -10742,7 +11160,9 @@ def cartorio_board():
             CASE COALESCE(e.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
             COALESCE(e.prazo_resposta, e.data_protocolo, '9999-12-31'),
             e.id
-        """
+            """
+        ),
+        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
     return render_template("cartorio_board.html", exigencias=exigencias, external_orgao_labels=EXTERNAL_ORGAO_LABELS)
 

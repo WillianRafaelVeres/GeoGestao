@@ -16,6 +16,7 @@
         <h2>Fila de trabalho</h2>
         <small>Atrasos, vencimentos proximos, prioridade alta e pendencias abertas.</small>
     </div>
+    <div class="alert d-none mx-3 mt-3 mb-0" role="status" aria-live="polite" data-mission-feedback></div>
     <div class="table-responsive">
         <table class="table compact-table mission-table">
             <thead>
@@ -30,10 +31,10 @@
                     <th>Acoes</th>
                 </tr>
             </thead>
-            <tbody>
+            <tbody data-mission-list>
                 {% for mission in missions %}
                     {% set status_key = mission.status|lower %}
-                    <tr class="{{ 'table-danger' if is_overdue(mission.prazo, mission.status) or mission.status == 'atrasado' else '' }}">
+                    <tr class="{{ 'table-danger' if is_overdue(mission.prazo, mission.status) or mission.status == 'atrasado' else '' }}" data-mission-row>
                         <td>{{ 'Pendencia' if mission.kind == 'pending' else ('Etapa' if mission.kind == 'stage' else 'Tarefa') }}</td>
                         <td><strong>{{ mission.title }}</strong>{% if mission.origin %}<small>Origem: {{ mission.origin }}</small>{% endif %}</td>
                         <td><a class="table-link" href="{{ url_for('project_detail', project_id=mission.project_id) }}">{{ mission.project }}</a></td>
@@ -50,11 +51,11 @@
                         <td>
                             <div class="quick-actions table-actions">
                                 {% if mission.kind == 'stage' %}
-                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                                    <form method="post" action="{{ url_for('stage_quick', stage_id=mission.id) }}" data-mission-quick-form><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
                                 {% elif mission.kind == 'task' %}
-                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
+                                    <form method="post" action="{{ url_for('task_quick', task_id=mission.id) }}" data-mission-quick-form><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Concluir</button></form>
                                 {% else %}
-                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}"><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Resolver</button></form>
+                                    <form method="post" action="{{ url_for('pending_quick', pending_id=mission.id) }}" data-mission-quick-form><input type="hidden" name="quick_action" value="finish" /><input type="hidden" name="next" value="{{ request.full_path }}" /><button class="btn btn-outline-success btn-sm" type="submit">Resolver</button></form>
                                 {% endif %}
                                 {% if mission.folder %}
                                     <button class="btn btn-outline-primary btn-sm" type="button" data-open-folder="{{ mission.folder }}" title="Abrir a pasta do projeto (Explorer ou Dropbox)">Abrir pasta</button>
@@ -63,7 +64,7 @@
                         </td>
                     </tr>
                 {% else %}
-                    <tr><td colspan="8">Voce nao possui missoes ativas.</td></tr>
+                    <tr data-mission-empty><td colspan="8">Voce nao possui missoes ativas.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

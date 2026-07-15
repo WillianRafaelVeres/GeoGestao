@@ -1,0 +1,533 @@
+{% macro project_modals(project, etapas_projeto) -%}
+    {% set modal_next = matrix_next or url_for('projects') %}
+    {% set ns = namespace(active_stage=None) %}
+    {% for etapa in etapas_projeto %}
+        {% if etapa.id == project.etapa_atual_id %}
+            {% set ns.active_stage = etapa %}
+        {% endif %}
+    {% endfor %}
+    {% set active_stage = ns.active_stage or etapas_projeto[0] %}
+    {% set active_status = active_stage.status|lower %}
+    {% set active_stage_key = active_stage.stage_key or '' %}
+    {% set active_stage_name = (active_stage.etapa_nome or active_stage.legacy_etapa_nome or '')|lower %}
+    {% set active_external_type = 'ORGAO_EXTERNO' if active_stage_key in ['PREFEITURA', 'ORGAO_EXTERNO'] or active_stage_name in ['prefeitura', 'cartorio', 'orgao externo'] else '' %}
+    {% set active_external_label = 'Orgao externo' if active_external_type else '' %}
+    {% set all_external_records = external_controls_by_project.get(project.id, {}).get(active_external_type, []) if active_external_type else [] %}
+    {% set ns_active_external_records = namespace(items=[]) %}
+    {% for ext in all_external_records %}
+        {% if not ext.etapa_id or ext.etapa_id == active_stage.id %}
+            {% set ns_active_external_records.items = ns_active_external_records.items + [ext] %}
+        {% endif %}
+    {% endfor %}
+    {% set active_external_records = ns_active_external_records.items %}
+    {% set ns_external = namespace(protocol_count=0, withdrawn_count=0, pending_count=0, ready_count=0, protocol_deadline='') %}
+    {% for ext in active_external_records %}
+        {% set ext_status = ext.status|lower %}
+        {% set ns_external.protocol_count = ns_external.protocol_count + 1 %}
+        {% if ext.prazo_resposta and not ext.data_retirada and (not ns_external.protocol_deadline or ext.prazo_resposta < ns_external.protocol_deadline) %}{% set ns_external.protocol_deadline = ext.prazo_resposta %}{% endif %}
+        {% if ext.data_retirada and ext_status == 'concluido' %}{% set ns_external.withdrawn_count = ns_external.withdrawn_count + 1 %}{% endif %}
+        {% if ext.data_pronto_retirada and not ext.data_retirada %}{% set ns_external.ready_count = ns_external.ready_count + 1 %}{% endif %}
+    {% endfor %}
+    {% set ns_external.pending_count = ns_external.protocol_count - ns_external.withdrawn_count %}
+    {% set external_all_withdrawn = ns_external.protocol_count > 0 and ns_external.pending_count == 0 %}
+    {% set external_has_protocols = ns_external.protocol_count > 0 %}
+    {% set external_can_skip = active_external_type and active_status != 'nao aplicavel' and not external_has_protocols %}
+    {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and external_has_protocols and not external_all_withdrawn %}
+    {% set project_pendings = pending_by_project.get(project.id, []) %}
+    {% set proxima_etapa = next_stage_by_project.get(project.id) %}
+    {% set ns_next = namespace(anteriores=[]) %}
+    {% for etapa in etapas_projeto %}
+        {% if etapa.etapa_ordem < active_stage.etapa_ordem and etapa.id %}
+            {% set ns_next.anteriores = ns_next.anteriores + [etapa] %}
+        {% endif %}
+    {% endfor %}
+
+    {# ===== MODAL PRINCIPAL DO PROJETO ===== #}
+    <div class="modal fade" id="project-modal-{{ project.id }}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered pmodal-dialog">
+            <div class="modal-content pmodal-content">
+
+                {# Cabeçalho fixo #}
+                <div class="pmodal-header">
+                    <div class="pmodal-header-main">
+                        <span class="pmodal-code">{{ project.codigo }}</span>
+                        <h2 class="pmodal-title">{{ project.nome }}</h2>
+                        <p class="pmodal-sub">
+                            {{- project.cliente_nome or (project.proprietario if project.proprietario != project.codigo else '') or '-' -}}
+                            {%- if project.cartorio_nome %} · {{ project.cartorio_nome }}{% endif -%}
+                            {%- if project.cidade %} · {{ project.cidade }}{% endif -%}
+                        </p>
+                    </div>
+                    <div class="pmodal-header-right">
+                        <div class="pmodal-etapa-badge">
+                            <span class="pmodal-etapa-label">Etapa atual</span>
+                            <strong class="pmodal-etapa-name">{{ active_stage.etapa_nome }}</strong>
+                        </div>
+                        <span class="status-pill tone-{{ status_meta[active_status].tone if active_status in status_meta else 'muted' }}">
+                            {{ status_meta[active_status].label if active_status in status_meta else active_stage.status }}
+                        </span>
+                        {% if project.prioridade == 'Alta' %}<span class="pmodal-priority-badge">Alta prioridade</span>{% endif %}
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+
+                {# Corpo com scroll interno #}
+                <div class="pmodal-body">
+
+                    {# Linha de metadados rápidos #}
+                    <div class="pmodal-meta-row">
+                        <div class="pmodal-meta-card">
+                            <span>Responsavel</span>
+                            <strong>{{ active_stage.responsavel_nome or project.responsavel_nome or '—' }}</strong>
+                        </div>
+                        <div class="pmodal-meta-card {{ 'is-warn' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">
+                            <span>Prazo da etapa</span>
+                            <strong class="{{ 'text-danger' if is_overdue(active_stage.prazo, active_stage.status) else '' }}">
+                                {{ format_date(active_stage.prazo) or '—' }}
+                            </strong>
+                        </div>
+                        <div class="pmodal-meta-card {{ 'is-danger' if project_pendings else '' }}">
+                            <span>Pendencias</span>
+                            <strong class="{{ 'text-danger' if project_pendings else '' }}">{{ project_pendings|length or '—' }}</strong>
+                        </div>
+                        <div class="pmodal-meta-card">
+                            <span>Prox. checklist</span>
+                            <strong title="{{ active_stage.proximo_checklist or '' }}">
+                                {{ (active_stage.proximo_checklist or '—')[:32] }}
+                            </strong>
+                        </div>
+                    </div>
+
+                    {# Ações rápidas #}
+                    <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-responsible-form">
+                        <input type="hidden" name="action" value="update_responsible">
+                        <input type="hidden" name="next" value="{{ modal_next }}">
+                        <label for="responsavel-modal-{{ project.id }}">Delegar responsavel</label>
+                        <select id="responsavel-modal-{{ project.id }}" name="responsavel_id">
+                            <option value="">Sem responsavel</option>
+                            {% set selected_responsible = active_stage.responsavel_id or project.responsavel_geral_id %}
+                            {% for usuario in usuarios %}
+                                <option value="{{ usuario.id }}" {% if selected_responsible == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit">Salvar</button>
+                    </form>
+
+                    {% if active_external_type %}
+                    <section class="pmodal-section pmodal-external-control"
+                        id="external-control-{{ project.id }}-{{ active_external_type }}"
+                        data-project-id="{{ project.id }}"
+                        data-external-type="{{ active_external_type }}"
+                        data-cartorio-id="{{ project.cartorio_id or '' }}">
+                        <div class="pmodal-section-head">
+                            <span class="pmodal-section-title">Controle {{ active_external_label }}</span>
+                            <span class="pmodal-external-state {{ 'is-ok' if external_all_withdrawn else 'is-pending' }}" data-external-state>
+                                {% if external_all_withdrawn %}
+                                    Retirado
+                                {% elif ns_external.ready_count %}
+                                    Pronto para retirada
+                                {% elif ns_external.protocol_count %}
+                                    Protocolado
+                                {% else %}
+                                    Aguardando protocolo
+                                {% endif %}
+                            </span>
+                        </div>
+
+                        <div class="pmodal-external-summary">
+                            <div><span>Protocolos</span><strong data-external-count>{{ ns_external.protocol_count }}</strong></div>
+                            <div><span>Verificar em</span><strong data-external-check-date>{{ format_date(ns_external.protocol_deadline) or '-' }}</strong></div>
+                            <div>
+                                <span>Retirada</span>
+                                <strong data-external-withdrawal>
+                                    {% if ns_external.protocol_count %}{{ ns_external.withdrawn_count }}/{{ ns_external.protocol_count }} retirados{% else %}Pendente{% endif %}
+                                </strong>
+                            </div>
+                        </div>
+
+                        <div class="pmodal-external-feedback" data-external-feedback hidden></div>
+
+                        <select data-protocol-responsible-options hidden>
+                            <option value="">Responsavel pela retirada</option>
+                            {% for usuario in usuarios %}
+                                <option value="{{ usuario.id }}">{{ usuario.nome }}</option>
+                            {% endfor %}
+                        </select>
+
+                        <div class="pmodal-external-records" data-external-records>
+                            {% for ext in active_external_records %}
+                                {% set ext_status = ext.status|lower %}
+                                {% set ext_withdrawn = ext.data_retirada and ext_status == 'concluido' %}
+                                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-record {{ 'is-withdrawn' if ext_withdrawn else '' }}" data-external-protocol-row data-protocol-id="{{ ext.id }}">
+                                    <input type="hidden" name="action" value="update_exigencia">
+                                    <input type="hidden" name="exigencia_id" value="{{ ext.id }}">
+                                    <input type="hidden" name="tipo_registro" value="protocolo">
+                                    <input type="hidden" name="next" value="{{ modal_next }}">
+                                    <div class="pmodal-external-info">
+                                        <span data-protocol-status-label>{% if ext_withdrawn %}Retirado{% elif ext.data_pronto_retirada %}Pronto{% else %}Protocolo{% endif %}</span>
+                                        <strong>{{ ext.descricao }}</strong>
+                                        <small>Orgao: {{ external_orgao_labels.get(ext.tipo_orgao or 'CARTORIO', ext.tipo_orgao or 'Orgao externo') }}</small>
+                                        <small>Data de protocolo: {{ format_date(ext.data_protocolo) or 'sem data' }}</small>
+                                        <small>Numero: {{ ext.numero_protocolo or '-' }}</small>
+                                        <small>Verificar em: {{ format_date(ext.prazo_resposta) or '-' }}</small>
+                                    </div>
+                                    <div class="pmodal-field-compact">
+                                        <span>Responsavel pela retirada</span>
+                                        <select class="form-select form-select-sm" name="responsavel_id" title="Responsavel" data-protocol-responsible>
+                                            <option value="">Responsavel pela retirada</option>
+                                            {% for usuario in usuarios %}
+                                                <option value="{{ usuario.id }}" {% if ext.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <button class="pmodal-btn-ghost" name="protocol_action" value="ready" type="button" data-protocol-action="ready" {% if ext.data_retirada %}disabled{% endif %}>Pronto</button>
+                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--success" name="protocol_action" value="withdrawn" type="button" data-protocol-action="withdrawn" {% if ext.data_retirada %}disabled{% endif %}>Retirado</button>
+                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="button" data-protocol-action="delete">Excluir</button>
+                                </form>
+                            {% else %}
+                                <div class="pmodal-external-empty" data-external-empty>Nenhum protocolo registrado nesta etapa.</div>
+                            {% endfor %}
+                        </div>
+
+                        {% if active_external_type and active_status != 'nao aplicavel' %}
+                        <div class="pmodal-external-skip-panel" data-external-skip-panel {% if not external_can_skip %}hidden{% endif %}>
+                            <div>
+                                <strong>Nenhum protocolo nesta etapa</strong>
+                                <span>Se nao houver nada para protocolar agora, avance para a proxima etapa do fluxo.</span>
+                            </div>
+                            <button class="pmodal-btn-advance" type="button" data-external-skip data-stage-id="{{ active_stage.id }}">
+                                Avancar -> {{ proxima_etapa.etapa_nome if proxima_etapa else 'Concluir projeto' }}
+                            </button>
+                        </div>
+                        {% endif %}
+
+                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-add" data-external-protocol-add>
+                            <input type="hidden" name="action" value="add_external_protocol">
+                            <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}">
+                            <input type="hidden" name="next" value="{{ modal_next }}">
+                            <label>Protocolar</label>
+                            <div class="pmodal-external-add-row">
+                                <div class="pmodal-field-compact">
+                                    <span>Orgao protocolado</span>
+                                    <select class="form-select form-select-sm" name="tipo_orgao" required>
+                                        {% for value, label in external_orgao_options %}
+                                            <option value="{{ value }}">{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="pmodal-field-compact">
+                                    <span>Data de protocolo</span>
+                                    <input class="form-control form-control-sm" type="date" name="data_protocolo" value="{{ today_iso }}" required>
+                                </div>
+                                <div class="pmodal-field-compact">
+                                    <span>Numero do protocolo</span>
+                                    <input class="form-control form-control-sm" name="numero_protocolo" placeholder="Numero" required>
+                                </div>
+                                <div class="pmodal-field-compact">
+                                    <span>Descricao</span>
+                                    <input class="form-control form-control-sm" name="descricao" placeholder="Descricao do protocolo">
+                                </div>
+                                <button class="pmodal-btn-ghost" type="submit">Salvar protocolo</button>
+                            </div>
+                            <small class="pmodal-external-hint">A data para verificar se esta pronto e calculada automaticamente: 15 dias uteis apos o protocolo.</small>
+                        </form>
+                    </section>
+                    {% endif %}
+
+                    <div class="pmodal-actions">
+                        {% if external_stage_blocked %}
+                        <span class="pmodal-advance-blocked" data-external-lock title="Use o controle de {{ active_external_label }} para liberar o avanco">
+                            Retire todos os protocolos para avancar
+                        </span>
+                        {% elif project_pendings %}
+                        <span class="pmodal-advance-blocked" title="Resolva as pendencias abertas para liberar o avanco">
+                            🔒 Resolva as pendencias para avancar
+                        </span>
+                        {% elif proxima_etapa %}
+                        {% set etapa_escritorio = (active_stage.stage_key or '') == 'ESCRITORIO' %}
+                        {% set docs_travados = etapa_escritorio and (active_stage.required_pending or 0) > 0 %}
+                        {% if etapa_escritorio %}
+                        <span class="pmodal-advance-blocked" id="advance-lock-{{ active_stage.id }}"
+                            title="Marque todos os documentos do cartorio para liberar o avanco"
+                            {% if not docs_travados %}style="display:none"{% endif %}>
+                            🔒 Conclua os documentos para avancar
+                        </span>
+                        {% endif %}
+                        <button class="pmodal-btn-advance" type="button" id="advance-btn-{{ active_stage.id }}"
+                            onclick="openSubModal('project-modal-{{ project.id }}', 'modal-avancar-{{ project.id }}')"
+                            {% if docs_travados %}style="display:none"{% endif %}>
+                            Avancar -> {{ proxima_etapa.etapa_nome }}
+                        </button>
+                        {% endif %}
+                        <button class="pmodal-btn-set-top" type="button"
+                            onclick="setProjectTop({{ project.id }}, this)"
+                            title="Move este projeto para o topo da lista">
+                            ↑ Prioridade maxima
+                        </button>
+                        <div class="pmodal-actions-sec">
+                            {% if ns_next.anteriores %}
+                            <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="button"
+                                onclick="openSubModal('project-modal-{{ project.id }}', 'modal-retornar-{{ project.id }}')">
+                                ← Retornar etapa
+                            </button>
+                            {% endif %}
+                            <button class="pmodal-btn-ghost" type="button"
+                                onclick="openSubModal('project-modal-{{ project.id }}', 'modal-pendencia-{{ project.id }}')">
+                                + Pendencia
+                            </button>
+                            <a class="pmodal-btn-ghost" href="{{ url_for('project_detail', project_id=project.id) }}">
+                                Detalhes completos ↗
+                            </a>
+                        </div>
+                    </div>
+
+                    {# Grid: checklist | pendências + movimentações + pasta #}
+                    <div class="pmodal-grid">
+
+                        {# Coluna esquerda: checklist #}
+                        <div class="pmodal-col">
+                            <div class="pmodal-section">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Checklist</span>
+                                    <span class="pmodal-section-count" id="counter-{{ active_stage.id }}">
+                                        {{ active_stage.checklist_done }}/{{ active_stage.checklist_total }}
+                                    </span>
+                                </div>
+                                {% set pct = ((active_stage.checklist_done / active_stage.checklist_total * 100) | int) if active_stage.checklist_total else 0 %}
+                                <div class="pmodal-progress">
+                                    <div class="pmodal-progress-fill" id="progress-{{ active_stage.id }}" style="width:{{ pct }}%"></div>
+                                </div>
+                                <div class="pmodal-checklist" id="checklist-{{ active_stage.id }}">
+                                    {% for item in matrix_checklists.get(active_stage.id, []) %}
+                                    <label class="pmodal-check-item {{ 'is-done' if item.concluido else '' }}" id="check-row-{{ item.id }}">
+                                        <input type="checkbox" class="pmodal-check-box"
+                                            {{ 'checked' if item.concluido else '' }}
+                                            onchange="toggleCheck(this, {{ item.id }}, {{ active_stage.id }})" />
+                                        <span class="pmodal-check-label" id="check-label-{{ item.id }}">{{ item.titulo }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                                <input type="text" class="pmodal-add-check-input"
+                                    id="add-check-input-{{ active_stage.id }}"
+                                    placeholder="+ Adicionar item..."
+                                    onkeydown="handleAddCheck(event, {{ active_stage.id }})" />
+                            </div>
+                        </div>
+
+                        {# Coluna direita: pendências + movimentações + pasta #}
+                        <div class="pmodal-col">
+
+                            {% if project_pendings %}
+                            <div class="pmodal-section">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Pendencias abertas</span>
+                                    <span class="pmodal-section-count pmodal-section-count--danger">{{ project_pendings|length }}</span>
+                                </div>
+                                <div class="pmodal-pending-list">
+                                    {% for pending in project_pendings %}
+                                    <div class="pmodal-pending-item {{ 'is-late' if is_overdue(pending.prazo, pending.status) else '' }}">
+                                        <div class="pmodal-pending-info">
+                                            <div class="pmodal-pending-desc">{{ pending.descricao }}</div>
+                                            <div class="pmodal-pending-meta">
+                                                {{ pending.origem or 'interna' }} · {{ pending.responsavel_nome or 'Sem resp.' -}}
+                                                {%- if pending.prazo %} · {{ format_date(pending.prazo) }}{% endif %}
+                                            </div>
+                                        </div>
+                                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" style="flex-shrink:0;">
+                                            <input type="hidden" name="action" value="resolve_pending">
+                                            <input type="hidden" name="pendencia_id" value="{{ pending.id }}">
+                                            <input type="hidden" name="next" value="{{ modal_next }}">
+                                            <button class="pmodal-btn-resolve" type="submit" title="Resolver">✓</button>
+                                        </form>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% set project_notes = notes_by_project.get(project.id, []) %}
+                            <div class="pmodal-section">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Anotacoes</span>
+                                </div>
+                                <div class="pmodal-notes" id="notes-{{ project.id }}">
+                                    {% for note in project_notes %}
+                                    <div class="pmodal-note">
+                                        <div class="pmodal-note-text">{{ note.descricao }}</div>
+                                        <div class="pmodal-note-meta">{{ format_datetime(note.criado_em) }} · {{ note.usuario_nome or 'Sistema' }}</div>
+                                    </div>
+                                    {% else %}
+                                    <div class="pmodal-note-empty" id="notes-empty-{{ project.id }}">Nenhuma anotacao ainda.</div>
+                                    {% endfor %}
+                                </div>
+                                <div class="pmodal-note-add">
+                                    <textarea class="pmodal-note-input" id="note-input-{{ project.id }}" rows="2" placeholder="Escrever uma anotacao..." onkeydown="handleNoteKey(event, {{ project.id }})"></textarea>
+                                    <button class="pmodal-btn-ghost" type="button" onclick="addNote({{ project.id }})">Adicionar anotacao</button>
+                                </div>
+                            </div>
+
+                            {% if project.caminho_pasta %}
+                            <div class="pmodal-section">
+                                <div class="pmodal-folder-row">
+                                    <code class="pmodal-folder-path" title="{{ project.caminho_pasta }}">{{ project.caminho_pasta }}</code>
+                                    <button class="pmodal-btn-ghost" type="button" data-open-folder="{{ project.caminho_pasta }}">Abrir</button>
+                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--copy" type="button" data-copy="{{ project.caminho_pasta }}">Copiar</button>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ===== MODAL AVANCAR ===== #}
+    {% if proxima_etapa %}
+    <div class="modal fade" id="modal-avancar-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--advance">
+                    <div>
+                        <div class="stage-modal-label">Avancar etapa</div>
+                        <div class="stage-modal-title">{{ active_stage.etapa_nome }} -> {{ proxima_etapa.etapa_nome }}</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="move_stage">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                    <input type="hidden" name="nova_etapa_id" value="{{ proxima_etapa.id }}">
+                    <input type="hidden" name="motivo" value="avanco">
+                    <div class="stage-modal-body">
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Responsavel</label>
+                            <select class="form-select form-select-sm" name="responsavel_id">
+                                <option value="">Manter atual ({{ active_stage.responsavel_nome or 'sem responsavel' }})</option>
+                                {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Prazo <span class="stage-modal-optional">(opcional)</span></label>
+                            <input type="date" class="form-control form-control-sm" name="prazo">
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Observacao <span class="stage-modal-optional">(opcional)</span></label>
+                            <textarea class="form-control form-control-sm" name="observacao" rows="2" placeholder="Alguma nota sobre este avanco?"></textarea>
+                        </div>
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--advance">Confirmar avanco -></button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ===== MODAL RETORNAR ===== #}
+    {% if ns_next.anteriores %}
+    <div class="modal fade" id="modal-retornar-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--return">
+                    <div>
+                        <div class="stage-modal-label">Retornar etapa</div>
+                        <div class="stage-modal-title">{{ active_stage.etapa_nome }}</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="move_stage">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                    <input type="hidden" name="motivo" value="retorno">
+                    <div class="stage-modal-body">
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Retornar para</label>
+                            <select class="form-select form-select-sm" name="nova_etapa_id" required>
+                                <option value="">Selecionar etapa...</option>
+                                {% for etapa in ns_next.anteriores | reverse %}
+                                <option value="{{ etapa.id }}">{{ etapa.etapa_nome }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Responsavel</label>
+                            <select class="form-select form-select-sm" name="responsavel_id">
+                                <option value="">Manter atual</option>
+                                {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label stage-modal-field-label--required">Justificativa <span class="stage-modal-optional">(obrigatoria)</span></label>
+                            <textarea class="form-control form-control-sm" name="observacao" rows="3" required
+                                placeholder="Ex: Medicao retornou — ponto de referencia incorreto"></textarea>
+                        </div>
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--return">← Confirmar retorno</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ===== MODAL PENDENCIA ===== #}
+    <div class="modal fade" id="modal-pendencia-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--pending">
+                    <div>
+                        <div class="stage-modal-label">{{ project.nome }}</div>
+                        <div class="stage-modal-title">Nova pendencia</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="add_pending">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                    <div class="stage-modal-body">
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Descricao</label>
+                            <textarea class="form-control form-control-sm" name="descricao" rows="2" required placeholder="Descreva a pendencia..."></textarea>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Origem</label>
+                                <select class="form-select form-select-sm" name="origem">
+                                    <option value="interna">Interna</option>
+                                    <option value="cliente">Cliente</option>
+                                    <option value="cartorio">Cartorio</option>
+                                    <option value="campo">Campo</option>
+                                    <option value="escritorio">Escritorio</option>
+                                </select>
+                            </div>
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Prazo</label>
+                                <input type="date" class="form-control form-control-sm" name="prazo">
+                            </div>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Responsavel</label>
+                            <select class="form-select form-select-sm" name="responsavel_id">
+                                <option value="">Sem responsavel</option>
+                                {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <input type="hidden" name="etapa_id" value="{{ active_stage.id }}">
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending">Registrar pendencia</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+{%- endmacro %}

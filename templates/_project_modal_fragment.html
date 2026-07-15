@@ -1,0 +1,4 @@
+{% from '_project_modals.html' import project_modals with context %}
+<div data-project-modal-fragment="{{ project.id }}">
+    {{ project_modals(project, etapas_projeto) }}
+</div>

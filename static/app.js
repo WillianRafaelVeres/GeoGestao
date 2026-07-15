@@ -157,6 +157,7 @@ window.addEventListener("DOMContentLoaded", () => {
     initProjectOwnerManagers();
     initCartorioLookup();
     initSingleSubmitForms();
+    initMissionQuickActions();
     initMatrixLiveFilters();
 });
 
@@ -176,6 +177,92 @@ function initSingleSubmitForms() {
                     button.textContent = "Salvando...";
                 }
             });
+        });
+    });
+}
+
+function syncMissionEmptyState(list) {
+    if (!list) return;
+    const hasMissions = Boolean(list.querySelector("[data-mission-row]"));
+    let empty = list.querySelector("[data-mission-empty]");
+    if (hasMissions) {
+        empty?.remove();
+        return;
+    }
+    if (!empty) {
+        empty = document.createElement("tr");
+        empty.dataset.missionEmpty = "1";
+        const cell = document.createElement("td");
+        cell.colSpan = 8;
+        cell.textContent = "Voce nao possui missoes ativas.";
+        empty.appendChild(cell);
+        list.appendChild(empty);
+    }
+}
+
+function setMissionFeedback(message, state) {
+    const feedback = document.querySelector("[data-mission-feedback]");
+    if (!feedback) return;
+    feedback.textContent = message || "";
+    feedback.classList.remove("d-none", "alert-success", "alert-danger");
+    feedback.classList.add(state === "error" ? "alert-danger" : "alert-success");
+}
+
+function initMissionQuickActions() {
+    document.querySelectorAll("form[data-mission-quick-form]").forEach((form) => {
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            if (form.dataset.submitting === "1") return;
+
+            const row = form.closest("[data-mission-row]");
+            const list = row?.closest("[data-mission-list]");
+            if (!row || !list) return;
+
+            const button = form.querySelector('button[type="submit"]');
+            const originalText = button?.textContent || "";
+            const placeholder = document.createComment("missao sendo atualizada");
+            form.dataset.submitting = "1";
+            if (button) {
+                button.disabled = true;
+                button.textContent = "Salvando...";
+            }
+
+            // A missao some imediatamente; em caso de erro, o marcador preserva
+            // exatamente a posicao em que a linha deve ser restaurada.
+            row.replaceWith(placeholder);
+            syncMissionEmptyState(list);
+
+            try {
+                const response = await fetch(form.action, {
+                    method: "POST",
+                    body: new FormData(form),
+                    credentials: "same-origin",
+                    headers: {
+                        Accept: "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                });
+                if (response.redirected && new URL(response.url, window.location.origin).pathname === "/login") {
+                    window.location.assign(response.url);
+                    return;
+                }
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.ok) {
+                    throw new Error(data.error || data.message || "Nao foi possivel atualizar a missao.");
+                }
+                placeholder.remove();
+                setMissionFeedback(data.message || "Missao atualizada.", "success");
+            } catch (error) {
+                if (placeholder.parentNode) placeholder.replaceWith(row);
+                setMissionFeedback(error.message || "Nao foi possivel atualizar a missao.", "error");
+            } finally {
+                delete form.dataset.submitting;
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                }
+                syncMissionEmptyState(list);
+            }
         });
     });
 }
@@ -325,15 +412,50 @@ function initCartorioLookup() {
 }
 
 function initMatrixLiveFilters() {
-    const input = document.querySelector("[data-live-filter-input]");
-    if (!input || !input.form) return;
-    let timer = null;
-    input.addEventListener("input", () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-            input.form.requestSubmit();
-        }, 450);
+    const filterInput = document.querySelector("[data-live-filter-input]");
+    const globalForm = document.querySelector(".global-search");
+    const globalInput = globalForm?.querySelector('input[name="q"]');
+    const inputs = [filterInput, globalInput].filter(Boolean);
+    const getRows = () => Array.from(document.querySelectorAll(".matrix-project-row[data-project-id]"));
+    const emptyRow = document.querySelector("[data-matrix-search-empty]");
+    if (!inputs.length || !getRows().length || !window.SearchUtils) return;
+
+    const syncUrl = window.SearchUtils.debounce((query) => {
+        const url = new URL(window.location.href);
+        if (query.trim()) url.searchParams.set("q", query.trim());
+        else url.searchParams.delete("q");
+        window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    }, 120);
+
+    const applySearch = (query, updateUrl = true) => {
+        let visible = 0;
+        getRows().forEach((row) => {
+            const matches = window.SearchUtils.matchesSearch(
+                [row.dataset.projectSearch || ""],
+                query,
+            );
+            row.hidden = !matches;
+            if (matches) visible += 1;
+        });
+        inputs.forEach((input) => {
+            if (input.value !== query) input.value = query;
+            input.classList.toggle("is-active", Boolean(query.trim()));
+        });
+        if (emptyRow) emptyRow.hidden = visible !== 0;
+        if (updateUrl) syncUrl(query);
+    };
+
+    inputs.forEach((input) => {
+        input.addEventListener("input", () => applySearch(input.value));
     });
+    globalForm?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        applySearch(globalInput?.value || "");
+    });
+    document.addEventListener("geogestao:matrix-updated", () => {
+        applySearch(filterInput?.value || globalInput?.value || "", false);
+    });
+    applySearch(filterInput?.value || globalInput?.value || "", false);
 }
 
 function initRepresentativeManagers(root = document) {
