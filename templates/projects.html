@@ -1749,7 +1749,7 @@ function initProjectActionForms(root) {
                 if (event.submitter?.name && !formData.has(event.submitter.name)) {
                     formData.append(event.submitter.name, event.submitter.value);
                 }
-                const response = await fetch(form.action, {
+                const response = await fetch(actionUrl, {
                     method: 'POST',
                     body: formData,
                     credentials: 'same-origin',
