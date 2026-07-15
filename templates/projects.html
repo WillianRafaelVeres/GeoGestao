@@ -159,7 +159,7 @@
                 {% endfor %}
             </tr>
         </thead>
-        <tbody>
+        <tbody data-can-reorder="{{ '1' if can_manage() else '0' }}">
             {% for project, etapas_projeto in projects %}
                 {% set ns_row = namespace(active_ordem=0) %}
                 {% for etapa in etapas_projeto %}
@@ -168,9 +168,11 @@
                     {% endif %}
                 {% endfor %}
                 <tr class="matrix-project-row" data-project-id="{{ project.id }}" data-project-search="{{ project.search_text or '' }}">
-                    <td class="sticky-col project-identity-col drag-handle" title="Arraste para reordenar">
+                    <td class="sticky-col project-identity-col{{ ' drag-handle' if can_manage() else '' }}"{% if can_manage() %} title="Arraste para reordenar"{% endif %}>
                         <div class="proj-identity-cell">
+                            {% if can_manage() %}
                             <span class="drag-grip" aria-hidden="true">⠿</span>
+                            {% endif %}
                             <span class="proj-identity-text">
                                 <span class="proj-identity-name" title="{{ project.nome }}">{{ project.nome }}</span>
                                 {% set owner = project.cliente_nome or (project.proprietario if project.proprietario != project.codigo else '') %}
@@ -258,6 +260,15 @@
 .matrix-project-row.sortable-chosen td { background: #f0f7ff !important; }
 .matrix-project-row.sortable-ghost td { opacity: .4; }
 .matrix-project-row.sortable-drag { box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+.matrix-action-feedback-stack {
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    z-index: 2100;
+    width: min(420px, calc(100vw - 28px));
+    pointer-events: none;
+}
+.matrix-action-feedback-stack .alert { pointer-events: auto; box-shadow: 0 10px 30px rgba(15, 23, 42, .2); }
 
 /* ── BOTÃO PRIORIDADE MÁXIMA ─────────────────────────── */
 .pmodal-btn-set-top {
@@ -996,11 +1007,7 @@ function toggleCheck(cb, itemId, stageId) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ concluido: cb.checked })
     })
-    .then(async r => {
-        const data = await r.json();
-        if (!r.ok || !data.ok) throw new Error(data.error || 'Falha ao salvar checklist.');
-        return data;
-    })
+    .then(response => readProjectJsonResponse(response, 'Falha ao salvar checklist.'))
     .then(data => {
         cb.checked = data.concluido;
         if (data.concluido) row.classList.add('is-done');
@@ -1021,41 +1028,76 @@ function toggleCheck(cb, itemId, stageId) {
         row?.classList.toggle('is-done', previousChecked);
         if (counter) counter.textContent = previousCounter;
         if (bar) bar.style.width = previousBar;
-        alert(error.message || 'Nao foi possivel salvar o checklist.');
+        showMatrixActionFeedback(error.message || 'Nao foi possivel salvar o checklist.', 'danger');
     })
     .finally(() => { cb.disabled = false; });
 }
 
 /* Adicionar item no checklist — Enter para confirmar */
-function handleAddCheck(e, stageId) {
-    if (e.key !== 'Enter') return;
-    const input = e.target;
+function handleAddCheck(event, stageId) {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    const input = event.target;
     const titulo = input.value.trim();
-    if (!titulo) return;
+    if (!titulo || input.dataset.submitting === '1') return;
+    input.dataset.submitting = '1';
+    input.setAttribute('aria-busy', 'true');
     invalidateProjectModalCacheFor(input);
+
+    const list = document.getElementById(`checklist-${stageId}`);
+    const counter = document.getElementById(`counter-${stageId}`);
+    const bar = document.getElementById(`progress-${stageId}`);
+    const previousCounter = counter?.textContent || '';
+    const previousBar = bar?.style.width || '';
+    const counts = previousCounter.match(/(\d+)\s*\/\s*(\d+)/);
+    const optimisticDone = counts ? Number(counts[1]) : 0;
+    const optimisticTotal = counts ? Number(counts[2]) + 1 : 1;
+    const pendingRow = document.createElement('label');
+    pendingRow.className = 'pmodal-check-item is-saving';
+    pendingRow.style.opacity = '0.65';
+    const pendingCheckbox = document.createElement('input');
+    pendingCheckbox.type = 'checkbox';
+    pendingCheckbox.className = 'pmodal-check-box';
+    pendingCheckbox.disabled = true;
+    const pendingLabel = document.createElement('span');
+    pendingLabel.className = 'pmodal-check-label';
+    pendingLabel.textContent = titulo;
+    pendingRow.append(pendingCheckbox, pendingLabel);
+    list?.appendChild(pendingRow);
+    input.value = '';
+    if (counter) counter.textContent = `${optimisticDone}/${optimisticTotal}`;
+    if (bar) bar.style.width = `${Math.round(optimisticDone * 100 / optimisticTotal)}%`;
 
     fetch('/api/project-checklist/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ titulo, stage_id: stageId })
+        body: JSON.stringify({ titulo, stage_id: stageId }),
+        credentials: 'same-origin',
+        cache: 'no-store',
     })
-    .then(r => r.json())
+    .then(response => readProjectJsonResponse(response, 'Nao foi possivel adicionar o checklist.'))
     .then(data => {
-        if (!data.ok) return;
-        input.value = '';
-        const list = document.getElementById(`checklist-${stageId}`);
-        const label = document.createElement('label');
-        label.className = 'pmodal-check-item';
-        label.id = `check-row-${data.id}`;
-        label.innerHTML = `
-            <input type="checkbox" class="pmodal-check-box"
-                onchange="toggleCheck(this, ${data.id}, ${stageId})" />
-            <span class="pmodal-check-label" id="check-label-${data.id}">${data.titulo}</span>`;
-        list.appendChild(label);
-        const counter = document.getElementById(`counter-${stageId}`);
+        pendingRow.classList.remove('is-saving');
+        pendingRow.style.opacity = '';
+        pendingRow.id = `check-row-${data.id}`;
+        pendingCheckbox.disabled = false;
+        pendingCheckbox.onchange = () => toggleCheck(pendingCheckbox, data.id, stageId);
+        pendingLabel.id = `check-label-${data.id}`;
+        pendingLabel.textContent = data.titulo;
         if (counter) counter.textContent = `${data.done}/${data.total}`;
-        const bar = document.getElementById(`progress-${stageId}`);
         if (bar) bar.style.width = data.progress + '%';
+    })
+    .catch((error) => {
+        pendingRow.remove();
+        if (counter) counter.textContent = previousCounter;
+        if (bar) bar.style.width = previousBar;
+        if (!input.value.trim()) input.value = titulo;
+        showMatrixActionFeedback(error.message || 'Nao foi possivel adicionar o checklist.', 'danger');
+    })
+    .finally(() => {
+        input.dataset.submitting = '0';
+        input.removeAttribute('aria-busy');
+        input.focus();
     });
 }
 
@@ -1088,11 +1130,12 @@ function addNote(projectId) {
     fetch('/api/project/' + projectId + '/note', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texto })
+        body: JSON.stringify({ texto }),
+        credentials: 'same-origin',
+        cache: 'no-store',
     })
-    .then(r => r.json())
+    .then(response => readProjectJsonResponse(response, 'Nao foi possivel salvar a anotacao.'))
     .then(data => {
-        if (!data.ok) throw new Error(data.error || 'Nao foi possivel salvar a anotacao.');
         note.classList.remove('is-saving');
         const empty = document.getElementById('notes-empty-' + projectId);
         if (empty) empty.remove();
@@ -1100,8 +1143,8 @@ function addNote(projectId) {
     })
     .catch((error) => {
         note.remove();
-        input.value = texto;
-        alert(error.message || 'Nao foi possivel salvar a anotacao.');
+        if (!input.value.trim()) input.value = texto;
+        showMatrixActionFeedback(error.message || 'Nao foi possivel salvar a anotacao.', 'danger');
     })
     .finally(() => input.focus());
 }
@@ -1123,6 +1166,21 @@ function showExternalFeedback(section, message, tone) {
     box.style.borderColor = tone === 'error' ? '#fecaca' : '#bbf7d0';
     window.clearTimeout(box._hideTimer);
     box._hideTimer = window.setTimeout(() => { box.hidden = true; }, 3500);
+}
+
+async function readProjectJsonResponse(response, fallbackMessage) {
+    if (
+        response.redirected
+        && new URL(response.url, window.location.origin).pathname === '/login'
+    ) {
+        window.location.assign(response.url);
+        throw new Error('Sessao expirada.');
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+        throw new Error(data.error || fallbackMessage);
+    }
+    return data;
 }
 
 function updateExternalSummary(section, summary) {
@@ -1217,6 +1275,7 @@ function initExternalProtocolControls(root = document) {
         if (form.dataset.externalProtocolReady === '1') return;
         form.dataset.externalProtocolReady = '1';
         form.addEventListener('submit', async (event) => {
+            if (!window.fetch) return;
             event.preventDefault();
             const section = form.closest('.pmodal-external-control');
             if (!section) return;
@@ -1237,13 +1296,15 @@ function initExternalProtocolControls(root = document) {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
-                const data = await resp.json();
-                if (!resp.ok || !data.ok) throw new Error(data.error || 'Nao foi possivel salvar o protocolo.');
+                const data = await readProjectJsonResponse(resp, 'Nao foi possivel salvar o protocolo.');
                 replaceExternalProtocolRow(section, data.protocol);
                 updateExternalSummary(section, data.summary);
                 form.elements.numero_protocolo.value = '';
                 form.elements.descricao.value = '';
                 showExternalFeedback(section, 'Protocolo registrado. A verificacao foi calculada para 15 dias uteis.', 'success');
+                refreshProjectMatrixRow(section.dataset.projectId).catch(() => {
+                    showMatrixActionFeedback('Protocolo salvo. A linha sera atualizada na proxima abertura.', 'warning');
+                });
             } catch (error) {
                 showExternalFeedback(section, error.message || 'Nao foi possivel salvar o protocolo.', 'error');
             } finally {
@@ -1268,15 +1329,19 @@ function initExternalProtocolControls(root = document) {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ stage_id: skipButton.dataset.stageId }),
                     });
-                    const data = await resp.json();
-                    if (!resp.ok || !data.ok) throw new Error(data.error || 'Nao foi possivel avancar a etapa.');
+                    const data = await readProjectJsonResponse(resp, 'Nao foi possivel avancar a etapa.');
                     showExternalFeedback(section, data.message || (data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa avancada.'), 'success');
                     const lock = section.closest('.pmodal-body')?.querySelector('[data-external-lock]');
                     if (lock) {
                         lock.textContent = data.message || (data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa avancada.');
                         lock.classList.add('is-success');
                     }
-                    window.setTimeout(() => window.location.reload(), 700);
+                    showMatrixActionFeedback(data.message || 'Etapa avancada.', 'success');
+                    try {
+                        await refreshProjectMatrixUi(section.dataset.projectId, { reopenModal: true });
+                    } catch (refreshError) {
+                        showMatrixActionFeedback(refreshError.message || 'Etapa avancada. Atualize a pagina para conferir a matriz.', 'warning');
+                    }
                 } catch (error) {
                     showExternalFeedback(section, error.message || 'Nao foi possivel avancar a etapa.', 'error');
                     skipButton.disabled = false;
@@ -1305,8 +1370,7 @@ function initExternalProtocolControls(root = document) {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action, responsavel_id: responsible || null }),
                 });
-                const data = await resp.json();
-                if (!resp.ok || !data.ok) throw new Error(data.error || 'Nao foi possivel atualizar o protocolo.');
+                const data = await readProjectJsonResponse(resp, 'Nao foi possivel atualizar o protocolo.');
                 if (data.deleted) {
                     row.remove();
                     const records = section.querySelector('[data-external-records]');
@@ -1321,11 +1385,20 @@ function initExternalProtocolControls(root = document) {
                 } else {
                     replaceExternalProtocolRow(section, data.protocol);
                     showExternalFeedback(section, data.next_stage ? `Retirada registrada. Projeto avancou para ${data.next_stage.nome}.` : 'Protocolo atualizado.', 'success');
-                    if (data.next_stage) {
-                        window.setTimeout(() => window.location.reload(), 700);
-                    }
                 }
                 updateExternalSummary(section, data.summary);
+                if (data.next_stage) {
+                    showMatrixActionFeedback(`Retirada registrada. Projeto avancou para ${data.next_stage.nome}.`, 'success');
+                    try {
+                        await refreshProjectMatrixUi(section.dataset.projectId, { reopenModal: true });
+                    } catch (refreshError) {
+                        showMatrixActionFeedback(refreshError.message || 'Retirada salva. Atualize a pagina para conferir a matriz.', 'warning');
+                    }
+                } else {
+                    refreshProjectMatrixRow(section.dataset.projectId).catch(() => {
+                        showMatrixActionFeedback('Protocolo atualizado. A linha sera atualizada na proxima abertura.', 'warning');
+                    });
+                }
             } catch (error) {
                 showExternalFeedback(section, error.message || 'Nao foi possivel atualizar o protocolo.', 'error');
                 button.disabled = false;
@@ -1336,10 +1409,34 @@ function initExternalProtocolControls(root = document) {
 }
 
 let _reorderTimer = null;
+let _savedMatrixOrder = [];
+let _pendingMatrixOrder = null;
+let _matrixOrderSaving = false;
+
+function currentMatrixOrder() {
+    return Array.from(document.querySelectorAll('.ops-matrix tbody tr[data-project-id]'))
+        .map(row => Number.parseInt(row.dataset.projectId, 10))
+        .filter(Number.isInteger);
+}
+
+function restoreMatrixOrder(ids) {
+    const tbody = document.querySelector('.ops-matrix tbody');
+    if (!tbody) return;
+    const rows = new Map(
+        Array.from(tbody.querySelectorAll('tr[data-project-id]'))
+            .map(row => [Number.parseInt(row.dataset.projectId, 10), row])
+    );
+    ids.forEach(id => {
+        const row = rows.get(id);
+        if (row) tbody.appendChild(row);
+    });
+    document.dispatchEvent(new CustomEvent('geogestao:matrix-updated'));
+}
 
 function initMatrixSort() {
     const tbody = document.querySelector('.ops-matrix tbody');
-    if (!tbody || typeof Sortable === 'undefined') return;
+    if (!tbody || tbody.dataset.canReorder !== '1' || typeof Sortable === 'undefined') return;
+    _savedMatrixOrder = currentMatrixOrder();
 
     Sortable.create(tbody, {
         handle: '.drag-handle',   // arrastar pela coluna do nome do projeto
@@ -1356,45 +1453,64 @@ function initMatrixSort() {
 }
 
 function saveMatrixOrder() {
-    const rows = document.querySelectorAll('.ops-matrix tbody tr[data-project-id]');
-    const ids = Array.from(rows).map(r => parseInt(r.dataset.projectId, 10));
-    fetch('/api/projects/reorder', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids })
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (!data.ok) console.warn('Erro ao salvar ordem:', data.error);
-    });
+    _pendingMatrixOrder = currentMatrixOrder();
+    flushMatrixOrder();
+}
+
+async function flushMatrixOrder() {
+    if (_matrixOrderSaving || !_pendingMatrixOrder) return;
+    const ids = _pendingMatrixOrder;
+    _pendingMatrixOrder = null;
+    _matrixOrderSaving = true;
+    try {
+        const response = await fetch('/api/projects/reorder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+            credentials: 'same-origin',
+            cache: 'no-store',
+        });
+        const data = await readProjectJsonResponse(response, 'Nao foi possivel salvar a ordem.');
+        _savedMatrixOrder = ids.slice();
+    } catch (error) {
+        if (!_pendingMatrixOrder) restoreMatrixOrder(_savedMatrixOrder);
+        showMatrixActionFeedback(error.message || 'Nao foi possivel salvar a ordem.', 'danger');
+    } finally {
+        _matrixOrderSaving = false;
+        if (_pendingMatrixOrder) flushMatrixOrder();
+    }
 }
 
 /* ── BOTÃO: mover projeto para o topo ───────────────── */
 function setProjectTop(projectId, btn) {
     btn.classList.add('is-loading');
     btn.textContent = 'Subindo...';
-    fetch(`/api/project/${projectId}/set-top`, { method: 'POST' })
-    .then(r => r.json())
+    fetch(`/api/project/${projectId}/set-top`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+    })
+    .then(response => readProjectJsonResponse(response, 'Nao foi possivel alterar a prioridade.'))
     .then(data => {
         if (data.ok) {
             btn.classList.remove('is-loading');
             btn.classList.add('is-done');
             btn.textContent = '↑ Prioridade maxima definida';
-            /* Recarrega a matriz após fechar o modal */
-            const modalEl = btn.closest('.modal');
-            if (modalEl) {
-                modalEl.addEventListener('hidden.bs.modal', function() {
-                    window.location.reload();
-                }, { once: true });
+            const tbody = document.querySelector('.ops-matrix tbody');
+            const row = tbody?.querySelector(`.matrix-project-row[data-project-id="${projectId}"]`);
+            const firstRow = tbody?.querySelector('.matrix-project-row[data-project-id]');
+            if (tbody && row && row !== firstRow) {
+                tbody.insertBefore(row, firstRow);
             }
-        } else {
-            btn.classList.remove('is-loading');
-            btn.textContent = '↑ Prioridade maxima';
+            _savedMatrixOrder = currentMatrixOrder();
+            document.dispatchEvent(new CustomEvent('geogestao:matrix-updated'));
+            showMatrixActionFeedback('Projeto movido para o topo.', 'success');
         }
     })
-    .catch(() => {
+    .catch((error) => {
         btn.classList.remove('is-loading');
         btn.textContent = '↑ Prioridade maxima';
+        showMatrixActionFeedback(error.message || 'Nao foi possivel alterar a prioridade.', 'danger');
     });
 }
 
@@ -1431,6 +1547,261 @@ const projectModalCache = new Map();
 let projectModalRequest = null;
 const PROJECT_MODAL_CACHE_MS = 15000;
 
+function showMatrixActionFeedback(message, tone = 'success') {
+    if (!message) return;
+    let stack = document.querySelector('[data-matrix-action-feedback-stack]');
+    if (!stack) {
+        stack = document.createElement('div');
+        stack.className = 'matrix-action-feedback-stack';
+        stack.dataset.matrixActionFeedbackStack = '1';
+        document.body.appendChild(stack);
+    }
+    stack.querySelector('[data-matrix-action-feedback]')?.remove();
+    const alert = document.createElement('div');
+    alert.className = `alert alert-${tone} alert-dismissible fade show`;
+    alert.dataset.matrixActionFeedback = '1';
+    alert.setAttribute('role', 'alert');
+    alert.append(document.createTextNode(message));
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn-close';
+    close.dataset.bsDismiss = 'alert';
+    close.setAttribute('aria-label', 'Fechar');
+    alert.appendChild(close);
+    stack.appendChild(alert);
+    window.setTimeout(() => alert.isConnected && alert.remove(), 6000);
+}
+
+function matrixFeedbackFromDocument(doc) {
+    if (!doc) return null;
+    const source = doc.querySelector('.flash-stack .alert');
+    if (!source) return null;
+    const copy = source.cloneNode(true);
+    copy.querySelectorAll('button').forEach((button) => button.remove());
+    let tone = 'success';
+    if (source.classList.contains('alert-danger')) tone = 'danger';
+    else if (source.classList.contains('alert-warning')) tone = 'warning';
+    else if (source.classList.contains('alert-info')) tone = 'info';
+    return { message: copy.textContent.trim(), tone };
+}
+
+async function fetchMatrixDocument(url = window.location.href) {
+    const response = await fetch(url, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    if (response.redirected && new URL(response.url, window.location.origin).pathname === '/login') {
+        window.location.assign(response.url);
+        throw new Error('Sessao expirada.');
+    }
+    if (!response.ok) throw new Error('Nao foi possivel atualizar a matriz.');
+    return new DOMParser().parseFromString(await response.text(), 'text/html');
+}
+
+function syncProjectMatrixRow(projectId, doc) {
+    const selector = `.matrix-project-row[data-project-id="${projectId}"]`;
+    const current = document.querySelector(selector);
+    const fresh = doc.querySelector(selector);
+    const freshSummary = doc.querySelector('.matrix-summary');
+    const currentSummary = document.querySelector('.matrix-summary');
+    if (freshSummary && currentSummary) currentSummary.innerHTML = freshSummary.innerHTML;
+
+    if (current && fresh) {
+        current.className = fresh.className;
+        current.innerHTML = fresh.innerHTML;
+        Array.from(current.attributes)
+            .filter((attribute) => attribute.name.startsWith('data-'))
+            .forEach((attribute) => current.removeAttribute(attribute.name));
+        Array.from(fresh.attributes)
+            .filter((attribute) => attribute.name.startsWith('data-'))
+            .forEach((attribute) => current.setAttribute(attribute.name, attribute.value));
+        initProjectLazyModals(current);
+    } else if (current && !fresh) {
+        current.remove();
+    }
+
+    const table = document.querySelector('.ops-matrix');
+    const scrollInner = document.querySelector('.matrix-scrollbar-inner');
+    if (table && scrollInner) scrollInner.style.width = `${table.scrollWidth}px`;
+    document.dispatchEvent(new CustomEvent('geogestao:matrix-updated'));
+    return Boolean(fresh);
+}
+
+async function refreshProjectMatrixRow(projectId, matrixDocument = null) {
+    const doc = matrixDocument || await fetchMatrixDocument();
+    return syncProjectMatrixRow(String(projectId), doc);
+}
+
+function freshProjectModalUrl(projectId) {
+    return document.querySelector(`.matrix-project-row[data-project-id="${projectId}"] [data-project-modal-url]`)?.dataset.projectModalUrl || '';
+}
+
+async function fetchFreshProjectModal(projectId) {
+    const url = freshProjectModalUrl(projectId);
+    if (!url) return null;
+    const response = await fetch(url, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    if (response.redirected && new URL(response.url, window.location.origin).pathname === '/login') {
+        window.location.assign(response.url);
+        throw new Error('Sessao expirada.');
+    }
+    if (!response.ok) throw new Error('Acao salva, mas nao foi possivel atualizar o modal.');
+    return response.text();
+}
+
+function hideVisibleProjectModals(projectId) {
+    const fragment = document.querySelector(`[data-project-modal-fragment="${projectId}"]`);
+    if (!fragment) return Promise.resolve();
+    const visible = Array.from(fragment.querySelectorAll('.modal.show'));
+    if (!visible.length) return Promise.resolve();
+    return Promise.all(visible.map((modal) => new Promise((resolve) => {
+        const instance = bootstrap.Modal.getOrCreateInstance(modal);
+        const fallback = window.setTimeout(resolve, 400);
+        modal.addEventListener('hidden.bs.modal', () => {
+            window.clearTimeout(fallback);
+            resolve();
+        }, { once: true });
+        instance.hide();
+    })));
+}
+
+function refreshVisibleProjectMainModal(projectId, html) {
+    const fragment = document.querySelector(`[data-project-modal-fragment="${projectId}"]`);
+    const currentMain = fragment?.querySelector(`#project-modal-${projectId}.show`);
+    if (!fragment || !currentMain) return false;
+
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const freshFragment = parsed.querySelector(`[data-project-modal-fragment="${projectId}"]`);
+    const freshMain = freshFragment?.querySelector(`#project-modal-${projectId}`);
+    const currentContent = currentMain.querySelector('.modal-content');
+    const freshContent = freshMain?.querySelector('.modal-content');
+    if (!freshFragment || !freshMain || !currentContent || !freshContent) return false;
+
+    fragment.querySelectorAll(`.modal:not(#project-modal-${projectId})`).forEach((modal) => {
+        bootstrap.Modal.getInstance(modal)?.dispose();
+        modal.remove();
+    });
+    currentContent.replaceWith(freshContent);
+    freshFragment.querySelectorAll(`.modal:not(#project-modal-${projectId})`).forEach((modal) => {
+        fragment.appendChild(modal);
+    });
+    initializeProjectModalFragment(fragment);
+    return true;
+}
+
+async function refreshProjectMatrixUi(projectId, options = {}) {
+    const id = String(projectId);
+    projectModalCache.delete(id);
+    const matrixPromise = options.matrixDocument
+        ? Promise.resolve(options.matrixDocument)
+        : fetchMatrixDocument();
+    const modalResultPromise = fetchFreshProjectModal(id).then(
+        value => ({ ok: true, value }),
+        error => ({ ok: false, error }),
+    );
+    const doc = await matrixPromise;
+    const remainsVisible = syncProjectMatrixRow(id, doc);
+    const modalResult = await modalResultPromise;
+    if (!modalResult.ok) throw modalResult.error;
+    const modalHtml = modalResult.value;
+    if (modalHtml && remainsVisible && options.reopenModal !== false && refreshVisibleProjectMainModal(id, modalHtml)) {
+        projectModalCache.set(id, { html: modalHtml, expiresAt: Date.now() + PROJECT_MODAL_CACHE_MS });
+        return;
+    }
+    await hideVisibleProjectModals(id);
+    if (!modalHtml || !remainsVisible) return;
+    const modal = installProjectModal(id, modalHtml);
+    projectModalCache.set(id, { html: modalHtml, expiresAt: Date.now() + PROJECT_MODAL_CACHE_MS });
+    if (options.reopenModal !== false) bootstrap.Modal.getOrCreateInstance(modal).show();
+}
+
+function initProjectActionForms(root) {
+    const projectId = String(root.dataset.projectModalFragment || '');
+    if (!projectId) return;
+    root.querySelectorAll('form').forEach((form) => {
+        const actionUrl = form.getAttribute('action') || '';
+        if (!actionUrl.includes('/project/') || !actionUrl.endsWith('/action')) return;
+        if (form.matches('[data-external-protocol-add], [data-external-protocol-row]')) return;
+        if (form.dataset.projectAsyncReady === '1') return;
+        form.dataset.projectAsyncReady = '1';
+        form.addEventListener('submit', async (event) => {
+            if (!window.fetch || !window.DOMParser) return;
+            event.preventDefault();
+            if (form.dataset.submitting === '1') return;
+            form.dataset.submitting = '1';
+            projectModalCache.delete(projectId);
+
+            const button = event.submitter || form.querySelector('button[type="submit"]');
+            const originalText = button?.textContent || '';
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'Salvando...';
+            }
+
+            let responseDocument = null;
+            let responseFeedback = null;
+            try {
+                const formData = new FormData(form);
+                if (event.submitter?.name && !formData.has(event.submitter.name)) {
+                    formData.append(event.submitter.name, event.submitter.value);
+                }
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json, text/html;q=0.9',
+                    },
+                });
+                if (response.redirected && new URL(response.url, window.location.origin).pathname === '/login') {
+                    window.location.assign(response.url);
+                    return;
+                }
+                const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+                if (contentType.includes('application/json')) {
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || data.message || 'Nao foi possivel salvar a alteracao.');
+                    }
+                    responseFeedback = data.message
+                        ? { message: data.message, tone: data.tone || 'success' }
+                        : null;
+                } else {
+                    if (!response.ok) throw new Error('Nao foi possivel salvar a alteracao.');
+                    responseDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+                }
+            } catch (error) {
+                showMatrixActionFeedback(error.message || 'Nao foi possivel salvar a alteracao.', 'danger');
+                return;
+            } finally {
+                form.dataset.submitting = '0';
+                if (button?.isConnected) {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                }
+            }
+
+            const feedback = responseFeedback || matrixFeedbackFromDocument(responseDocument);
+            if (feedback) showMatrixActionFeedback(feedback.message, feedback.tone);
+            if (feedback?.tone === 'danger') return;
+            try {
+                await refreshProjectMatrixUi(projectId, {
+                    matrixDocument: responseDocument || undefined,
+                    reopenModal: true,
+                });
+            } catch (error) {
+                showMatrixActionFeedback(error.message || 'Alteracao salva. Atualize a pagina para conferir os dados.', 'warning');
+            }
+        });
+    });
+}
+
 function invalidateProjectModalCacheFor(element) {
     const fragment = element?.closest('[data-project-modal-fragment]');
     if (fragment?.dataset.projectModalFragment) {
@@ -1459,6 +1830,7 @@ function setProjectModalTriggerLoading(trigger, loading) {
 
 function initializeProjectModalFragment(root) {
     initExternalProtocolControls(root);
+    initProjectActionForms(root);
 
     root.querySelectorAll('[data-copy]').forEach((button) => {
         if (button.dataset.copyReady === '1') return;
@@ -1579,8 +1951,10 @@ async function fetchProjectModal(trigger, openAfterLoad) {
     }
 }
 
-function initProjectLazyModals() {
-    document.querySelectorAll('[data-project-modal-trigger]').forEach((trigger) => {
+function initProjectLazyModals(root = document) {
+    root.querySelectorAll('[data-project-modal-trigger]').forEach((trigger) => {
+        if (trigger.dataset.projectModalReady === '1') return;
+        trigger.dataset.projectModalReady = '1';
         trigger.addEventListener('mouseenter', () => fetchProjectModal(trigger, false), { once: true });
         trigger.addEventListener('focus', () => fetchProjectModal(trigger, false), { once: true });
         trigger.addEventListener('click', (event) => {

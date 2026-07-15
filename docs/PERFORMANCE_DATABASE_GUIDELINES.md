@@ -16,6 +16,15 @@ python scripts/measure_routes.py --runs 3
 Depois da mudanca, repetir o mesmo comando e registrar o resultado em
 `docs/PERFORMANCE_BASELINE.md` quando a diferenca for relevante.
 
+O modo padrao mede navegacao com cache quente. Para separar custo real de SQL e
+efeito da invalidacao, usar tambem:
+
+```bash
+python scripts/measure_routes.py --runs 3 --cache-mode route-expired
+python scripts/measure_routes.py --runs 3 --cache-mode invalidated
+python scripts/measure_routes.py --runs 2 --cache-mode cold
+```
+
 ## Ordem de investigacao
 
 1. Tempo total da rota.

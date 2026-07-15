@@ -2,11 +2,13 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 import csv
+import copy
 import concurrent.futures
 import gzip
 import hashlib
 import io
 import json
+import re
 import secrets
 import smtplib
 import socket
@@ -27,7 +29,7 @@ from functools import wraps
 from urllib.parse import quote, urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, Response, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, g, get_flashed_messages, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from documental import (
@@ -412,6 +414,7 @@ REPORTS_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_REPORTS_CACHE_TTL_SECO
 DUE_STATUS_REFRESH_TTL_SECONDS = int(os.environ.get("GEOGESTAO_DUE_STATUS_REFRESH_TTL_SECONDS", "300"))
 LOOKUP_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_LOOKUP_CACHE_TTL_SECONDS", "120"))
 ROUTE_CACHE_TTL_SECONDS = int(os.environ.get("GEOGESTAO_ROUTE_CACHE_TTL_SECONDS", "3"))
+CACHE_MAX_ENTRIES = max(32, int(os.environ.get("GEOGESTAO_CACHE_MAX_ENTRIES", "512")))
 PASSWORD_RESET_TOKEN_MINUTES = int(os.environ.get("GEOGESTAO_PASSWORD_RESET_MINUTES", "30"))
 SMTP_HOST = os.environ.get("GEOGESTAO_SMTP_HOST", "").strip()
 SMTP_PORT = int(os.environ.get("GEOGESTAO_SMTP_PORT", "587"))
@@ -421,20 +424,66 @@ SMTP_FROM = os.environ.get("GEOGESTAO_SMTP_FROM", SMTP_USER or "nao-responder@ge
 SMTP_USE_TLS = os.environ.get("GEOGESTAO_SMTP_USE_TLS", "1") == "1"
 
 _db_pool = None
-_reports_cache = {"expires_at": 0.0, "value": None}
 _lookup_cache = {}
+_lookup_cache_lock = threading.RLock()
+_lookup_cache_key_locks = {}
+_lookup_cache_generation = 0
 _due_statuses_next_refresh = 0.0
 _refreshing_due_statuses = False
 _due_refresh_lock = threading.Lock()
 
 STABLE_LOOKUP_CACHE_KEYS = frozenset({
-    "process_initial_stage_options_rows",
     "active_stage_models",
     "active_users",
     "cartorio_options",
     "matrix_static_options",
     "process_type_options",
 })
+
+# Endpoints abaixo são estritamente de leitura em GET. Neles, autocommit evita
+# abrir uma transação só para fazer SELECT e depois pagar outro round trip de
+# ROLLBACK ao devolver a conexão ao pool. Rotas financeiras ficam fora porque
+# ainda podem criar a estrutura legada sob demanda.
+READ_ONLY_DB_ENDPOINTS = frozenset({
+    "dashboard",
+    "projects",
+    "project_modal_fragment",
+    "projects_export",
+    "project_create",
+    "project_detail",
+    "my_missions",
+    "clients",
+    "client_modal_fragment",
+    "cartorios",
+    "cartorios_checklist",
+    "users",
+    "cartorio_board",
+    "reports",
+})
+
+SQL_WRITE_COMMANDS = frozenset({
+    "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP",
+    "TRUNCATE", "COPY", "CALL",
+})
+
+
+def _query_may_write(query, status_command=""):
+    if status_command in SQL_WRITE_COMMANDS:
+        return True
+    statement = str(query or "").lstrip()
+    first_command = statement.split(None, 1)[0].upper() if statement else ""
+    if first_command in SQL_WRITE_COMMANDS:
+        return True
+    # PostgreSQL informa SELECT no statusmessage quando o comando final de um
+    # WITH é SELECT, mesmo que CTEs anteriores façam INSERT/UPDATE/DELETE.
+    # Um falso positivo aqui custa somente um commit vazio; um falso negativo
+    # perderia a escrita ao devolver a conexão ao pool.
+    return first_command == "WITH" and bool(re.search(
+        r"\b(?:INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|MERGE\s+INTO|"
+        r"CREATE\s+|ALTER\s+|DROP\s+|TRUNCATE\s+|COPY\s+|CALL\s+)",
+        statement,
+        flags=re.IGNORECASE,
+    ))
 
 
 class PgConn:
@@ -447,15 +496,33 @@ class PgConn:
 
     def execute(self, query, args=()):
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        _execute_cursor(cur, query, args if args else ())
+        try:
+            _execute_cursor(cur, query, args if args else ())
+        except Exception:
+            cur.close()
+            raise
         if has_request_context():
-            command = str(query).lstrip().split(None, 1)[0].upper() if str(query).strip() else ""
-            if command in {"INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP", "TRUNCATE"}:
+            # statusmessage identifica DML direto; _query_may_write complementa
+            # o caso de CTEs de escrita cujo comando final e um SELECT.
+            status_command = (cur.statusmessage or "").split(None, 1)[0].upper()
+            if _query_may_write(query, status_command):
                 # Alguns fluxos legados escrevem diretamente pela conexao em
                 # vez de usar execute_db(). Ainda assim, a resposta precisa
                 # invalidar snapshots dinâmicos e concluir a transação.
                 g._db_write_pending = True
         return cur
+
+    def executemany(self, query, args_seq):
+        cur = self._conn.cursor()
+        start = time.perf_counter()
+        try:
+            result = cur.executemany(query, args_seq)
+            if has_request_context():
+                g._db_write_pending = True
+            return result
+        finally:
+            _record_query_time(time.perf_counter() - start)
+            cur.close()
 
     def execute_statements(self, script):
         cur = self._conn.cursor()
@@ -473,11 +540,25 @@ class PgConn:
             return self._conn.cursor(cursor_factory=cursor_factory)
         return self._conn.cursor()
 
-    def commit(self):
+    def set_autocommit(self, enabled):
+        self._conn.autocommit = bool(enabled)
+
+    def commit(self, force=False):
+        if has_request_context() and not force:
+            # Chamadas legadas a commit() dentro de uma rota passam a compor a
+            # mesma transação. O commit físico ocorre uma única vez no
+            # after_request, eliminando viagens vazias e estados parcialmente
+            # persistidos quando um passo posterior falha.
+            g._db_write_pending = True
+            return
         self._conn.commit()
+        if has_request_context():
+            g._db_write_pending = False
 
     def rollback(self):
         self._conn.rollback()
+        if has_request_context():
+            g._db_write_pending = False
 
     def close(self):
         if self._closed:
@@ -573,6 +654,11 @@ def _checkout_pooled_connection(pool):
     try:
         if conn.closed:
             raise psycopg2.OperationalError("conexao do pool ja estava fechada")
+        # Uma conexão usada por GET pode voltar em autocommit. Todo checkout
+        # começa transacional; get_db() habilita leitura sem transação apenas
+        # para os endpoints explicitamente auditados.
+        if conn.autocommit:
+            conn.autocommit = False
         if not conn.geogestao_configured:
             _configure_connection(conn)
         elif time.monotonic() - conn.geogestao_last_used > DB_IDLE_PING_SECONDS:
@@ -642,6 +728,12 @@ def get_db():
     db = getattr(g, "_database", None)
     if db is None:
         db = g._database = connect_db()
+        if (
+            has_request_context()
+            and request.method in {"GET", "HEAD", "OPTIONS"}
+            and request.endpoint in READ_ONLY_DB_ENDPOINTS
+        ):
+            db.set_autocommit(True)
     return db
 
 
@@ -732,47 +824,112 @@ def query_db(query, args=(), one=False):
 
 
 def invalidate_runtime_caches():
-    global _reports_cache, _lookup_cache
-    _reports_cache = {"expires_at": 0.0, "value": None}
-    # Dados operacionais mudam a cada acao, mas catalogo CNJ, usuario logado e
-    # opcoes estruturais nao mudam ao marcar um checklist ou criar uma nota.
-    # Preserva-los evita novas viagens ao banco logo depois de cada clique.
-    _lookup_cache = {
-        key: value
-        for key, value in _lookup_cache.items()
-        if (
-            key in STABLE_LOOKUP_CACHE_KEYS
-            or (isinstance(key, str) and key.startswith("cnj_"))
-            or (isinstance(key, tuple) and key and key[0] == "logged_user")
-        )
-    }
+    global _lookup_cache, _lookup_cache_generation
+    with _lookup_cache_lock:
+        _lookup_cache_generation += 1
+        # Dados operacionais mudam a cada acao, mas catalogo CNJ, usuario logado e
+        # opcoes estruturais nao mudam ao marcar um checklist ou criar uma nota.
+        # Preserva-los evita novas viagens ao banco logo depois de cada clique.
+        preserved = {
+            key: value
+            for key, value in _lookup_cache.items()
+            if (
+                key in STABLE_LOOKUP_CACHE_KEYS
+                or (isinstance(key, str) and key.startswith("cnj_"))
+                or (isinstance(key, tuple) and key and key[0] == "logged_user")
+            )
+        }
+        _lookup_cache.clear()
+        _lookup_cache.update(preserved)
 
 
 def invalidate_lookup_entries(*keys, prefixes=()):
     """Invalida somente lookups cujo dado-base realmente mudou."""
-    global _lookup_cache
+    global _lookup_cache_generation
     wanted = set(keys)
-    _lookup_cache = {
-        key: value
-        for key, value in _lookup_cache.items()
-        if key not in wanted
-        and not any(
-            (isinstance(key, str) and key.startswith(prefix))
-            or (isinstance(key, tuple) and key and str(key[0]).startswith(prefix))
-            for prefix in prefixes
-        )
-    }
+    with _lookup_cache_lock:
+        _lookup_cache_generation += 1
+        stale = [
+            key
+            for key in _lookup_cache
+            if key in wanted
+            or any(
+                (isinstance(key, str) and key.startswith(prefix))
+                or (isinstance(key, tuple) and key and str(key[0]).startswith(prefix))
+                for prefix in prefixes
+            )
+        ]
+        for key in stale:
+            _lookup_cache.pop(key, None)
+
+
+def _clone_cached_value(value):
+    """Entrega um snapshot isolado para que uma rota não altere o cache global."""
+    return copy.deepcopy(value)
+
+
+def _prune_lookup_cache_locked(now_monotonic):
+    """Mantém o cache TTL limitado mesmo com filtros/URLs diferentes."""
+    expired = [
+        key for key, entry in _lookup_cache.items()
+        if entry["expires_at"] <= now_monotonic
+    ]
+    for key in expired:
+        _lookup_cache.pop(key, None)
+
+    overflow = len(_lookup_cache) - CACHE_MAX_ENTRIES
+    if overflow > 0:
+        oldest = sorted(
+            _lookup_cache,
+            key=lambda key: _lookup_cache[key]["expires_at"],
+        )[:overflow]
+        for key in oldest:
+            _lookup_cache.pop(key, None)
+
+    # Os locks só existem para impedir duas cargas simultâneas da mesma chave.
+    # Removê-los quando a chave já saiu do cache evita crescimento permanente.
+    if len(_lookup_cache_key_locks) > CACHE_MAX_ENTRIES * 2:
+        for key, key_lock in list(_lookup_cache_key_locks.items()):
+            if key not in _lookup_cache and not key_lock.locked():
+                _lookup_cache_key_locks.pop(key, None)
+            if len(_lookup_cache_key_locks) <= CACHE_MAX_ENTRIES:
+                break
 
 
 def get_cached_lookup(key, loader, ttl_seconds=None):
-    ttl = LOOKUP_CACHE_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+    ttl = max(0.0, float(LOOKUP_CACHE_TTL_SECONDS if ttl_seconds is None else ttl_seconds))
     now_monotonic = time.monotonic()
-    cached = _lookup_cache.get(key)
-    if cached and cached["expires_at"] > now_monotonic:
-        return cached["value"]
-    value = loader()
-    _lookup_cache[key] = {"expires_at": now_monotonic + ttl, "value": value}
-    return value
+    with _lookup_cache_lock:
+        _prune_lookup_cache_locked(now_monotonic)
+        cached = _lookup_cache.get(key)
+        if cached and cached["expires_at"] > now_monotonic:
+            return _clone_cached_value(cached["value"])
+        key_lock = _lookup_cache_key_locks.setdefault(key, threading.Lock())
+
+    # Apenas a mesma chave espera. Dashboard e matriz, por exemplo, ainda podem
+    # ser carregados em paralelo, mas oito acessos simultâneos à matriz geram uma
+    # única consulta em vez de oito consultas idênticas ao Supabase.
+    with key_lock:
+        now_monotonic = time.monotonic()
+        with _lookup_cache_lock:
+            cached = _lookup_cache.get(key)
+            if cached and cached["expires_at"] > now_monotonic:
+                return _clone_cached_value(cached["value"])
+            load_generation = _lookup_cache_generation
+
+        value = loader()
+        with _lookup_cache_lock:
+            # Uma escrita pode invalidar o cache enquanto uma consulta lenta
+            # ainda está em voo. Nesse caso, entrega o resultado à requisição
+            # que o iniciou, mas nunca recoloca esse snapshot antigo no cache.
+            if load_generation == _lookup_cache_generation:
+                _prune_lookup_cache_locked(now_monotonic)
+                _lookup_cache[key] = {
+                    "expires_at": time.monotonic() + ttl,
+                    "value": value,
+                }
+                _prune_lookup_cache_locked(time.monotonic())
+        return _clone_cached_value(value)
 
 
 def execute_db(query, args=()):
@@ -809,6 +966,41 @@ def execute_db(query, args=()):
         cur.close()
 
 
+def execute_values_db(db, query, values, page_size=1000):
+    """Executa INSERT/UPDATE em lote e participa da transação do request."""
+    rows = list(values)
+    if not rows:
+        return 0
+    cur = db.cursor()
+    page_size = max(1, int(page_size))
+    affected_rows = 0
+    try:
+        # Executa as páginas explicitamente para somar rowcount corretamente;
+        # execute_values deixa no cursor apenas a contagem da última página.
+        for offset in range(0, len(rows), page_size):
+            page = rows[offset:offset + page_size]
+            start = time.perf_counter()
+            try:
+                psycopg2.extras.execute_values(
+                    cur,
+                    query,
+                    page,
+                    page_size=len(page),
+                )
+            finally:
+                _record_query_time(time.perf_counter() - start)
+            if cur.rowcount and cur.rowcount > 0:
+                affected_rows += cur.rowcount
+        if has_request_context():
+            g._db_write_pending = True
+        return affected_rows
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
+
+
 @app.after_request
 def commit_request_writes(response):
     if not getattr(g, "_db_write_pending", False):
@@ -818,7 +1010,7 @@ def commit_request_writes(response):
         return response
     try:
         if response.status_code < 400:
-            db.commit()
+            db.commit(force=True)
             invalidate_runtime_caches()
         else:
             db.rollback()
@@ -2348,9 +2540,8 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
             )
     if not values:
         return 0
-    cursor = db.cursor()
-    psycopg2.extras.execute_values(
-        cursor,
+    return execute_values_db(
+        db,
         """
         INSERT INTO project_checklist_items
             (project_id, project_stage_id, template_id, process_type_key, stage_key, stage_name, title,
@@ -2362,8 +2553,8 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
         ON CONFLICT DO NOTHING
         """,
         values,
+        page_size=1000,
     )
-    return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
 
 
 def sync_project_checklist_stage_links(db, project_id):
@@ -2618,30 +2809,19 @@ def ensure_project_checklists(db):
         sync_project_checklist_stage_links(db, project["id"])
 
 
-def get_process_initial_stage_options():
-    rows = get_cached_lookup(
-        "process_initial_stage_options_rows",
-        lambda: query_db(
-            """
-            SELECT process_type_key, stage_key,
-                   CASE WHEN stage_key = 'ORGAO_EXTERNO' THEN 'Orgao externo' ELSE stage_name END AS stage_name,
-                   stage_order
-            FROM process_stage_templates
-            WHERE active = 1
-              AND applicability != %s
-              AND show_in_project = 1
-              AND stage_key != 'PREFEITURA'
-            ORDER BY process_type_key, stage_order, id
-            """,
-            (APPLICABILITY_NOT_APPLICABLE,),
-        ),
-    )
+def group_process_initial_stage_options(rows):
     options = {}
     for row in rows:
         options.setdefault(row["process_type_key"], []).append(
             {"key": row["stage_key"], "name": row["stage_name"], "order": row["stage_order"]}
         )
     return options
+
+
+def get_process_initial_stage_options():
+    return group_process_initial_stage_options(
+        get_matrix_static_options()["initial_stage_rows"]
+    )
 
 
 def set_project_initial_stage(db, project_id, stage_key_value):
@@ -3580,14 +3760,11 @@ def build_reports_context():
 
 
 def get_reports_context_cached():
-    now_monotonic = time.monotonic()
-    cached = _reports_cache.get("value")
-    if cached is not None and now_monotonic < _reports_cache.get("expires_at", 0.0):
-        return cached
-    context = build_reports_context()
-    _reports_cache["value"] = context
-    _reports_cache["expires_at"] = now_monotonic + REPORTS_CACHE_TTL_SECONDS
-    return context
+    return get_cached_lookup(
+        "route_reports_context",
+        build_reports_context,
+        ttl_seconds=REPORTS_CACHE_TTL_SECONDS,
+    )
 
 
 def _run_due_status_updates(db, today, now_iso):
@@ -4972,6 +5149,7 @@ def get_cartorio_options():
 
 
 def get_matrix_summary_counts(today_iso, in_7):
+    """Mantém os totais globais quando um filtro não retorna nenhum projeto."""
     return get_cached_lookup(
         ("matrix_summary_counts", today_iso, in_7),
         lambda: query_db(
@@ -5052,8 +5230,31 @@ def get_matrix_static_options():
                         FROM (SELECT * FROM tipos_processo WHERE ativo = 1 ORDER BY ordem, nome) tp
                     ),
                     '[]'::json
-                ) AS process_types
+                ) AS process_types,
+                COALESCE(
+                    (
+                        SELECT json_agg(row_to_json(initial_stage))
+                        FROM (
+                            SELECT
+                                process_type_key,
+                                stage_key,
+                                CASE
+                                    WHEN stage_key = 'ORGAO_EXTERNO' THEN 'Orgao externo'
+                                    ELSE stage_name
+                                END AS stage_name,
+                                stage_order
+                            FROM process_stage_templates
+                            WHERE active = 1
+                              AND applicability != %s
+                              AND show_in_project = 1
+                              AND stage_key != 'PREFEITURA'
+                            ORDER BY process_type_key, stage_order, id
+                        ) initial_stage
+                    ),
+                    '[]'::json
+                ) AS initial_stage_rows
             """,
+            (APPLICABILITY_NOT_APPLICABLE,),
             one=True,
         )
         return {
@@ -5061,6 +5262,7 @@ def get_matrix_static_options():
             "usuarios": row["usuarios"] or [],
             "cartorios": row["cartorios"] or [],
             "process_types": row["process_types"] or [],
+            "initial_stage_rows": row["initial_stage_rows"] or [],
         }
 
     return get_cached_lookup("matrix_static_options", load_options)
@@ -5186,14 +5388,19 @@ def sync_project_owners(db, project_id, primary_client_id, additional_client_ids
 
     db.execute("DELETE FROM projeto_proprietarios WHERE projeto_id = %s", (project_id,))
     created_at = app_now_iso()
-    for order_index, client_id in enumerate(selected):
-        db.execute(
-            """
-            INSERT INTO projeto_proprietarios (projeto_id, cliente_id, principal, ordem, criado_em)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (project_id, client_id, 1 if order_index == 0 else 0, order_index, created_at),
-        )
+    execute_values_db(
+        db,
+        """
+        INSERT INTO projeto_proprietarios
+            (projeto_id, cliente_id, principal, ordem, criado_em)
+        VALUES %s
+        """,
+        [
+            (project_id, client_id, 1 if order_index == 0 else 0, order_index, created_at)
+            for order_index, client_id in enumerate(selected)
+        ],
+        page_size=1000,
+    )
 
 
 def load_project_owners_bulk(project_ids):
@@ -6159,7 +6366,11 @@ def projects():
                 )
             END AS active_stage,
             COALESCE(p.ordem_prioridade, 99999) AS sort_ordem_prioridade,
-            COALESCE(p.criado_em, '') AS sort_criado_em
+            COALESCE(p.criado_em, '') AS sort_criado_em,
+            matrix_summary.seven_days AS matrix_summary_seven_days,
+            matrix_summary.overdue AS matrix_summary_overdue,
+            matrix_summary.external AS matrix_summary_external,
+            matrix_summary.pendings AS matrix_summary_pendings
         FROM projetos p
         LEFT JOIN clientes c ON c.id = p.cliente_id
         LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
@@ -6201,6 +6412,41 @@ def projects():
             WHERE pd_active.etapa_id = pea.id
               AND lower(COALESCE(pd_active.status, '')) NOT IN ('resolvida', 'cancelada')
         ) active_pending ON TRUE
+        CROSS JOIN (
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM projeto_etapas pe_summary
+                    JOIN etapas_modelo em_summary ON em_summary.id = pe_summary.etapa_modelo_id
+                    WHERE em_summary.ativa = 1
+                      AND pe_summary.id IN (
+                          SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL
+                      )
+                      AND pe_summary.prazo BETWEEN %s AND %s
+                      AND lower(pe_summary.status) NOT IN ('concluido', 'cancelado')
+                ) AS seven_days,
+                (
+                    SELECT COUNT(*)
+                    FROM projeto_etapas pe_summary
+                    WHERE lower(pe_summary.status) = 'atrasado'
+                      AND pe_summary.id IN (
+                          SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL
+                      )
+                ) AS overdue,
+                (
+                    SELECT COUNT(*)
+                    FROM projetos p_summary
+                    JOIN projeto_etapas pe_summary ON pe_summary.id = p_summary.etapa_atual_id
+                    JOIN etapas_modelo em_summary ON em_summary.id = pe_summary.etapa_modelo_id
+                    WHERE pe_summary.stage_key IN ('ORGAO_EXTERNO', 'PREFEITURA')
+                       OR lower(em_summary.nome) IN ('cartorio', 'orgao externo', 'prefeitura')
+                ) AS external,
+                (
+                    SELECT COUNT(*)
+                    FROM pendencias pd_summary
+                    WHERE lower(pd_summary.status) NOT IN ('resolvida', 'cancelada')
+                ) AS pendings
+        ) matrix_summary
         LEFT JOIN LATERAL (
             SELECT
                 (
@@ -6246,7 +6492,10 @@ def projects():
         ORDER BY
             {order_clause}
             """,
-            [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso] + params + [today_iso],
+            [today_iso, in_7]
+            + [today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso, today_iso]
+            + params
+            + [today_iso],
         ),
         ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
@@ -6254,7 +6503,21 @@ def projects():
     etapas = matrix_options["etapas"]
     matrix_rows_by_project = build_matrix_rows_from_active_stages(projetos, etapas)
     matrix = [(project, matrix_rows_by_project.get(project["id"], [])) for project in projetos]
-    summary_counts = get_matrix_summary_counts(today_iso, in_7)
+    summary_counts = (
+        {
+            "sete_dias": projetos[0].get("matrix_summary_seven_days", 0),
+            "atrasados": projetos[0].get("matrix_summary_overdue", 0),
+            "cartorio": projetos[0].get("matrix_summary_external", 0),
+            "pendencias": projetos[0].get("matrix_summary_pendings", 0),
+        }
+        if projetos
+        else get_matrix_summary_counts(today_iso, in_7)
+    )
+    for project in projetos:
+        project.pop("matrix_summary_seven_days", None)
+        project.pop("matrix_summary_overdue", None)
+        project.pop("matrix_summary_external", None)
+        project.pop("matrix_summary_pendings", None)
     summary = {
         "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
         "sete_dias": summary_counts["sete_dias"],
@@ -6654,12 +6917,15 @@ def project_create():
         flash("Projeto criado com sucesso.", "success")
         return redirect(url_for("project_detail", project_id=project_id))
 
+    form_options = get_matrix_static_options()
     return render_template(
         "project_form.html",
         clientes_json=fetch_cliente_autocomplete_options(),
-        cartorios=get_cartorio_options(),
-        process_types=get_process_type_options(),
-        initial_stage_options=get_process_initial_stage_options(),
+        cartorios=form_options["cartorios"],
+        process_types=form_options["process_types"],
+        initial_stage_options=group_process_initial_stage_options(
+            form_options["initial_stage_rows"]
+        ),
     )
 
 
@@ -6670,12 +6936,24 @@ def api_projects_reorder():
     if not can_manage():
         return jsonify({"ok": False, "error": "Permissao negada"}), 403
     data = request.get_json() or {}
-    ids = data.get("ids", [])
+    raw_ids = data.get("ids", [])
+    try:
+        ids = list(dict.fromkeys(int(project_id) for project_id in raw_ids if int(project_id) > 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Lista de IDs invalida"}), 400
     if not ids:
         return jsonify({"ok": False, "error": "Sem IDs"}), 400
     db = get_db()
-    for i, project_id in enumerate(ids, 1):
-        db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (i, project_id))
+    cur = db.execute(
+        """
+        UPDATE projetos AS p
+        SET ordem_prioridade = ordered.position::integer
+        FROM unnest(%s::integer[]) WITH ORDINALITY AS ordered(id, position)
+        WHERE p.id = ordered.id
+        """,
+        (ids,),
+    )
+    cur.close()
     db.commit()
     return jsonify({"ok": True})
 
@@ -6687,14 +6965,27 @@ def api_project_set_top(project_id):
     if not can_manage():
         return jsonify({"ok": False, "error": "Permissao negada"}), 403
     db = get_db()
-    all_ids = [row["id"] for row in db.execute(
-        "SELECT id FROM projetos ORDER BY COALESCE(ordem_prioridade, 99999), COALESCE(criado_em, ''), id"
-    ).fetchall()]
-    if project_id in all_ids:
-        all_ids.remove(project_id)
-    all_ids.insert(0, project_id)
-    for i, pid in enumerate(all_ids, 1):
-        db.execute("UPDATE projetos SET ordem_prioridade = %s WHERE id = %s", (i, pid))
+    cur = db.execute(
+        """
+        UPDATE projetos AS p
+        SET ordem_prioridade = ranked.new_order
+        FROM (
+            SELECT
+                id,
+                row_number() OVER (
+                    ORDER BY
+                        CASE WHEN id = %s THEN 0 ELSE 1 END,
+                        COALESCE(ordem_prioridade, 2147483647),
+                        COALESCE(criado_em, ''),
+                        id
+                )::integer AS new_order
+            FROM projetos
+        ) AS ranked
+        WHERE p.id = ranked.id
+        """,
+        (project_id,),
+    )
+    cur.close()
     db.commit()
     return jsonify({"ok": True})
 
@@ -7060,88 +7351,178 @@ def get_project_financial_context(project, costs=None, payments=None):
     }
 
 
-@app.route("/project/<int:project_id>")
-@login_required
-def project_detail(project_id):
-    refresh_due_statuses()
-    project = get_cached_lookup(
-        ("route_project_header", int(project_id)),
-        lambda: query_db(
-            """
-        SELECT
-            p.*,
-            COALESCE(
-                NULLIF(c.nome_exibicao, ''),
-                NULLIF(pf.nome_completo, ''),
-                NULLIF(pj.razao_social, ''),
-                NULLIF(c.nome, ''),
-                NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
-            ) AS cliente_principal_nome,
-            COALESCE(
-                owner_data.names,
-                NULLIF(c.nome_exibicao, ''),
-                NULLIF(pf.nome_completo, ''),
-                NULLIF(pj.razao_social, ''),
-                NULLIF(c.nome, ''),
-                NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
-            ) AS cliente_nome,
-            owner_data.names AS proprietarios_nomes,
-            COALESCE(owner_data.items, '[]'::jsonb) AS project_owners,
-            EXISTS (
-                SELECT 1
-                FROM projeto_etapas workflow_stage
-                WHERE workflow_stage.projeto_id = p.id
-                  AND COALESCE(workflow_stage.stage_key, '') != ''
-            ) AS workflow_initialized,
-            ct.nome AS cartorio_nome,
-            tp.nome AS tipo_processo_nome,
-            u.nome AS responsavel_geral_nome
-        FROM projetos p
-        LEFT JOIN clientes c ON c.id = p.cliente_id
-        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
-        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
-        LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
-        LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
-        LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
-        LEFT JOIN LATERAL (
+def load_project_detail_bundle(project_id, is_admin):
+    """Cabeçalho e todos os blocos do detalhe em um único round trip."""
+    return query_db(
+        """
+        WITH project_header AS (
             SELECT
-                string_agg(
-                    COALESCE(
-                        NULLIF(oc.nome_exibicao, ''),
-                        NULLIF(opf.nome_completo, ''),
-                        NULLIF(opj.razao_social, ''),
-                        NULLIF(oc.nome, ''),
-                        'Cliente #' || pp.cliente_id::text
-                    ),
-                    ' / ' ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
-                ) AS names,
-                jsonb_agg(
-                    jsonb_build_object(
-                        'id', pp.cliente_id,
-                        'nome', COALESCE(
+                p.*,
+                COALESCE(
+                    NULLIF(c.nome_exibicao, ''),
+                    NULLIF(pf.nome_completo, ''),
+                    NULLIF(pj.razao_social, ''),
+                    NULLIF(c.nome, ''),
+                    NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
+                ) AS cliente_principal_nome,
+                COALESCE(
+                    owner_data.names,
+                    NULLIF(c.nome_exibicao, ''),
+                    NULLIF(pf.nome_completo, ''),
+                    NULLIF(pj.razao_social, ''),
+                    NULLIF(c.nome, ''),
+                    NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
+                ) AS cliente_nome,
+                owner_data.names AS proprietarios_nomes,
+                COALESCE(owner_data.items, '[]'::jsonb) AS project_owners,
+                EXISTS (
+                    SELECT 1
+                    FROM projeto_etapas workflow_stage
+                    WHERE workflow_stage.projeto_id = p.id
+                      AND COALESCE(workflow_stage.stage_key, '') != ''
+                ) AS workflow_initialized,
+                ct.nome AS cartorio_nome,
+                tp.nome AS tipo_processo_nome,
+                u.nome AS responsavel_geral_nome
+            FROM projetos p
+            LEFT JOIN clientes c ON c.id = p.cliente_id
+            LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+            LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+            LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+            LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
+            LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
+            LEFT JOIN LATERAL (
+                SELECT
+                    string_agg(
+                        COALESCE(
                             NULLIF(oc.nome_exibicao, ''),
                             NULLIF(opf.nome_completo, ''),
                             NULLIF(opj.razao_social, ''),
                             NULLIF(oc.nome, ''),
                             'Cliente #' || pp.cliente_id::text
                         ),
-                        'principal', pp.principal,
-                        'ordem', pp.ordem
-                    ) ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
-                ) AS items
-            FROM projeto_proprietarios pp
-            JOIN clientes oc ON oc.id = pp.cliente_id
-            LEFT JOIN pessoas_fisicas opf ON opf.cliente_id = oc.id
-            LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
-            WHERE pp.projeto_id = p.id
-        ) owner_data ON TRUE
-        WHERE p.id = %s
-            """,
-            (project_id,),
-            one=True,
-        ),
+                        ' / ' ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
+                    ) AS names,
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'id', pp.cliente_id,
+                            'nome', COALESCE(
+                                NULLIF(oc.nome_exibicao, ''),
+                                NULLIF(opf.nome_completo, ''),
+                                NULLIF(opj.razao_social, ''),
+                                NULLIF(oc.nome, ''),
+                                'Cliente #' || pp.cliente_id::text
+                            ),
+                            'principal', pp.principal,
+                            'ordem', pp.ordem
+                        ) ORDER BY pp.principal DESC, pp.ordem, pp.cliente_id
+                    ) AS items
+                FROM projeto_proprietarios pp
+                JOIN clientes oc ON oc.id = pp.cliente_id
+                LEFT JOIN pessoas_fisicas opf ON opf.cliente_id = oc.id
+                LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
+                WHERE pp.projeto_id = p.id
+            ) owner_data ON TRUE
+            WHERE p.id = %s
+        )
+        SELECT
+            to_jsonb(ph) AS project,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY x.etapa_ordem, x.id)
+                FROM (
+                    SELECT
+                        pe.*,
+                        COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+                        COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
+                        em.nome AS legacy_etapa_nome,
+                        em.ordem AS legacy_etapa_ordem,
+                        stage_user.nome AS responsavel_nome
+                    FROM projeto_etapas pe
+                    JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                    LEFT JOIN usuarios stage_user ON stage_user.id = pe.responsavel_id
+                    WHERE pe.projeto_id = ph.id
+                      AND em.ativa = 1
+                      AND COALESCE(pe.show_in_project, 1) = 1
+                ) x
+            ), '[]'::jsonb) AS etapas,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY
+                    CASE COALESCE(x.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
+                    CASE COALESCE(x.tipo_registro, 'exigencia') WHEN 'protocolo' THEN 0 ELSE 1 END,
+                    COALESCE(x.prazo_resposta, x.data_protocolo, '9999-12-31'), x.id)
+                FROM (
+                    SELECT e.*, registry.nome AS cartorio_nome, responsible.nome AS responsavel_nome
+                    FROM exigencias_cartorio e
+                    LEFT JOIN cartorios registry ON registry.id = e.cartorio_id
+                    LEFT JOIN usuarios responsible ON responsible.id = e.responsavel_id
+                    WHERE e.projeto_id = ph.id
+                ) x
+            ), '[]'::jsonb) AS exigencias,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY
+                    CASE WHEN lower(x.status) IN ('resolvida', 'cancelada') THEN 1 ELSE 0 END,
+                    COALESCE(x.prazo, '9999-12-31'))
+                FROM (
+                    SELECT pd.*, em.nome AS etapa_nome, responsible.nome AS responsavel_nome
+                    FROM pendencias pd
+                    LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
+                    LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+                    LEFT JOIN usuarios responsible ON responsible.id = pd.responsavel_id
+                    WHERE pd.projeto_id = ph.id
+                ) x
+            ), '[]'::jsonb) AS pendencias,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY x.criado_em DESC)
+                FROM (
+                    SELECT event.*, event_user.nome AS usuario_nome
+                    FROM eventos_historico event
+                    LEFT JOIN usuarios event_user ON event_user.id = event.usuario_id
+                    WHERE event.projeto_id = ph.id
+                ) x
+            ), '[]'::jsonb) AS historico,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(history) ORDER BY history.entered_at, history.id)
+                FROM project_stage_history history
+                WHERE history.project_id = ph.id
+            ), '[]'::jsonb) AS stage_history,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY COALESCE(x.data_custo, '') DESC, x.id DESC)
+                FROM (
+                    SELECT cost.*, cost_user.nome AS usuario_nome
+                    FROM projeto_custos cost
+                    LEFT JOIN usuarios cost_user ON cost_user.id = cost.usuario_id
+                    WHERE %s
+                      AND cost.projeto_id = ph.id
+                      AND lower(COALESCE(cost.status, '')) != 'cancelado'
+                ) x
+            ), '[]'::jsonb) AS costs,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(x) ORDER BY COALESCE(x.data_pagamento, '') DESC, x.id DESC)
+                FROM (
+                    SELECT payment.*, payment_user.nome AS usuario_nome
+                    FROM projeto_pagamentos payment
+                    LEFT JOIN usuarios payment_user ON payment_user.id = payment.usuario_id
+                    WHERE %s AND payment.projeto_id = ph.id
+                ) x
+            ), '[]'::jsonb) AS payments
+        FROM project_header ph
+        """,
+        (project_id, is_admin, is_admin),
+        one=True,
+    )
+
+
+@app.route("/project/<int:project_id>")
+@login_required
+def project_detail(project_id):
+    refresh_due_statuses()
+    is_admin = bool(can_admin())
+    detail_data = get_cached_lookup(
+        ("route_project_bundle", int(project_id), is_admin),
+        lambda: load_project_detail_bundle(project_id, is_admin),
         ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
+    project = detail_data["project"] if detail_data else None
     if not project:
         flash("Projeto nao encontrado.", "danger")
         return redirect(url_for("projects"))
@@ -7156,107 +7537,7 @@ def project_detail(project_id):
         }]
     project["proprietarios_nomes"] = project["proprietarios_nomes"] or project["cliente_nome"] or ""
     workflow_initialized = bool(project["workflow_initialized"])
-    is_admin = bool(can_admin())
 
-    detail_data = get_cached_lookup(
-        ("route_project_detail", int(project_id), is_admin),
-        lambda: query_db(
-            """
-        SELECT
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(x) ORDER BY x.etapa_ordem, x.id)
-                FROM (
-                    SELECT
-                        pe.*,
-                        COALESCE(pe.stage_name, em.nome) AS etapa_nome,
-                        COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
-                        em.nome AS legacy_etapa_nome,
-                        em.ordem AS legacy_etapa_ordem,
-                        u.nome AS responsavel_nome
-                    FROM projeto_etapas pe
-                    JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                    LEFT JOIN usuarios u ON u.id = pe.responsavel_id
-                    WHERE pe.projeto_id = %s
-                      AND em.ativa = 1
-                      AND COALESCE(pe.show_in_project, 1) = 1
-                ) x
-            ), '[]'::jsonb) AS etapas,
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(x) ORDER BY
-                    CASE COALESCE(x.tipo_orgao, 'CARTORIO') WHEN 'PREFEITURA' THEN 0 ELSE 1 END,
-                    CASE COALESCE(x.tipo_registro, 'exigencia') WHEN 'protocolo' THEN 0 ELSE 1 END,
-                    COALESCE(x.prazo_resposta, x.data_protocolo, '9999-12-31'), x.id)
-                FROM (
-                    SELECT e.*, c.nome AS cartorio_nome, u.nome AS responsavel_nome
-                    FROM exigencias_cartorio e
-                    LEFT JOIN cartorios c ON c.id = e.cartorio_id
-                    LEFT JOIN usuarios u ON u.id = e.responsavel_id
-                    WHERE e.projeto_id = %s
-                ) x
-            ), '[]'::jsonb) AS exigencias,
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(x) ORDER BY
-                    CASE WHEN lower(x.status) IN ('resolvida', 'cancelada') THEN 1 ELSE 0 END,
-                    COALESCE(x.prazo, '9999-12-31'))
-                FROM (
-                    SELECT pd.*, em.nome AS etapa_nome, u.nome AS responsavel_nome
-                    FROM pendencias pd
-                    LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
-                    LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                    LEFT JOIN usuarios u ON u.id = pd.responsavel_id
-                    WHERE pd.projeto_id = %s
-                ) x
-            ), '[]'::jsonb) AS pendencias,
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(x) ORDER BY x.criado_em DESC)
-                FROM (
-                    SELECT e.*, u.nome AS usuario_nome
-                    FROM eventos_historico e
-                    LEFT JOIN usuarios u ON u.id = e.usuario_id
-                    WHERE e.projeto_id = %s
-                ) x
-            ), '[]'::jsonb) AS historico,
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(h) ORDER BY h.entered_at, h.id)
-                FROM project_stage_history h
-                WHERE h.project_id = %s
-            ), '[]'::jsonb) AS stage_history,
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(x) ORDER BY COALESCE(x.data_custo, '') DESC, x.id DESC)
-                FROM (
-                    SELECT pc.*, u.nome AS usuario_nome
-                    FROM projeto_custos pc
-                    LEFT JOIN usuarios u ON u.id = pc.usuario_id
-                    WHERE %s
-                      AND pc.projeto_id = %s
-                      AND lower(COALESCE(pc.status, '')) != 'cancelado'
-                ) x
-            ), '[]'::jsonb) AS costs,
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(x) ORDER BY COALESCE(x.data_pagamento, '') DESC, x.id DESC)
-                FROM (
-                    SELECT pg.*, u.nome AS usuario_nome
-                    FROM projeto_pagamentos pg
-                    LEFT JOIN usuarios u ON u.id = pg.usuario_id
-                    WHERE %s AND pg.projeto_id = %s
-                ) x
-            ), '[]'::jsonb) AS payments
-            """,
-            (
-                project_id,
-                project_id,
-                project_id,
-                project_id,
-                project_id,
-                is_admin,
-                project_id,
-                is_admin,
-                project_id,
-            ),
-            one=True,
-        ),
-        ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
-    )
     etapas = detail_data["etapas"] or []
     exigencias = detail_data["exigencias"]
     pendencias = detail_data["pendencias"]
@@ -7284,6 +7565,7 @@ def project_detail(project_id):
         if is_admin
         else None
     )
+    ui_options = get_matrix_static_options()
     return render_template(
         "project_detail.html",
         project=project,
@@ -7295,10 +7577,10 @@ def project_detail(project_id):
         historico=historico,
         stage_timeline=stage_timeline,
         project_open_days=project_open_days,
-        usuarios=get_active_users(),
+        usuarios=ui_options["usuarios"],
         clientes_json=fetch_cliente_autocomplete_options(),
-        cartorios=get_cartorio_options(),
-        process_types=get_process_type_options(),
+        cartorios=ui_options["cartorios"],
+        process_types=ui_options["process_types"],
         servicos_adicionais=decode_process_list(project["servicos_adicionais"]),
         financeiro=financeiro_context,
         categorias_custo=CATEGORIAS_CUSTO,
@@ -7401,28 +7683,57 @@ def project_action(project_id):
         responsible_id = request.form.get("responsavel_id") or None
         now = app_now_iso()
         db = get_db()
-        db.execute(
-            "UPDATE projetos SET responsavel_geral_id = %s, atualizado_em = %s WHERE id = %s",
-            (responsible_id, now, project_id),
-        )
         current_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project_id)
-        if current_stage_id:
-            db.execute(
-                "UPDATE projeto_etapas SET responsavel_id = %s WHERE id = %s",
-                (responsible_id, current_stage_id),
+        cur = db.execute(
+            """
+            WITH params AS (
+                SELECT
+                    %s::integer AS responsible_id,
+                    %s::integer AS project_id,
+                    %s::integer AS stage_id,
+                    %s::integer AS user_id,
+                    %s::text AS changed_at
+            ), updated_project AS (
+                UPDATE projetos p
+                SET responsavel_geral_id = params.responsible_id,
+                    atualizado_em = params.changed_at
+                FROM params
+                WHERE p.id = params.project_id
+                RETURNING p.id
+            ), updated_stage AS (
+                UPDATE projeto_etapas pe
+                SET responsavel_id = params.responsible_id
+                FROM params
+                WHERE pe.id = params.stage_id
+                RETURNING pe.id
+            ), updated_history AS (
+                UPDATE project_stage_history history
+                SET responsible_id = params.responsible_id,
+                    responsible_name = (
+                        SELECT nome FROM usuarios WHERE id = params.responsible_id
+                    )
+                FROM params
+                WHERE history.project_id = params.project_id
+                  AND history.stage_id = params.stage_id
+                  AND history.exited_at IS NULL
+                RETURNING history.id
             )
-            db.execute(
-                """
-                UPDATE project_stage_history
-                SET responsible_id = %s,
-                    responsible_name = (SELECT nome FROM usuarios WHERE id = %s)
-                WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL
-                """,
-                (responsible_id, responsible_id, project_id, current_stage_id),
-            )
-        db.commit()
-        label = query_db("SELECT nome FROM usuarios WHERE id = %s", (responsible_id,), one=True) if responsible_id else None
-        record_event(project_id, "responsavel_atualizado", f"Responsavel definido como {label['nome'] if label else 'sem responsavel'}.")
+            INSERT INTO eventos_historico
+                (projeto_id, usuario_id, tipo_evento, descricao, criado_em)
+            SELECT
+                params.project_id,
+                params.user_id,
+                'responsavel_atualizado',
+                'Responsavel definido como ' || COALESCE(
+                    (SELECT nome FROM usuarios WHERE id = params.responsible_id),
+                    'sem responsavel'
+                ) || '.',
+                params.changed_at
+            FROM params
+            """,
+            (responsible_id, project_id, current_stage_id, g.user["id"], now),
+        )
+        cur.close()
         flash("Responsavel atualizado.", "success")
 
     elif action == "apply_process_model":
@@ -7779,15 +8090,62 @@ def project_action(project_id):
         description = request.form.get("descricao", "").strip()
         if description:
             now = app_now_iso()
-            pending_id = execute_db(
+            stage_id = request.form.get("etapa_id") or None
+            is_current_stage = bool(
+                stage_id and str(stage_id) == str(project["etapa_atual_id"])
+            )
+            cur = get_db().execute(
                 """
-                INSERT INTO pendencias
+                WITH params AS (
+                    SELECT
+                        %s::integer AS project_id,
+                        %s::integer AS stage_id,
+                        %s::text AS description,
+                        %s::text AS origin,
+                        %s::integer AS responsible_id,
+                        %s::text AS due_date,
+                        %s::text AS pending_status,
+                        %s::text AS opened_at,
+                        %s::text AS changed_at,
+                        %s::integer AS user_id,
+                        %s::boolean AS is_current_stage
+                ), inserted_pending AS (
+                    INSERT INTO pendencias
                     (projeto_id, etapa_id, descricao, origem, responsavel_id, prazo, status, data_abertura, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    SELECT
+                        project_id, stage_id, description, origin, responsible_id,
+                        due_date, pending_status, opened_at, changed_at, changed_at
+                    FROM params
+                    RETURNING id
+                ), updated_stage AS (
+                    UPDATE projeto_etapas pe
+                    SET status = 'atencao'
+                    FROM params
+                    WHERE pe.id = params.stage_id
+                      AND lower(pe.status) NOT IN ('concluido', 'cancelado')
+                    RETURNING pe.id
+                ), updated_project AS (
+                    UPDATE projetos p
+                    SET status = 'Atencao', atualizado_em = params.changed_at
+                    FROM params
+                    WHERE p.id = params.project_id
+                      AND params.is_current_stage
+                    RETURNING p.id
+                )
+                INSERT INTO eventos_historico
+                    (projeto_id, usuario_id, tipo_evento, descricao, criado_em)
+                SELECT
+                    params.project_id,
+                    params.user_id,
+                    'pendencia_criada',
+                    'Pendencia #' || inserted_pending.id::text || ' registrada: ' || params.description || '.',
+                    params.changed_at
+                FROM params
+                CROSS JOIN inserted_pending
                 """,
                 (
                     project_id,
-                    request.form.get("etapa_id") or None,
+                    stage_id,
                     description,
                     request.form.get("origem", "interna"),
                     request.form.get("responsavel_id") or None,
@@ -7795,24 +8153,62 @@ def project_action(project_id):
                     request.form.get("status", "aberta"),
                     app_today().isoformat(),
                     now,
-                    now,
+                    g.user["id"],
+                    is_current_stage,
                 ),
             )
-            if request.form.get("etapa_id"):
-                execute_db("UPDATE projeto_etapas SET status = 'atencao' WHERE id = %s AND lower(status) NOT IN ('concluido', 'cancelado')", (request.form.get("etapa_id"),))
-                if str(request.form.get("etapa_id")) == str(project["etapa_atual_id"]):
-                    execute_db("UPDATE projetos SET status = 'Atencao', atualizado_em = %s WHERE id = %s", (now, project_id))
-            record_event(project_id, "pendencia_criada", f"Pendencia #{pending_id} registrada: {description}.")
+            cur.close()
             flash("Pendencia registrada.", "success")
 
     elif action == "resolve_pending":
         pending_id = request.form.get("pendencia_id")
-        execute_db(
-            "UPDATE pendencias SET status = 'resolvida', data_resolucao = %s, atualizado_em = %s WHERE id = %s AND projeto_id = %s",
-            (app_today().isoformat(), app_now_iso(), pending_id, project_id),
+        now = app_now_iso()
+        cur = get_db().execute(
+            """
+            WITH params AS (
+                SELECT
+                    %s::integer AS pending_id,
+                    %s::integer AS project_id,
+                    %s::integer AS user_id,
+                    %s::text AS resolved_at,
+                    %s::text AS changed_at
+            ), updated_pending AS (
+                UPDATE pendencias pending
+                SET status = 'resolvida',
+                    data_resolucao = params.resolved_at,
+                    atualizado_em = params.changed_at
+                FROM params
+                WHERE pending.id = params.pending_id
+                  AND pending.projeto_id = params.project_id
+                  AND lower(COALESCE(pending.status, '')) NOT IN ('resolvida', 'cancelada')
+                RETURNING pending.id
+            )
+            INSERT INTO eventos_historico
+                (projeto_id, usuario_id, tipo_evento, descricao, criado_em)
+            SELECT
+                params.project_id,
+                params.user_id,
+                'pendencia_resolvida',
+                'Pendencia #' || params.pending_id::text || ' resolvida.',
+                params.changed_at
+            FROM params
+            CROSS JOIN updated_pending
+            RETURNING id
+            """,
+            (
+                pending_id,
+                project_id,
+                g.user["id"],
+                app_today().isoformat(),
+                now,
+            ),
         )
-        record_event(project_id, "pendencia_resolvida", f"Pendencia #{pending_id} resolvida.")
-        flash("Pendencia resolvida.", "success")
+        resolved_event = cur.fetchone()
+        cur.close()
+        if resolved_event:
+            flash("Pendencia resolvida.", "success")
+        else:
+            flash("Pendencia nao encontrada ou ja resolvida.", "danger")
 
     elif action == "add_external_protocol":
         tipo_orgao = normalize_external_orgao(request.form.get("tipo_orgao", "CARTORIO"))
@@ -8056,6 +8452,29 @@ def project_action(project_id):
             flash("Comentario registrado no historico.", "success")
 
     next_url = request.form.get("next") or url_for("project_detail", project_id=project_id)
+    if _quick_action_wants_json():
+        messages = get_flashed_messages(with_categories=True)
+        normalized_messages = [
+            {
+                "tone": "danger" if category in {"danger", "error"} else category,
+                "message": message,
+            }
+            for category, message in messages
+        ]
+        priority = {"danger": 4, "warning": 3, "info": 2, "success": 1}
+        tone = max(
+            (item["tone"] for item in normalized_messages),
+            key=lambda item: priority.get(item, 0),
+            default="success",
+        )
+        message = " ".join(item["message"] for item in normalized_messages) or "Alteracao salva."
+        payload = {
+            "ok": tone != "danger",
+            "message": message,
+            "tone": tone,
+            "messages": normalized_messages,
+        }
+        return (jsonify(payload), 400) if tone == "danger" else jsonify(payload)
     return redirect(next_url)
 
 
@@ -8542,44 +8961,90 @@ def api_add_project_checklist_item():
     stage_id = data.get("stage_id")
     if not titulo or not stage_id:
         return jsonify({"ok": False, "error": "Dados incompletos"}), 400
-    stage = query_db("SELECT * FROM projeto_etapas WHERE id = %s", (stage_id,), one=True)
-    if not stage:
-        return jsonify({"ok": False, "error": "Etapa nao encontrada"}), 404
     now = app_now_iso()
-    order_index = query_db(
-        "SELECT COALESCE(MAX(order_index), 0) + 1 AS n FROM project_checklist_items WHERE project_stage_id = %s",
-        (stage_id,),
-        one=True,
-    )["n"]
     try:
-        item_id = execute_db(
+        result = query_db(
             """
-            INSERT INTO project_checklist_items
-                (project_id, project_stage_id, process_type_key, stage_key, stage_name, title, status,
-                 requirement_level, criticality, blocks_stage_completion, blocks_process_completion,
-                 requires_attachment, allows_observation, order_index, active, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 1, %s, 1, %s, %s)
+            WITH target_stage AS (
+                SELECT id, projeto_id, process_type_key, stage_key, stage_name
+                FROM projeto_etapas
+                WHERE id = %s
+            ), stats AS (
+                SELECT
+                    COALESCE(MAX(pci.order_index), 0) + 1 AS next_order,
+                    COUNT(*) FILTER (
+                        WHERE pci.active = 1 AND pci.status != %s
+                    ) AS total_before,
+                    COUNT(*) FILTER (
+                        WHERE pci.active = 1 AND pci.status = %s
+                    ) AS done
+                FROM target_stage ts
+                LEFT JOIN project_checklist_items pci
+                  ON pci.project_stage_id = ts.id
+            ), inserted AS (
+                INSERT INTO project_checklist_items
+                    (project_id, project_stage_id, process_type_key, stage_key, stage_name, title, status,
+                     requirement_level, criticality, blocks_stage_completion, blocks_process_completion,
+                     requires_attachment, allows_observation, order_index, active, created_at, updated_at)
+                SELECT
+                    ts.projeto_id, ts.id, ts.process_type_key, ts.stage_key, ts.stage_name,
+                    %s, %s, %s, %s, 0, 0, 0, 1, stats.next_order, 1, %s, %s
+                FROM target_stage ts
+                CROSS JOIN stats
+                RETURNING id, project_stage_id
+            ), calculated AS (
+                SELECT
+                    stats.done,
+                    stats.total_before + 1 AS total,
+                    CASE
+                        WHEN stats.total_before + 1 > 0
+                        THEN FLOOR(stats.done * 100.0 / (stats.total_before + 1))::integer
+                        ELSE 0
+                    END AS progress
+                FROM stats
+                WHERE EXISTS (SELECT 1 FROM inserted)
+            ), updated_stage AS (
+                UPDATE projeto_etapas pe
+                SET progresso = calculated.progress
+                FROM inserted, calculated
+                WHERE pe.id = inserted.project_stage_id
+                RETURNING pe.id
+            )
+            SELECT inserted.id, calculated.done, calculated.total, calculated.progress
+            FROM inserted
+            CROSS JOIN calculated
             """,
             (
-                stage["projeto_id"],
                 stage_id,
-                stage["process_type_key"],
-                stage["stage_key"],
-                stage["stage_name"],
+                CHECKLIST_STATUS_NOT_APPLICABLE,
+                CHECKLIST_STATUS_DONE,
                 titulo,
                 CHECKLIST_STATUS_NOT_STARTED,
                 REQUIREMENT_RECOMMENDED,
                 CRITICALITY_LOW,
-                order_index,
                 now,
                 now,
             ),
+            one=True,
         )
     except psycopg2.errors.UniqueViolation:
+        get_db().rollback()
         return jsonify({"ok": False, "error": "Ja existe um item com esse nome nesta etapa."}), 409
-    done, total, progress = project_checklist_stage_counts(stage_id)
-    execute_db("UPDATE projeto_etapas SET progresso = %s WHERE id = %s", (progress, stage_id))
-    return jsonify({"ok": True, "id": item_id, "titulo": titulo, "concluido": False, "progress": progress, "done": done, "total": total})
+    if not result:
+        get_db().rollback()
+        return jsonify({"ok": False, "error": "Etapa nao encontrada"}), 404
+    # A instrução termina em SELECT apesar dos CTEs de escrita; marca
+    # explicitamente a transação para o commit único do after_request.
+    get_db().commit()
+    return jsonify({
+        "ok": True,
+        "id": result["id"],
+        "titulo": titulo,
+        "concluido": False,
+        "progress": result["progress"],
+        "done": result["done"],
+        "total": result["total"],
+    })
 
 
 def _quick_action_wants_json():
@@ -9530,6 +9995,7 @@ def sync_procuradores(cliente_id, now):
     supports_tipo_endereco = db_has_column("procuradores", "tipo_endereco")
     try:
         db.execute("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
+        insert_values = []
         for index, representante in enumerate(representantes):
             values = (
                 cliente_id,
@@ -9563,30 +10029,27 @@ def sync_procuradores(cliente_id, now):
                 now,
                 now,
             )
-            if supports_tipo_endereco:
-                db.execute(
-                    """
-                    INSERT INTO procuradores
-                        (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
-                         profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
-                         data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional, tipo_endereco,
-                         logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    values,
-                )
-            else:
-                db.execute(
-                    """
-                    INSERT INTO procuradores
-                        (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
-                         profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
-                         data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional,
-                         logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    values[:20] + values[21:],
-                )
+            insert_values.append(values if supports_tipo_endereco else values[:20] + values[21:])
+
+        if supports_tipo_endereco:
+            insert_sql = """
+                INSERT INTO procuradores
+                    (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
+                     profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
+                     data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional, tipo_endereco,
+                     logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
+                VALUES %s
+            """
+        else:
+            insert_sql = """
+                INSERT INTO procuradores
+                    (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
+                     profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
+                     data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional,
+                     logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
+                VALUES %s
+            """
+        execute_values_db(db, insert_sql, insert_values, page_size=1000)
         db.commit()
         invalidate_runtime_caches()
     except Exception:
@@ -9714,6 +10177,7 @@ def upsert_vertices(imovel_id, now):
     azimutes = request.form.getlist("vert_azimute[]")
     distancias = request.form.getlist("vert_distancia_m[]")
     confrontacoes = request.form.getlist("vert_confrontacao[]")
+    rows = []
     for index, codigo in enumerate(codigos):
         if not any([
             codigo.strip(),
@@ -9723,13 +10187,7 @@ def upsert_vertices(imovel_id, now):
             value_at(confrontacoes, index),
         ]):
             continue
-        execute_db(
-            """
-            INSERT INTO vertices_imovel
-                (imovel_id, ordem, codigo_vertice, longitude, latitude, altitude_m, codigo_vertice_destino,
-                 azimute, distancia_m, confrontacao, criado_em, atualizado_em)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+        rows.append(
             (
                 imovel_id,
                 index + 1,
@@ -9743,8 +10201,19 @@ def upsert_vertices(imovel_id, now):
                 value_at(confrontacoes, index),
                 now,
                 now,
-            ),
+            )
         )
+    execute_values_db(
+        get_db(),
+        """
+        INSERT INTO vertices_imovel
+            (imovel_id, ordem, codigo_vertice, longitude, latitude, altitude_m, codigo_vertice_destino,
+             azimute, distancia_m, confrontacao, criado_em, atualizado_em)
+        VALUES %s
+        """,
+        rows,
+        page_size=1000,
+    )
 
 
 def value_at(values, index):
@@ -9758,7 +10227,13 @@ def parse_float_at(values, index):
 
 
 def refresh_cliente_status(cliente_id):
-    context = load_cliente_documental(cliente_id)
+    # O status depende apenas dos dados pessoais/empresariais, endereço e
+    # representante. O contexto do modal já entrega tudo isso em uma consulta;
+    # carregar imóveis e depois consultar os vértices de cada um era N+1 no
+    # caminho crítico de todo salvamento de cliente.
+    context = load_cliente_modal_context(cliente_id)
+    if not context:
+        return
     pendencias = context["cliente_pendencias"]
     status = pendencias["statusCadastro"]
     execute_db(
@@ -10481,11 +10956,21 @@ def cartorios_checklist():
             # Reatribui a ordem inteira: corrige empates herdados de order_index repetido.
             order = [item["id"] for item in items]
             order[index], order[neighbor] = order[neighbor], order[index]
-            for position, item_id in enumerate(order, 1):
-                db.execute(
-                    "UPDATE cartorio_checklist_templates SET order_index = %s, updated_at = %s WHERE id = %s",
-                    (position, now, item_id),
-                )
+            execute_values_db(
+                db,
+                """
+                UPDATE cartorio_checklist_templates AS target
+                SET order_index = source.order_index,
+                    updated_at = source.updated_at
+                FROM (VALUES %s) AS source(id, order_index, updated_at)
+                WHERE target.id = source.id
+                """,
+                [
+                    (item_id, position, now)
+                    for position, item_id in enumerate(order, 1)
+                ],
+                page_size=1000,
+            )
             db.commit()
             return manager_redirect()
 
@@ -10737,7 +11222,9 @@ def ensure_financeiro_schema():
     db.execute_statements(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_custos_registro_uid ON projeto_custos (registro_uid)"
     )
-    db.commit()
+    # O flag de inicialização vive no processo; a DDL precisa estar persistida
+    # antes de marcá-lo como pronto, mesmo quando a primeira chamada vem de rota.
+    db.commit(force=True)
     _financeiro_schema_ready = True
 
 

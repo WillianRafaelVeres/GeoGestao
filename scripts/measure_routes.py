@@ -48,6 +48,15 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("GEOGESTAO_BENCHMARK_PATHS", ""),
         help="comma-separated path list; defaults to the main GET routes",
     )
+    parser.add_argument(
+        "--cache-mode",
+        choices=("warm", "route-expired", "invalidated", "cold"),
+        default=os.environ.get("GEOGESTAO_BENCHMARK_CACHE_MODE", "warm"),
+        help=(
+            "cache state before each timed request: warm (default), "
+            "route-expired, invalidated (same state as after a write), or cold"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -83,13 +92,26 @@ def fetch_first_project_path() -> str | None:
         return f"/project/{project['id']}"
 
 
+def fetch_first_client_fragment_path() -> str | None:
+    with geogestao.app.app_context():
+        client = geogestao.query_db("SELECT id FROM clientes ORDER BY id LIMIT 1", one=True)
+        if not client:
+            return None
+        return f"/clients/{client['id']}/fragment"
+
+
 def build_paths(path_arg: str) -> list[str]:
     if path_arg.strip():
         return [path.strip() for path in path_arg.split(",") if path.strip()]
     paths = list(DEFAULT_PATHS)
     project_path = fetch_first_project_path()
     if project_path:
-        paths.insert(3, project_path)
+        project_id = project_path.rsplit("/", 1)[-1]
+        paths.insert(2, f"/projects/{project_id}/fragment")
+        paths.insert(4, project_path)
+    client_fragment_path = fetch_first_client_fragment_path()
+    if client_fragment_path:
+        paths.insert(paths.index("/clients") + 1, client_fragment_path)
     return paths
 
 
@@ -137,7 +159,35 @@ def wait_for_background_refresh(timeout_seconds: float = 10.0) -> None:
         time.sleep(0.01)
 
 
-def measure_path(client, probe: QueryProbe, path: str, runs: int) -> dict:
+def is_route_cache_key(key) -> bool:
+    if isinstance(key, str):
+        return key.startswith("route_")
+    return bool(
+        isinstance(key, tuple)
+        and key
+        and isinstance(key[0], str)
+        and key[0].startswith("route_")
+    )
+
+
+def prepare_cache_state(mode: str) -> None:
+    if mode == "warm":
+        return
+    if mode == "invalidated":
+        geogestao.invalidate_runtime_caches()
+        return
+    with geogestao._lookup_cache_lock:
+        if mode == "route-expired":
+            expired = [key for key in geogestao._lookup_cache if is_route_cache_key(key)]
+            for key in expired:
+                geogestao._lookup_cache.pop(key, None)
+        elif mode == "cold":
+            geogestao._lookup_cache_generation += 1
+            geogestao._lookup_cache.clear()
+            geogestao._lookup_cache_key_locks.clear()
+
+
+def measure_path(client, probe: QueryProbe, path: str, runs: int, cache_mode: str) -> dict:
     # Warm caches and lazy route state without including this request in results.
     probe.stop_measurement()
     client.get(path)
@@ -147,6 +197,7 @@ def measure_path(client, probe: QueryProbe, path: str, runs: int) -> dict:
     statuses = []
     sizes = []
     for _ in range(runs):
+        prepare_cache_state(cache_mode)
         probe.start_measurement()
         try:
             start = time.perf_counter()
@@ -180,6 +231,9 @@ def main() -> int:
 
     user_id = fetch_active_user_id()
     paths = build_paths(args.paths)
+    # O benchmark mede somente as rotas pedidas. Impede que uma atualizacao
+    # periodica em background contamine tempo e contagem de queries.
+    geogestao._due_statuses_next_refresh = float("inf")
     probe = QueryProbe()
     rows = []
     probe.install()
@@ -188,10 +242,11 @@ def main() -> int:
             with client.session_transaction() as sess:
                 sess["user_id"] = user_id
             for path in paths:
-                rows.append(measure_path(client, probe, path, args.runs))
+                rows.append(measure_path(client, probe, path, args.runs, args.cache_mode))
     finally:
         probe.uninstall()
 
+    print(f"Cache mode: {args.cache_mode}")
     print("| Route | Status | Median total ms | Median DB ms | Median queries | Bytes |")
     print("| --- | ---: | ---: | ---: | ---: | ---: |")
     for row in rows:
