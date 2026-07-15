@@ -58,6 +58,16 @@
                             {%- if project.cidade %} · {{ project.cidade }}{% endif -%}
                         </p>
                     </div>
+                    {# Etiqueta de proximo passo: texto livre, sem historico, salva ao sair do campo #}
+                    <div class="pmodal-next-step">
+                        <span class="pmodal-next-step-label">Proximo passo</span>
+                        <input type="text" class="pmodal-next-step-input" maxlength="200"
+                            value="{{ project.proximo_passo or '' }}"
+                            placeholder="Escreva aqui o proximo passo..."
+                            onkeydown="handleNextStepKey(event)"
+                            onblur="saveNextStep({{ project.id }}, this)" />
+                        <span class="pmodal-next-step-status" id="next-step-status-{{ project.id }}" hidden>Salvo ✓</span>
+                    </div>
                     <div class="pmodal-header-right">
                         <div class="pmodal-etapa-badge">
                             <span class="pmodal-etapa-label">Etapa atual</span>
@@ -73,17 +83,6 @@
 
                 {# Corpo com scroll interno #}
                 <div class="pmodal-body">
-
-                    {# Etiqueta de proximo passo: texto livre, sem historico, salva ao sair do campo #}
-                    <div class="pmodal-next-step">
-                        <span class="pmodal-next-step-label">Proximo passo</span>
-                        <input type="text" class="pmodal-next-step-input" maxlength="200"
-                            value="{{ project.proximo_passo or '' }}"
-                            placeholder="Escreva aqui o proximo passo deste projeto..."
-                            onkeydown="handleNextStepKey(event)"
-                            onblur="saveNextStep({{ project.id }}, this)" />
-                        <span class="pmodal-next-step-status" id="next-step-status-{{ project.id }}" hidden>Salvo ✓</span>
-                    </div>
 
                     {# Linha de metadados rápidos #}
                     <div class="pmodal-meta-row">

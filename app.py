@@ -6103,8 +6103,14 @@ def dashboard():
         SELECT
             (SELECT COUNT(*) FROM projetos) AS total_projects,
             (
-                SELECT COUNT(*) FROM projetos
-                WHERE lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+                -- Ativo = nao concluido/cancelado, nao arquivado e ja aprovado
+                -- (fora da etapa Orcamento).
+                SELECT COUNT(*)
+                FROM projetos p_active
+                LEFT JOIN projeto_etapas pe_active ON pe_active.id = p_active.etapa_atual_id
+                WHERE lower(COALESCE(p_active.status, '')) NOT IN ('concluido', 'cancelado')
+                  AND COALESCE(p_active.arquivado, 0) = 0
+                  AND COALESCE(pe_active.stage_key, '') != 'ORCAMENTO'
             ) AS active_projects,
             (
                 SELECT COUNT(*) FROM exigencias_cartorio
@@ -6535,7 +6541,12 @@ def projects():
         project.pop("matrix_summary_external", None)
         project.pop("matrix_summary_pendings", None)
     summary = {
-        "ativos": len([project for project, _ in matrix if str(project["status"] or "").lower() not in ("concluido", "cancelado")]),
+        # Projeto em Orcamento ainda nao foi aprovado, logo nao conta como ativo.
+        "ativos": len([
+            project for project, _ in matrix
+            if str(project["status"] or "").lower() not in ("concluido", "cancelado")
+            and ((project.get("active_stage") or {}).get("stage_key") or "") != "ORCAMENTO"
+        ]),
         "sete_dias": summary_counts["sete_dias"],
         "atrasados": summary_counts["atrasados"],
         "cartorio": summary_counts["cartorio"],
@@ -11414,6 +11425,9 @@ def financeiro():
               lower(COALESCE(p.status, '')) != 'concluido'
               OR COALESCE(p.valor, 0) + cust.total_custos - pag.total_pago > 0.005
           )
+          -- Orcamento nao aprovado ainda nao e receita certa: fora da carteira e do "a receber".
+          AND COALESCE(pe.stage_key, '') != 'ORCAMENTO'
+          AND lower(COALESCE(em.nome, '')) != 'orcamento'
         ORDER BY lower(p.nome)
         """
     )
