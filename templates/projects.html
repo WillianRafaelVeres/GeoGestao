@@ -1725,7 +1725,7 @@ function initProjectActionForms(root) {
     root.querySelectorAll('form').forEach((form) => {
         const actionUrl = form.getAttribute('action') || '';
         if (!actionUrl.includes('/project/') || !actionUrl.endsWith('/action')) return;
-        if (form.matches('[data-external-protocol-add], [data-external-protocol-row]')) return;
+        if (form.matches('[data-external-protocol-add], [data-external-protocol-row], [data-no-async]')) return;
         if (form.dataset.projectAsyncReady === '1') return;
         form.dataset.projectAsyncReady = '1';
         form.addEventListener('submit', async (event) => {

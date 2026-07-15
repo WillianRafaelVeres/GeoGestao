@@ -275,6 +275,18 @@
                                 onclick="openSubModal('project-modal-{{ project.id }}', 'modal-pendencia-{{ project.id }}')">
                                 + Pendencia
                             </button>
+                            {% if can_manage() and (active_stage.stage_key or '') in ('FINALIZADO', 'ORCAMENTO') %}
+                            {% set archive_motivo = 'finalizado' if active_stage.stage_key == 'FINALIZADO' else 'orcamento_nao_aprovado' %}
+                            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="d-inline" data-no-async
+                                onsubmit="return confirm('{{ 'Arquivar este projeto finalizado?' if archive_motivo == 'finalizado' else 'Arquivar este orcamento como nao aprovado?' }} Ele saira da matriz e ficara na aba Arquivados.');">
+                                <input type="hidden" name="action" value="archive_project">
+                                <input type="hidden" name="motivo" value="{{ archive_motivo }}">
+                                <input type="hidden" name="next" value="{{ url_for('projects') }}">
+                                <button class="pmodal-btn-ghost" type="submit">
+                                    {{ 'Arquivar projeto' if archive_motivo == 'finalizado' else 'Arquivar (nao aprovado)' }}
+                                </button>
+                            </form>
+                            {% endif %}
                             <a class="pmodal-btn-ghost" href="{{ url_for('project_detail', project_id=project.id) }}">
                                 Detalhes completos ↗
                             </a>

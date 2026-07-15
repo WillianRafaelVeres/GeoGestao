@@ -1,0 +1,97 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <span class="module-label">Operacao</span>
+        <h1>Arquivados</h1>
+        <p>Projetos que sairam da matriz: finalizados ou com orcamento nao aprovado. Reabra quando o cliente retomar.</p>
+    </div>
+    <div class="heading-actions">
+        <a class="btn btn-outline-secondary" href="{{ url_for('projects') }}">Matriz</a>
+    </div>
+</div>
+
+<section class="panel">
+    <div class="panel-header"><h2>Finalizados ({{ finalizados|length }})</h2></div>
+    <div class="table-responsive">
+        <table class="table compact-table">
+            <thead>
+                <tr>
+                    <th>Codigo</th>
+                    <th>Projeto</th>
+                    <th>Cliente / Proprietario</th>
+                    <th>Processo</th>
+                    <th>Cidade</th>
+                    <th>Arquivado em</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in finalizados %}
+                    <tr>
+                        <td>{{ item.codigo }}</td>
+                        <td><a class="table-link" href="{{ url_for('project_detail', project_id=item.id) }}">{{ item.nome }}</a></td>
+                        <td>{{ item.cliente_nome or '-' }}</td>
+                        <td>{{ item.tipo_processo_nome or '-' }}</td>
+                        <td>{{ item.cidade or '-' }}{{ ' - ' + item.uf if item.uf else '' }}</td>
+                        <td>{{ format_date(item.arquivado_em) or '-' }}</td>
+                        <td class="text-end">
+                            {% if can_manage() %}
+                            <form method="post" action="{{ url_for('project_action', project_id=item.id) }}" class="d-inline">
+                                <input type="hidden" name="action" value="unarchive_project">
+                                <input type="hidden" name="next" value="{{ url_for('arquivados') }}">
+                                <button class="btn btn-outline-secondary btn-sm" type="submit">Reabrir</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="7">Nenhum projeto finalizado arquivado.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-header"><h2>Orcamentos nao aprovados ({{ orcamentos|length }})</h2></div>
+    <div class="table-responsive">
+        <table class="table compact-table">
+            <thead>
+                <tr>
+                    <th>Codigo</th>
+                    <th>Projeto</th>
+                    <th>Cliente / Proprietario</th>
+                    <th>Processo</th>
+                    <th>Cidade</th>
+                    <th>Arquivado em</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in orcamentos %}
+                    <tr>
+                        <td>{{ item.codigo }}</td>
+                        <td><a class="table-link" href="{{ url_for('project_detail', project_id=item.id) }}">{{ item.nome }}</a></td>
+                        <td>{{ item.cliente_nome or '-' }}</td>
+                        <td>{{ item.tipo_processo_nome or '-' }}</td>
+                        <td>{{ item.cidade or '-' }}{{ ' - ' + item.uf if item.uf else '' }}</td>
+                        <td>{{ format_date(item.arquivado_em) or '-' }}</td>
+                        <td class="text-end">
+                            {% if can_manage() %}
+                            <form method="post" action="{{ url_for('project_action', project_id=item.id) }}" class="d-inline">
+                                <input type="hidden" name="action" value="unarchive_project">
+                                <input type="hidden" name="next" value="{{ url_for('arquivados') }}">
+                                <button class="btn btn-outline-secondary btn-sm" type="submit">Reabrir</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="7">Nenhum orcamento arquivado.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

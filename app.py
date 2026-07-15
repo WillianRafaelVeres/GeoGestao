@@ -459,6 +459,7 @@ READ_ONLY_DB_ENDPOINTS = frozenset({
     "users",
     "cartorio_board",
     "reports",
+    "arquivados",
 })
 
 SQL_WRITE_COMMANDS = frozenset({
@@ -1816,6 +1817,9 @@ def init_db():
     drop_constraint_if_exists(db, "procuradores", "procuradores_cliente_id_key")
     add_column_if_missing(db, "projetos", "valor", "DOUBLE PRECISION")
     add_column_if_missing(db, "projetos", "ordem_prioridade", "INTEGER")
+    add_column_if_missing(db, "projetos", "arquivado", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(db, "projetos", "arquivado_em", "TEXT")
+    add_column_if_missing(db, "projetos", "arquivado_motivo", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "atraso_origem", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "process_type_key", "TEXT")
@@ -5160,7 +5164,7 @@ def get_matrix_summary_counts(today_iso, in_7):
                     FROM projeto_etapas pe
                     JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
                     WHERE em.ativa = 1
-                      AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+                      AND pe.id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL AND COALESCE(arquivado, 0) = 0)
                       AND pe.prazo BETWEEN %s AND %s
                       AND lower(pe.status) NOT IN ('concluido', 'cancelado')
                 ) AS sete_dias,
@@ -5168,20 +5172,24 @@ def get_matrix_summary_counts(today_iso, in_7):
                     SELECT COUNT(*)
                     FROM projeto_etapas
                     WHERE lower(status) = 'atrasado'
-                      AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL)
+                      AND id IN (SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL AND COALESCE(arquivado, 0) = 0)
                 ) AS atrasados,
                 (
                     SELECT COUNT(*)
                     FROM projetos p
                     JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
                     JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
-                    WHERE pe.stage_key IN ('ORGAO_EXTERNO', 'PREFEITURA')
-                       OR lower(em.nome) IN ('cartorio', 'orgao externo', 'prefeitura')
+                    WHERE COALESCE(p.arquivado, 0) = 0
+                      AND (
+                          pe.stage_key IN ('ORGAO_EXTERNO', 'PREFEITURA')
+                          OR lower(em.nome) IN ('cartorio', 'orgao externo', 'prefeitura')
+                      )
                 ) AS cartorio,
                 (
                     SELECT COUNT(*)
                     FROM pendencias
                     WHERE lower(status) NOT IN ('resolvida', 'cancelada')
+                      AND projeto_id NOT IN (SELECT id FROM projetos WHERE COALESCE(arquivado, 0) = 1)
                 ) AS pendencias
             """,
             (today_iso, in_7),
@@ -6180,7 +6188,8 @@ def projects():
     today_iso = app_today().isoformat()
     in_7 = (app_today() + timedelta(days=7)).isoformat()
     filters = request.args.to_dict()
-    sql_filters = []
+    # Projetos arquivados saem da matriz; ficam acessiveis somente em /arquivados.
+    sql_filters = ["COALESCE(p.arquivado, 0) = 0"]
     params = []
     q = filters.get("q", "").strip()
     # A pesquisa textual usa o índice já entregue em cada linha e responde a
@@ -6420,7 +6429,7 @@ def projects():
                     JOIN etapas_modelo em_summary ON em_summary.id = pe_summary.etapa_modelo_id
                     WHERE em_summary.ativa = 1
                       AND pe_summary.id IN (
-                          SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL
+                          SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL AND COALESCE(arquivado, 0) = 0
                       )
                       AND pe_summary.prazo BETWEEN %s AND %s
                       AND lower(pe_summary.status) NOT IN ('concluido', 'cancelado')
@@ -6430,7 +6439,7 @@ def projects():
                     FROM projeto_etapas pe_summary
                     WHERE lower(pe_summary.status) = 'atrasado'
                       AND pe_summary.id IN (
-                          SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL
+                          SELECT etapa_atual_id FROM projetos WHERE etapa_atual_id IS NOT NULL AND COALESCE(arquivado, 0) = 0
                       )
                 ) AS overdue,
                 (
@@ -6438,13 +6447,19 @@ def projects():
                     FROM projetos p_summary
                     JOIN projeto_etapas pe_summary ON pe_summary.id = p_summary.etapa_atual_id
                     JOIN etapas_modelo em_summary ON em_summary.id = pe_summary.etapa_modelo_id
-                    WHERE pe_summary.stage_key IN ('ORGAO_EXTERNO', 'PREFEITURA')
-                       OR lower(em_summary.nome) IN ('cartorio', 'orgao externo', 'prefeitura')
+                    WHERE COALESCE(p_summary.arquivado, 0) = 0
+                      AND (
+                          pe_summary.stage_key IN ('ORGAO_EXTERNO', 'PREFEITURA')
+                          OR lower(em_summary.nome) IN ('cartorio', 'orgao externo', 'prefeitura')
+                      )
                 ) AS external,
                 (
                     SELECT COUNT(*)
                     FROM pendencias pd_summary
                     WHERE lower(pd_summary.status) NOT IN ('resolvida', 'cancelada')
+                      AND pd_summary.projeto_id NOT IN (
+                          SELECT id FROM projetos WHERE COALESCE(arquivado, 0) = 1
+                      )
                 ) AS pendings
         ) matrix_summary
         LEFT JOIN LATERAL (
@@ -6835,6 +6850,49 @@ def projects_export():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=geogestao_projetos.csv"},
     )
+
+
+@app.route("/arquivados")
+@login_required
+def arquivados():
+    rows = query_db(
+        """
+        SELECT
+            p.id, p.codigo, p.nome, p.cidade, p.uf,
+            p.arquivado_em, p.arquivado_motivo,
+            COALESCE(
+                NULLIF(owners.nomes, ''),
+                NULLIF(c.nome_exibicao, ''),
+                NULLIF(pf.nome_completo, ''),
+                NULLIF(pj.razao_social, ''),
+                NULLIF(c.nome, ''),
+                NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
+            ) AS cliente_nome,
+            tp.nome AS tipo_processo_nome
+        FROM projetos p
+        LEFT JOIN clientes c ON c.id = p.cliente_id
+        LEFT JOIN pessoas_fisicas pf ON pf.cliente_id = c.id
+        LEFT JOIN pessoas_juridicas pj ON pj.cliente_id = c.id
+        LEFT JOIN LATERAL (
+            SELECT string_agg(
+                COALESCE(NULLIF(oc.nome_exibicao, ''), NULLIF(opf.nome_completo, ''),
+                         NULLIF(opj.razao_social, ''), NULLIF(oc.nome, '')),
+                ' / ' ORDER BY opp.principal DESC, opp.ordem, opp.cliente_id
+            ) AS nomes
+            FROM projeto_proprietarios opp
+            JOIN clientes oc ON oc.id = opp.cliente_id
+            LEFT JOIN pessoas_fisicas opf ON opf.cliente_id = oc.id
+            LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
+            WHERE opp.projeto_id = p.id
+        ) owners ON TRUE
+        LEFT JOIN tipos_processo tp ON tp.chave = p.tipo_servico
+        WHERE COALESCE(p.arquivado, 0) = 1
+        ORDER BY p.arquivado_em DESC NULLS LAST, p.id DESC
+        """
+    )
+    finalizados = [row for row in rows if row["arquivado_motivo"] == "finalizado"]
+    orcamentos = [row for row in rows if row["arquivado_motivo"] != "finalizado"]
+    return render_template("archived.html", finalizados=finalizados, orcamentos=orcamentos)
 
 
 @app.route("/project/create", methods=["GET", "POST"])
@@ -7735,6 +7793,36 @@ def project_action(project_id):
         )
         cur.close()
         flash("Responsavel atualizado.", "success")
+
+    elif action == "archive_project":
+        if not can_manage():
+            flash("Permissao negada.", "danger")
+            return redirect(url_for("project_detail", project_id=project_id))
+        motivo = request.form.get("motivo") or ""
+        if motivo not in ("finalizado", "orcamento_nao_aprovado"):
+            flash("Motivo de arquivamento invalido.", "danger")
+        else:
+            now = app_now_iso()
+            execute_db(
+                "UPDATE projetos SET arquivado = 1, arquivado_em = %s, arquivado_motivo = %s, atualizado_em = %s WHERE id = %s",
+                (now, motivo, now, project_id),
+            )
+            motivo_label = "finalizado" if motivo == "finalizado" else "orcamento nao aprovado"
+            record_event(project_id, "projeto_arquivado", f"Projeto arquivado ({motivo_label}).")
+            flash("Projeto arquivado. Ele saiu da matriz e fica disponivel na aba Arquivados.", "success")
+
+    elif action == "unarchive_project":
+        if not can_manage():
+            flash("Permissao negada.", "danger")
+            return redirect(url_for("project_detail", project_id=project_id))
+        now = app_now_iso()
+        execute_db(
+            "UPDATE projetos SET arquivado = 0, arquivado_em = NULL, arquivado_motivo = NULL, atualizado_em = %s WHERE id = %s",
+            (now, project_id),
+        )
+        assign_project_order_to_end(get_db(), project_id)
+        record_event(project_id, "projeto_reaberto", "Projeto reaberto: voltou dos arquivados para a matriz.")
+        flash("Projeto reaberto. Ele voltou para a matriz de projetos.", "success")
 
     elif action == "apply_process_model":
         if not can_manage():
