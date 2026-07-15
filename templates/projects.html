@@ -440,6 +440,47 @@
     flex-wrap: wrap;
 }
 
+.pmodal-next-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border: 1px solid #f59e0b;
+    border-left: 4px solid #f59e0b;
+    border-radius: 8px;
+    background: #fef3c7;
+}
+.pmodal-next-step-label {
+    color: #92400e;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.pmodal-next-step-input {
+    flex: 1;
+    min-height: 30px;
+    border: none;
+    background: transparent;
+    color: #78350f;
+    font-size: 14px;
+    font-weight: 600;
+    outline: none;
+}
+.pmodal-next-step-input::placeholder {
+    color: #b45309;
+    opacity: .55;
+    font-weight: 500;
+}
+.pmodal-next-step-status {
+    color: #15803d;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
 .pmodal-responsible-form {
     display: grid;
     grid-template-columns: 150px minmax(180px, 1fr) auto;
@@ -1147,6 +1188,41 @@ function addNote(projectId) {
         showMatrixActionFeedback(error.message || 'Nao foi possivel salvar a anotacao.', 'danger');
     })
     .finally(() => input.focus());
+}
+
+/* ── PROXIMO PASSO: etiqueta livre do projeto ───────── */
+function handleNextStepKey(event) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        event.target.blur();
+    }
+}
+
+function saveNextStep(projectId, input) {
+    const texto = input.value.trim();
+    if (texto === (input.defaultValue || '').trim()) return;
+    fetch('/api/project/' + projectId + '/next-step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texto }),
+        credentials: 'same-origin',
+        cache: 'no-store',
+    })
+    .then(response => readProjectJsonResponse(response, 'Nao foi possivel salvar o proximo passo.'))
+    .then(data => {
+        input.defaultValue = data.texto || '';
+        input.value = data.texto || '';
+        projectModalCache.delete(String(projectId));
+        const status = document.getElementById('next-step-status-' + projectId);
+        if (status) {
+            status.hidden = false;
+            window.clearTimeout(status._hideTimer);
+            status._hideTimer = window.setTimeout(() => { status.hidden = true; }, 2000);
+        }
+    })
+    .catch((error) => {
+        showMatrixActionFeedback(error.message || 'Nao foi possivel salvar o proximo passo.', 'danger');
+    });
 }
 
 /* ── DRAG-AND-DROP: reordenação de prioridade ───────── */

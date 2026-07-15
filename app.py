@@ -1820,6 +1820,7 @@ def init_db():
     add_column_if_missing(db, "projetos", "arquivado", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(db, "projetos", "arquivado_em", "TEXT")
     add_column_if_missing(db, "projetos", "arquivado_motivo", "TEXT")
+    add_column_if_missing(db, "projetos", "proximo_passo", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "atraso_origem", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "process_type_key", "TEXT")
@@ -8881,6 +8882,26 @@ def api_add_project_note(project_id):
     get_db().commit()
     invalidate_runtime_caches()
     return jsonify({"ok": True, "id": row["id"], "texto": texto, "autor": g.user["nome"], "data": format_datetime(now)})
+
+
+@app.route("/api/project/<int:project_id>/next-step", methods=["POST"])
+@login_required
+def api_set_project_next_step(project_id):
+    """Define a etiqueta de proximo passo do projeto (popup da matriz). Texto livre, sem historico."""
+    data = request.get_json() or {}
+    texto = (data.get("texto") or "").strip()[:200]
+    cur = get_db().execute(
+        "UPDATE projetos SET proximo_passo = %s, atualizado_em = %s WHERE id = %s",
+        (texto or None, app_now_iso(), project_id),
+    )
+    updated = cur.rowcount
+    cur.close()
+    if not updated:
+        get_db().rollback()
+        return jsonify({"ok": False, "error": "Projeto nao encontrado"}), 404
+    get_db().commit()
+    invalidate_runtime_caches()
+    return jsonify({"ok": True, "texto": texto})
 
 
 @app.route("/api/project-checklist/<int:item_id>/toggle", methods=["POST"])
