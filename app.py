@@ -1661,6 +1661,18 @@ def init_db():
             FOREIGN KEY(responsavel_id) REFERENCES usuarios(id)
         );
 
+        CREATE TABLE IF NOT EXISTS exigencia_itens (
+            id SERIAL PRIMARY KEY,
+            exigencia_id INTEGER NOT NULL,
+            titulo TEXT NOT NULL,
+            concluido INTEGER DEFAULT 0,
+            concluido_por INTEGER,
+            concluido_em TEXT,
+            criado_em TEXT,
+            FOREIGN KEY(exigencia_id) REFERENCES exigencias_cartorio(id),
+            FOREIGN KEY(concluido_por) REFERENCES usuarios(id)
+        );
+
         CREATE TABLE IF NOT EXISTS apontamentos_tempo (
             id SERIAL PRIMARY KEY,
             projeto_id INTEGER NOT NULL,
@@ -6761,6 +6773,14 @@ def load_project_matrix_modal_context(project_id):
                   AND COALESCE(exg.tipo_registro, 'exigencia') = 'exigencia'
                   AND lower(COALESCE(exg.status, '')) NOT IN ('concluido', 'cancelado')
             ), '[]'::jsonb) AS exigencia_records,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(ei) ORDER BY ei.id)
+                FROM exigencia_itens ei
+                JOIN exigencias_cartorio exi ON exi.id = ei.exigencia_id
+                WHERE exi.projeto_id = p.id
+                  AND COALESCE(exi.tipo_registro, 'exigencia') = 'exigencia'
+                  AND lower(COALESCE(exi.status, '')) NOT IN ('concluido', 'cancelado')
+            ), '[]'::jsonb) AS exigencia_item_records,
             (
                 SELECT to_jsonb(next_stage)
                 FROM (
@@ -6824,6 +6844,11 @@ def load_project_matrix_modal_context(project_id):
             if row["exigencia_records"]
             else {}
         ),
+        "exigencia_itens_by_project": (
+            {project_id: row["exigencia_item_records"] or []}
+            if row["exigencia_item_records"]
+            else {}
+        ),
         "next_stage_by_project": {project_id: next_stage} if next_stage else {},
         "matrix_options": matrix_options,
     }
@@ -6849,6 +6874,7 @@ def project_modal_fragment(project_id):
             notes_by_project=context["notes_by_project"],
             external_controls_by_project=context["external_controls_by_project"],
             exigencias_by_project=context["exigencias_by_project"],
+            exigencia_itens_by_project=context["exigencia_itens_by_project"],
             next_stage_by_project=context["next_stage_by_project"],
             usuarios=context["matrix_options"]["usuarios"],
             external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
@@ -8435,10 +8461,13 @@ def project_action(project_id):
         tipo_orgao = normalize_external_orgao(
             protocolo_ref["tipo_orgao"] if protocolo_ref else request.form.get("tipo_orgao", "CARTORIO")
         )
+        itens_exigidos = [linha.strip() for linha in request.form.get("itens", "").splitlines() if linha.strip()]
         description = request.form.get("descricao", "").strip()
+        if not description and itens_exigidos:
+            description = itens_exigidos[0] if len(itens_exigidos) == 1 else f"{itens_exigidos[0]} (+{len(itens_exigidos) - 1} itens)"
         prazo_resposta = request.form.get("prazo_resposta") or None
         if not description:
-            flash("Informe a descricao da exigencia.", "danger")
+            flash("Informe o que o orgao exigiu (um item por linha).", "danger")
         elif not prazo_resposta:
             flash("Informe o prazo de resposta da exigencia.", "danger")
         else:
@@ -8510,6 +8539,11 @@ def project_action(project_id):
                     app_now_iso(),
                 ),
             )
+            for titulo_item in itens_exigidos:
+                execute_db(
+                    "INSERT INTO exigencia_itens (exigencia_id, titulo, criado_em) VALUES (%s, %s, %s)",
+                    (exigencia_id, titulo_item, app_now_iso()),
+                )
             record_event(project_id, "exigencia_criada", f"Exigencia #{exigencia_id} registrada.")
             flash("Exigencia registrada e tarefa criada.", "success")
 
@@ -8836,6 +8870,46 @@ def api_skip_external_stage(project_id):
     else:
         payload["message"] = "Etapa avancada e projeto concluido."
     return jsonify(payload)
+
+
+@app.route("/api/exigencia-item/<int:item_id>/toggle", methods=["POST"])
+@login_required
+def api_toggle_exigencia_item(item_id):
+    """Marca/desmarca um item exigido pelo orgao externo (painel de pendencias da exigencia)."""
+    payload = request.get_json(silent=True) or {}
+    item = query_db(
+        """
+        SELECT ei.*, exi.projeto_id
+        FROM exigencia_itens ei
+        JOIN exigencias_cartorio exi ON exi.id = ei.exigencia_id
+        WHERE ei.id = %s
+        """,
+        (item_id,),
+        one=True,
+    )
+    if not item:
+        return jsonify({"ok": False, "error": "Item nao encontrado."}), 404
+    if isinstance(payload.get("concluido"), bool):
+        new_state = 1 if payload["concluido"] else 0
+    else:
+        new_state = 0 if item["concluido"] else 1
+    execute_db(
+        "UPDATE exigencia_itens SET concluido = %s, concluido_por = %s, concluido_em = %s WHERE id = %s",
+        (new_state, g.user["id"] if new_state else None, app_now_iso() if new_state else None, item_id),
+    )
+    counts = query_db(
+        """
+        SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE COALESCE(ei.concluido, 0) = 1) AS done
+        FROM exigencia_itens ei
+        JOIN exigencias_cartorio exi ON exi.id = ei.exigencia_id
+        WHERE exi.projeto_id = %s
+          AND COALESCE(exi.tipo_registro, 'exigencia') = 'exigencia'
+          AND lower(COALESCE(exi.status, '')) NOT IN ('concluido', 'cancelado')
+        """,
+        (item["projeto_id"],),
+        one=True,
+    )
+    return jsonify({"ok": True, "id": item_id, "concluido": bool(new_state), "done": counts["done"], "total": counts["total"]})
 
 
 @app.route("/api/checklist/add", methods=["POST"])

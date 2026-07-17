@@ -226,8 +226,36 @@
                     {# Grid: checklist | pendências + movimentações + pasta #}
                     <div class="pmodal-grid">
 
-                        {# Coluna esquerda: checklist #}
+                        {# Coluna esquerda: checklist (ou pendencias da exigencia, quando houver) #}
+                        {% set exig_items = exigencia_itens_by_project.get(project.id, []) %}
                         <div class="pmodal-col">
+                            {% if exig_items %}
+                            {# Exigencia aberta com itens: a lista dela substitui o checklist da etapa #}
+                            {% set exig_done = exig_items | selectattr('concluido') | list | length %}
+                            <div class="pmodal-section pmodal-section--exigencia">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Pendencias da exigencia</span>
+                                    <span class="pmodal-section-count pmodal-section-count--danger" id="exig-counter-{{ project.id }}">
+                                        {{ exig_done }}/{{ exig_items|length }}
+                                    </span>
+                                </div>
+                                {% set exig_pct = ((exig_done / exig_items|length * 100) | int) if exig_items else 0 %}
+                                <div class="pmodal-progress">
+                                    <div class="pmodal-progress-fill pmodal-progress-fill--danger" id="exig-progress-{{ project.id }}" style="width:{{ exig_pct }}%"></div>
+                                </div>
+                                <div class="pmodal-checklist">
+                                    {% for item in exig_items %}
+                                    <label class="pmodal-check-item {{ 'is-done' if item.concluido else '' }}" id="exig-item-{{ item.id }}">
+                                        <input type="checkbox" class="pmodal-check-box"
+                                            {{ 'checked' if item.concluido else '' }}
+                                            onchange="toggleExigItem(this, {{ item.id }}, {{ project.id }})" />
+                                        <span class="pmodal-check-label">{{ item.titulo }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                                <small class="pmodal-exig-note">Itens exigidos pelo orgao externo. O checklist da etapa volta quando a exigencia for concluida no botao Exigencia.</small>
+                            </div>
+                            {% else %}
                             <div class="pmodal-section">
                                 <div class="pmodal-section-head">
                                     <span class="pmodal-section-title">Checklist</span>
@@ -254,6 +282,7 @@
                                     placeholder="+ Adicionar item..."
                                     onkeydown="handleAddCheck(event, {{ active_stage.id }})" />
                             </div>
+                            {% endif %}
                         </div>
 
                         {# Coluna direita: pendências + movimentações + pasta #}
@@ -454,8 +483,9 @@
                             </select>
                         </div>
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Descricao da exigencia</label>
-                            <textarea class="form-control form-control-sm" name="descricao" rows="2" required placeholder="O que o orgao exigiu?"></textarea>
+                            <label class="stage-modal-field-label">O que o orgao exigiu <span class="stage-modal-optional">(um item por linha)</span></label>
+                            <textarea class="form-control form-control-sm" name="itens" rows="4" required
+                                placeholder="Ex.:&#10;Corrigir memorial descritivo&#10;Reconhecer firma do confrontante"></textarea>
                         </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
                             <div class="stage-modal-field">
@@ -484,13 +514,16 @@
                 {% if exig_records %}
                 <div class="pmodal-exig-list-wrap">
                     <div class="pmodal-protocol-list">
+                        {% set all_exig_items = exigencia_itens_by_project.get(project.id, []) %}
                         {% for exg in exig_records %}
+                        {% set exg_itens = all_exig_items | selectattr('exigencia_id', 'equalto', exg.id) | list %}
                         <div class="pmodal-protocol-item">
                             <div class="pmodal-protocol-item-info">
                                 <strong>{{ exg.descricao }}</strong>
                                 <small>
                                     {%- if exg.protocolo_numero %}Protocolo {{ exg.protocolo_numero }}{% else %}{{ external_orgao_labels.get(exg.tipo_orgao or 'CARTORIO', exg.tipo_orgao or 'Orgao externo') }}{% endif %}
                                     {%- if exg.prazo_resposta %} · prazo {{ format_date(exg.prazo_resposta) }}{% endif %}
+                                    {%- if exg_itens %} · itens {{ exg_itens | selectattr('concluido') | list | length }}/{{ exg_itens | length }}{% endif %}
                                     {%- if exg.responsavel_nome %} · {{ exg.responsavel_nome }}{% endif %}
                                 </small>
                             </div>

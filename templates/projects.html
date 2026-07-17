@@ -803,6 +803,15 @@
 .pmodal-protocol-item-info small { display: block; font-size: 10.5px; color: #6b7280; }
 .pmodal-exig-list-wrap { padding: 0 16px 14px; }
 
+/* Painel de pendencias da exigencia (substitui o checklist) */
+.pmodal-section--exigencia {
+    border-color: #fca5a5;
+    background: #fef2f2;
+}
+.pmodal-section--exigencia .pmodal-section-title { color: #b91c1c; }
+.pmodal-progress-fill--danger { background: linear-gradient(90deg, #f87171, #dc2626); }
+.pmodal-exig-note { display: block; margin-top: 8px; font-size: 10.5px; color: #991b1b; }
+
 /* Controle de orgao externo */
 .pmodal-external-control {
     border-color: #bfdbfe;
@@ -1126,6 +1135,32 @@ function toggleCheck(cb, itemId, stageId) {
 }
 
 /* Adicionar item no checklist — Enter para confirmar */
+function toggleExigItem(cb, itemId, projectId) {
+    invalidateProjectModalCacheFor(cb);
+    const row = document.getElementById(`exig-item-${itemId}`);
+    row?.classList.toggle('is-done', cb.checked);
+    cb.disabled = true;
+    fetch(`/api/exigencia-item/${itemId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concluido: cb.checked }),
+    })
+        .then((resp) => resp.json())
+        .then((data) => {
+            if (!data.ok) throw new Error(data.error || 'Nao foi possivel salvar o item.');
+            const counter = document.getElementById(`exig-counter-${projectId}`);
+            if (counter) counter.textContent = `${data.done}/${data.total}`;
+            const bar = document.getElementById(`exig-progress-${projectId}`);
+            if (bar) bar.style.width = (data.total ? Math.round(data.done * 100 / data.total) : 0) + '%';
+        })
+        .catch(() => {
+            cb.checked = !cb.checked;
+            row?.classList.toggle('is-done', cb.checked);
+            showMatrixActionFeedback('Nao foi possivel salvar o item da exigencia.', 'danger');
+        })
+        .finally(() => { cb.disabled = false; });
+}
+
 function handleAddCheck(event, stageId) {
     if (event.key !== 'Enter' || event.isComposing) return;
     event.preventDefault();
