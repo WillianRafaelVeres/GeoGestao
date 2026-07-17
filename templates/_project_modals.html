@@ -124,124 +124,32 @@
                     </form>
 
                     {% if active_external_type %}
-                    <section class="pmodal-section pmodal-external-control"
-                        id="external-control-{{ project.id }}-{{ active_external_type }}"
-                        data-project-id="{{ project.id }}"
-                        data-external-type="{{ active_external_type }}"
-                        data-cartorio-id="{{ project.cartorio_id or '' }}">
-                        <div class="pmodal-section-head">
-                            <span class="pmodal-section-title">Controle {{ active_external_label }}</span>
-                            <span class="pmodal-external-state {{ 'is-ok' if external_all_withdrawn else 'is-pending' }}" data-external-state>
-                                {% if external_all_withdrawn %}
-                                    Retirado
-                                {% elif ns_external.ready_count %}
-                                    Pronto para retirada
-                                {% elif ns_external.protocol_count %}
-                                    Protocolado
-                                {% else %}
-                                    Aguardando protocolo
-                                {% endif %}
-                            </span>
-                        </div>
-
-                        <div class="pmodal-external-summary">
-                            <div><span>Protocolos</span><strong data-external-count>{{ ns_external.protocol_count }}</strong></div>
-                            <div><span>Verificar em</span><strong data-external-check-date>{{ format_date(ns_external.protocol_deadline) or '-' }}</strong></div>
-                            <div>
-                                <span>Retirada</span>
-                                <strong data-external-withdrawal>
-                                    {% if ns_external.protocol_count %}{{ ns_external.withdrawn_count }}/{{ ns_external.protocol_count }} retirados{% else %}Pendente{% endif %}
-                                </strong>
-                            </div>
-                        </div>
-
-                        <div class="pmodal-external-feedback" data-external-feedback hidden></div>
-
-                        <select data-protocol-responsible-options hidden>
-                            <option value="">Responsavel pela retirada</option>
-                            {% for usuario in usuarios %}
-                                <option value="{{ usuario.id }}">{{ usuario.nome }}</option>
-                            {% endfor %}
-                        </select>
-
-                        <div class="pmodal-external-records" data-external-records>
-                            {% for ext in active_external_records %}
-                                {% set ext_status = ext.status|lower %}
-                                {% set ext_withdrawn = ext.data_retirada and ext_status == 'concluido' %}
-                                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-record {{ 'is-withdrawn' if ext_withdrawn else '' }}" data-external-protocol-row data-protocol-id="{{ ext.id }}">
-                                    <input type="hidden" name="action" value="update_exigencia">
-                                    <input type="hidden" name="exigencia_id" value="{{ ext.id }}">
-                                    <input type="hidden" name="tipo_registro" value="protocolo">
-                                    <input type="hidden" name="next" value="{{ modal_next }}">
-                                    <div class="pmodal-external-info">
-                                        <span data-protocol-status-label>{% if ext_withdrawn %}Retirado{% elif ext.data_pronto_retirada %}Pronto{% else %}Protocolo{% endif %}</span>
-                                        <strong>{{ ext.descricao }}</strong>
-                                        <small>Orgao: {{ external_orgao_labels.get(ext.tipo_orgao or 'CARTORIO', ext.tipo_orgao or 'Orgao externo') }}</small>
-                                        <small>Data de protocolo: {{ format_date(ext.data_protocolo) or 'sem data' }}</small>
-                                        <small>Numero: {{ ext.numero_protocolo or '-' }}</small>
-                                        <small>Verificar em: {{ format_date(ext.prazo_resposta) or '-' }}</small>
-                                    </div>
-                                    <div class="pmodal-field-compact">
-                                        <span>Responsavel pela retirada</span>
-                                        <select class="form-select form-select-sm" name="responsavel_id" title="Responsavel" data-protocol-responsible>
-                                            <option value="">Responsavel pela retirada</option>
-                                            {% for usuario in usuarios %}
-                                                <option value="{{ usuario.id }}" {% if ext.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
-                                            {% endfor %}
-                                        </select>
-                                    </div>
-                                    <button class="pmodal-btn-ghost" name="protocol_action" value="ready" type="button" data-protocol-action="ready" {% if ext.data_retirada %}disabled{% endif %}>Pronto</button>
-                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--success" name="protocol_action" value="withdrawn" type="button" data-protocol-action="withdrawn" {% if ext.data_retirada %}disabled{% endif %}>Retirado</button>
-                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="button" data-protocol-action="delete">Excluir</button>
-                                </form>
-                            {% else %}
-                                <div class="pmodal-external-empty" data-external-empty>Nenhum protocolo registrado nesta etapa.</div>
-                            {% endfor %}
-                        </div>
-
-                        {% if active_external_type and active_status != 'nao aplicavel' %}
-                        <div class="pmodal-external-skip-panel" data-external-skip-panel {% if not external_can_skip %}hidden{% endif %}>
-                            <div>
-                                <strong>Nenhum protocolo nesta etapa</strong>
-                                <span>Se nao houver nada para protocolar agora, avance para a proxima etapa do fluxo.</span>
-                            </div>
-                            <button class="pmodal-btn-advance" type="button" data-external-skip data-stage-id="{{ active_stage.id }}">
-                                Avancar -> {{ proxima_etapa.etapa_nome if proxima_etapa else 'Concluir projeto' }}
-                            </button>
-                        </div>
+                    {% set ns_orgao = namespace(pref_open=0, cart_open=0) %}
+                    {% for ext in active_external_records %}
+                        {% if not (ext.data_retirada and ext.status|lower == 'concluido') %}
+                            {% if ext.tipo_orgao == 'PREFEITURA' %}
+                                {% set ns_orgao.pref_open = ns_orgao.pref_open + 1 %}
+                            {% elif (ext.tipo_orgao or 'CARTORIO') == 'CARTORIO' %}
+                                {% set ns_orgao.cart_open = ns_orgao.cart_open + 1 %}
+                            {% endif %}
                         {% endif %}
-
-                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="pmodal-external-add" data-external-protocol-add>
-                            <input type="hidden" name="action" value="add_external_protocol">
-                            <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}">
-                            <input type="hidden" name="next" value="{{ modal_next }}">
-                            <label>Protocolar</label>
-                            <div class="pmodal-external-add-row">
-                                <div class="pmodal-field-compact">
-                                    <span>Orgao protocolado</span>
-                                    <select class="form-select form-select-sm" name="tipo_orgao" required>
-                                        {% for value, label in external_orgao_options %}
-                                            <option value="{{ value }}">{{ label }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <div class="pmodal-field-compact">
-                                    <span>Data de protocolo</span>
-                                    <input class="form-control form-control-sm" type="date" name="data_protocolo" value="{{ today_iso }}" required>
-                                </div>
-                                <div class="pmodal-field-compact">
-                                    <span>Numero do protocolo</span>
-                                    <input class="form-control form-control-sm" name="numero_protocolo" placeholder="Numero" required>
-                                </div>
-                                <div class="pmodal-field-compact">
-                                    <span>Descricao</span>
-                                    <input class="form-control form-control-sm" name="descricao" placeholder="Descricao do protocolo">
-                                </div>
-                                <button class="pmodal-btn-ghost" type="submit">Salvar protocolo</button>
-                            </div>
-                            <small class="pmodal-external-hint">A data para verificar se esta pronto e calculada automaticamente: 15 dias uteis apos o protocolo.</small>
-                        </form>
-                    </section>
+                    {% endfor %}
+                    <div class="pmodal-protocol-row">
+                        <button type="button" class="pmodal-protocol-btn"
+                            onclick="openSubModal('project-modal-{{ project.id }}', 'modal-protocolo-{{ project.id }}-PREFEITURA')">
+                            <strong>Prefeitura</strong>
+                            <span class="{{ 'is-open' if ns_orgao.pref_open else '' }}">
+                                {{ ns_orgao.pref_open ~ ' protocolo' ~ ('s' if ns_orgao.pref_open != 1 else '') ~ ' em aberto' if ns_orgao.pref_open else 'Protocolar' }}
+                            </span>
+                        </button>
+                        <button type="button" class="pmodal-protocol-btn"
+                            onclick="openSubModal('project-modal-{{ project.id }}', 'modal-protocolo-{{ project.id }}-CARTORIO')">
+                            <strong>Cartorio</strong>
+                            <span class="{{ 'is-open' if ns_orgao.cart_open else '' }}">
+                                {{ ns_orgao.cart_open ~ ' protocolo' ~ ('s' if ns_orgao.cart_open != 1 else '') ~ ' em aberto' if ns_orgao.cart_open else 'Protocolar' }}
+                            </span>
+                        </button>
+                    </div>
                     {% endif %}
 
                     <div class="pmodal-actions">
@@ -405,6 +313,104 @@
             </div>
         </div>
     </div>
+
+    {# ===== MODAIS DE PROTOCOLO (prefeitura / cartorio) ===== #}
+    {% if active_external_type %}
+    {% for orgao_value, orgao_label in [('PREFEITURA', 'Prefeitura'), ('CARTORIO', 'Cartorio')] %}
+    <div class="modal fade" id="modal-protocolo-{{ project.id }}-{{ orgao_value }}" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--advance">
+                    <div>
+                        <div class="stage-modal-label">Protocolo · {{ orgao_label }}</div>
+                        <div class="stage-modal-title">{{ project.nome }}</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="add_external_protocol">
+                    <input type="hidden" name="tipo_orgao" value="{{ orgao_value }}">
+                    <input type="hidden" name="cartorio_id" value="{{ project.cartorio_id or '' }}">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                    <div class="stage-modal-body">
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Data de protocolo</label>
+                                <input type="date" class="form-control form-control-sm" name="data_protocolo" value="{{ today_iso }}" required>
+                            </div>
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Numero do protocolo</label>
+                                <input class="form-control form-control-sm" name="numero_protocolo" placeholder="Numero" required>
+                            </div>
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Data limite <span class="stage-modal-optional">(vazio = 15 dias uteis)</span></label>
+                                <input type="date" class="form-control form-control-sm" name="data_limite">
+                            </div>
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Protocolo fisico ou digital</label>
+                                <select class="form-select form-select-sm" name="forma_protocolo">
+                                    <option value="fisico">Fisico</option>
+                                    <option value="digital">Digital</option>
+                                </select>
+                            </div>
+                        </div>
+                        {% set ns_list = namespace(rows=[]) %}
+                        {% for ext in active_external_records %}
+                            {% if (ext.tipo_orgao or 'CARTORIO') == orgao_value %}{% set ns_list.rows = ns_list.rows + [ext] %}{% endif %}
+                        {% endfor %}
+                        {% if ns_list.rows %}
+                        <div class="pmodal-protocol-list">
+                            {% for ext in ns_list.rows %}
+                            {% set ext_withdrawn = ext.data_retirada and ext.status|lower == 'concluido' %}
+                            <div class="pmodal-protocol-item {{ 'is-withdrawn' if ext_withdrawn else '' }}">
+                                <div class="pmodal-protocol-item-info">
+                                    <strong>{{ ext.numero_protocolo or ext.descricao }}</strong>
+                                    <small>
+                                        {{ format_date(ext.data_protocolo) or 'sem data' }}
+                                        {%- if ext.prazo_resposta %} · limite {{ format_date(ext.prazo_resposta) }}{% endif %}
+                                        {%- if ext.forma_protocolo %} · {{ 'Fisico' if ext.forma_protocolo == 'fisico' else 'Digital' }}{% endif %}
+                                        {%- if ext_withdrawn %} · Retirado{% endif %}
+                                    </small>
+                                </div>
+                                {% if not ext_withdrawn %}
+                                <button class="pmodal-btn-ghost pmodal-btn-ghost--success" type="submit"
+                                    form="form-retirar-{{ ext.id }}">Retirado</button>
+                                {% endif %}
+                                <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="submit"
+                                    form="form-excluir-{{ ext.id }}">Excluir</button>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--advance">Salvar protocolo</button>
+                    </div>
+                </form>
+                {% for ext in ns_list.rows %}
+                {% if not (ext.data_retirada and ext.status|lower == 'concluido') %}
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" id="form-retirar-{{ ext.id }}" hidden>
+                    <input type="hidden" name="action" value="update_exigencia">
+                    <input type="hidden" name="exigencia_id" value="{{ ext.id }}">
+                    <input type="hidden" name="tipo_registro" value="protocolo">
+                    <input type="hidden" name="protocol_action" value="withdrawn">
+                    <input type="hidden" name="responsavel_id" value="{{ ext.responsavel_id or '' }}">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                </form>
+                {% endif %}
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" id="form-excluir-{{ ext.id }}" hidden data-no-async
+                    onsubmit="return confirm('Excluir este protocolo?');">
+                    <input type="hidden" name="action" value="delete_external_protocol">
+                    <input type="hidden" name="exigencia_id" value="{{ ext.id }}">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                </form>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+    {% endif %}
 
     {# ===== MODAL AVANCAR ===== #}
     {% if proxima_etapa %}

@@ -112,7 +112,38 @@
         {% endif %}
     </section>
 
-    {# 4. Pendencias #}
+    {# 4. Protocolos abertos #}
+    <section class="panel dash-panel">
+        <div class="panel-header">
+            <h2>Protocolos abertos</h2>
+            <span class="dash-badge {{ 'dash-badge--alert' if protocolos_count else '' }}">{{ protocolos_count }}</span>
+        </div>
+        {% if protocolos %}
+        <div class="dash-alert-list">
+            {% for pr in protocolos %}
+            <a class="dash-alert-row {{ 'is-overdue' if pr.prazo_resposta and pr.prazo_resposta < today_iso else '' }}"
+               href="{{ url_for('project_detail', project_id=pr.projeto_id) }}#cartorio">
+                <div class="dash-alert-info">
+                    <strong>
+                        {{- external_orgao_labels.get(pr.tipo_orgao or 'CARTORIO', pr.tipo_orgao or 'Orgao externo') -}}
+                        {%- if pr.numero_protocolo %} · {{ pr.numero_protocolo }}{% endif -%}
+                    </strong>
+                    <span>
+                        {{- pr.projeto_nome -}}
+                        {%- if pr.forma_protocolo %} · {{ 'Fisico' if pr.forma_protocolo == 'fisico' else 'Digital' }}{% endif -%}
+                        {%- if pr.data_protocolo %} · protocolado em {{ format_date(pr.data_protocolo) }}{% endif -%}
+                    </span>
+                </div>
+                {% if pr.prazo_resposta %}<small>{{ format_date(pr.prazo_resposta) }}</small>{% endif %}
+            </a>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">Nenhum protocolo em aberto.</div>
+        {% endif %}
+    </section>
+
+    {# 5. Pendencias #}
     <section class="panel dash-panel">
         <div class="panel-header">
             <h2>Pendencias</h2>

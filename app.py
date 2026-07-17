@@ -1643,6 +1643,7 @@ def init_db():
             tipo_registro TEXT NOT NULL DEFAULT 'exigencia',
             data_protocolo TEXT,
             numero_protocolo TEXT,
+            forma_protocolo TEXT,
             data_recebimento TEXT,
             prazo_resposta TEXT,
             descricao TEXT NOT NULL,
@@ -1848,6 +1849,7 @@ def init_db():
     add_column_if_missing(db, "exigencias_cartorio", "tipo_registro", "TEXT NOT NULL DEFAULT 'exigencia'")
     add_column_if_missing(db, "exigencias_cartorio", "data_protocolo", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "numero_protocolo", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "forma_protocolo", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "data_pronto_retirada", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "data_retirada", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "observacoes", "TEXT")
@@ -4082,6 +4084,11 @@ def normalize_external_orgao(value):
     return value if value in EXTERNAL_ORGAO_LABELS else "CARTORIO"
 
 
+def normalize_forma_protocolo(value):
+    value = (value or "").strip().lower()
+    return value if value in ("fisico", "digital") else None
+
+
 def ensure_protocol_withdrawal_task(project_id, stage_id, protocol_id, tipo_orgao, responsible_id, due_date=None):
     if not responsible_id:
         return None
@@ -6086,6 +6093,7 @@ def dashboard():
             LEFT JOIN cartorios c ON c.id = e.cartorio_id
             LEFT JOIN usuarios u ON u.id = e.responsavel_id
             WHERE lower(e.status) NOT IN ('concluido', 'cancelado')
+              AND COALESCE(e.tipo_registro, 'exigencia') != 'protocolo'
             ORDER BY COALESCE(e.prazo_resposta, '9999-12-31'), e.id
             LIMIT 6
         ),
@@ -6099,6 +6107,17 @@ def dashboard():
             WHERE lower(pd.status) NOT IN ('resolvida', 'cancelada')
             ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
             LIMIT 6
+        ),
+        protocolo_rows AS (
+            SELECT e.id, e.tipo_orgao, e.numero_protocolo, e.forma_protocolo, e.status,
+                   e.data_protocolo, e.prazo_resposta,
+                   p.id AS projeto_id, p.nome AS projeto_nome
+            FROM exigencias_cartorio e
+            JOIN projetos p ON p.id = e.projeto_id
+            WHERE e.tipo_registro = 'protocolo'
+              AND lower(COALESCE(e.status, '')) NOT IN ('concluido', 'cancelado')
+            ORDER BY COALESCE(e.prazo_resposta, '9999-12-31'), e.id
+            LIMIT 8
         )
         SELECT
             (SELECT COUNT(*) FROM projetos) AS total_projects,
@@ -6131,11 +6150,17 @@ def dashboard():
             (
                 SELECT COUNT(*) FROM exigencias_cartorio
                 WHERE lower(status) NOT IN ('concluido', 'cancelado')
+                  AND COALESCE(tipo_registro, 'exigencia') != 'protocolo'
             ) AS exigencias_count,
             (
                 SELECT COUNT(*) FROM pendencias
                 WHERE lower(status) NOT IN ('resolvida', 'cancelada')
             ) AS pendencias_count,
+            (
+                SELECT COUNT(*) FROM exigencias_cartorio
+                WHERE tipo_registro = 'protocolo'
+                  AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+            ) AS protocolos_count,
             COALESCE((
                 SELECT jsonb_agg(
                     to_jsonb(pr) - 'deadline_rank' - 'sort_priority' - 'sort_created'
@@ -6157,7 +6182,11 @@ def dashboard():
             COALESCE((
                 SELECT jsonb_agg(to_jsonb(pr) ORDER BY COALESCE(pr.prazo, '9999-12-31'), pr.id)
                 FROM pendencia_rows pr
-            ), '[]'::jsonb) AS pendencias
+            ), '[]'::jsonb) AS pendencias,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(pro) ORDER BY COALESCE(pro.prazo_resposta, '9999-12-31'), pro.id)
+                FROM protocolo_rows pro
+            ), '[]'::jsonb) AS protocolos
             """,
             (today_iso, today_iso, today_iso, today_iso, today_iso, in_7),
             one=True,
@@ -6169,6 +6198,7 @@ def dashboard():
     total_bottlenecks = max([row["total"] for row in bottlenecks] or [1])
     exigencias = dashboard_data["exigencias"] or []
     pendencias = dashboard_data["pendencias"] or []
+    protocolos = dashboard_data["protocolos"] or []
     return render_template(
         "dashboard.html",
         total_projects=dashboard_data["total_projects"],
@@ -6183,6 +6213,9 @@ def dashboard():
         exigencias_count=dashboard_data["exigencias_count"],
         pendencias=pendencias,
         pendencias_count=dashboard_data["pendencias_count"],
+        protocolos=protocolos,
+        protocolos_count=dashboard_data["protocolos_count"],
+        external_orgao_labels=EXTERNAL_ORGAO_LABELS,
         today_iso=today_iso,
     )
 
@@ -8314,7 +8347,8 @@ def project_action(project_id):
         tipo_orgao = normalize_external_orgao(request.form.get("tipo_orgao", "CARTORIO"))
         stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
         data_protocolo = request.form.get("data_protocolo") or app_today().isoformat()
-        data_limite = external_protocol_check_date(data_protocolo)
+        data_limite = request.form.get("data_limite") or external_protocol_check_date(data_protocolo)
+        forma_protocolo = normalize_forma_protocolo(request.form.get("forma_protocolo"))
         numero_protocolo = request.form.get("numero_protocolo", "").strip()
         if not numero_protocolo:
             flash("Informe o numero do protocolo.", "danger")
@@ -8323,9 +8357,9 @@ def project_action(project_id):
         protocolo_id = execute_db(
             """
             INSERT INTO exigencias_cartorio
-                (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_protocolo, numero_protocolo,
+                (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_protocolo, numero_protocolo, forma_protocolo,
                  data_recebimento, prazo_resposta, descricao, status, responsavel_id, observacoes, criado_em, atualizado_em)
-            VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, NULL, %s, %s, 'aguardando externo', NULL, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, %s, NULL, %s, %s, 'aguardando externo', NULL, %s, %s, %s)
             """,
             (
                 project_id,
@@ -8334,6 +8368,7 @@ def project_action(project_id):
                 tipo_orgao,
                 data_protocolo,
                 numero_protocolo,
+                forma_protocolo,
                 data_limite,
                 descricao,
                 request.form.get("observacoes", "").strip(),
@@ -8348,6 +8383,23 @@ def project_action(project_id):
             )
         record_event(project_id, "protocolo_externo", f"Protocolo #{protocolo_id} registrado em {external_stage_label(tipo_orgao)}.")
         flash("Protocolo registrado.", "success")
+
+    elif action == "delete_external_protocol":
+        protocolo_id = request.form.get("exigencia_id")
+        protocol = query_db("SELECT * FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (protocolo_id, project_id), one=True)
+        if not protocol or (protocol["tipo_registro"] or "exigencia") != "protocolo":
+            flash("Protocolo nao encontrado.", "danger")
+        else:
+            cancel_protocol_withdrawal_tasks(project_id, protocol["id"])
+            execute_db("DELETE FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (protocol["id"], project_id))
+            record_event(project_id, "protocolo_excluido", f"Protocolo #{protocol['id']} excluido.")
+            summary = external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE, protocol["etapa_id"])
+            if summary["protocol_count"] == 0 and protocol["etapa_id"] and project["etapa_atual_id"] == protocol["etapa_id"]:
+                execute_db(
+                    "UPDATE projeto_etapas SET status = 'em andamento', subetapa_ativa = NULL WHERE id = %s",
+                    (protocol["etapa_id"],),
+                )
+            flash("Protocolo excluido.", "success")
 
     elif action == "add_exigencia":
         tipo_orgao = normalize_external_orgao(request.form.get("tipo_orgao", "CARTORIO"))
@@ -8590,15 +8642,16 @@ def api_add_external_protocol(project_id):
     if not numero_protocolo:
         return jsonify({"ok": False, "error": "Informe o numero do protocolo."}), 400
     data_protocolo = data.get("data_protocolo") or app_today().isoformat()
-    data_limite = external_protocol_check_date(data_protocolo)
+    data_limite = data.get("data_limite") or external_protocol_check_date(data_protocolo)
+    forma_protocolo = normalize_forma_protocolo(data.get("forma_protocolo"))
     descricao = (data.get("descricao") or "").strip() or f"Protocolo em {external_stage_label(tipo_orgao)}"
     stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
     protocolo_id = execute_db(
         """
         INSERT INTO exigencias_cartorio
-            (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_protocolo, numero_protocolo,
+            (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_protocolo, numero_protocolo, forma_protocolo,
              data_recebimento, prazo_resposta, descricao, status, responsavel_id, observacoes, criado_em, atualizado_em)
-        VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, NULL, %s, %s, 'aguardando externo', NULL, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, 'protocolo', %s, %s, %s, NULL, %s, %s, 'aguardando externo', NULL, %s, %s, %s)
         """,
         (
             project_id,
@@ -8607,6 +8660,7 @@ def api_add_external_protocol(project_id):
             tipo_orgao,
             data_protocolo,
             numero_protocolo,
+            forma_protocolo,
             data_limite,
             descricao,
             (data.get("observacoes") or "").strip(),
