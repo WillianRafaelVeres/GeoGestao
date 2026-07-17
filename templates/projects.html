@@ -755,10 +755,10 @@
 }
 
 /* ── MODAIS DE ETAPA (avancar/retornar/pendencia) ──── */
-/* Protocolo: dois botoes (prefeitura / cartorio) em uma linha */
+/* Protocolo: botoes (prefeitura / cartorio / exigencia) em uma linha */
 .pmodal-protocol-row {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
 }
 .pmodal-protocol-btn {
@@ -801,6 +801,7 @@
 .pmodal-protocol-item-info { flex: 1; min-width: 0; }
 .pmodal-protocol-item-info strong { display: block; font-size: 12px; color: #111827; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pmodal-protocol-item-info small { display: block; font-size: 10.5px; color: #6b7280; }
+.pmodal-exig-list-wrap { padding: 0 16px 14px; }
 
 /* Controle de orgao externo */
 .pmodal-external-control {

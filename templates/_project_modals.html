@@ -134,6 +134,7 @@
                             {% endif %}
                         {% endif %}
                     {% endfor %}
+                    {% set exig_records = exigencias_by_project.get(project.id, []) %}
                     <div class="pmodal-protocol-row">
                         <button type="button" class="pmodal-protocol-btn"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-protocolo-{{ project.id }}-PREFEITURA')">
@@ -147,6 +148,17 @@
                             <strong>Cartorio</strong>
                             <span class="{{ 'is-open' if ns_orgao.cart_open else '' }}">
                                 {{ ns_orgao.cart_open ~ ' protocolo' ~ ('s' if ns_orgao.cart_open != 1 else '') ~ ' em aberto' if ns_orgao.cart_open else 'Protocolar' }}
+                            </span>
+                        </button>
+                        <button type="button" class="pmodal-protocol-btn"
+                            {% if ns_external.pending_count or exig_records %}
+                            onclick="openSubModal('project-modal-{{ project.id }}', 'modal-exigencia-{{ project.id }}')"
+                            {% else %}
+                            onclick="alert('Nenhum protocolo em aberto. Cadastre primeiro o protocolo na Prefeitura ou no Cartorio para registrar uma exigencia.')"
+                            {% endif %}>
+                            <strong>Exigencia</strong>
+                            <span class="{{ 'is-open' if exig_records else '' }}">
+                                {{ exig_records|length ~ ' em aberto' if exig_records else 'Registrar exigencia' }}
                             </span>
                         </button>
                     </div>
@@ -410,6 +422,98 @@
         </div>
     </div>
     {% endfor %}
+
+    {# ===== MODAL EXIGENCIA (sempre vinculada a um protocolo) ===== #}
+    {% set ns_prot_open = namespace(rows=[]) %}
+    {% for ext in active_external_records %}
+        {% if not (ext.data_retirada and ext.status|lower == 'concluido') %}{% set ns_prot_open.rows = ns_prot_open.rows + [ext] %}{% endif %}
+    {% endfor %}
+    <div class="modal fade" id="modal-exigencia-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--pending">
+                    <div>
+                        <div class="stage-modal-label">Exigencia · {{ project.nome }}</div>
+                        <div class="stage-modal-title">Sempre vinculada a um protocolo</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                {% if ns_prot_open.rows %}
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="add_exigencia">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                    <div class="stage-modal-body">
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Protocolo de origem</label>
+                            <select class="form-select form-select-sm" name="protocolo_id" required>
+                                {% for prot in ns_prot_open.rows %}
+                                <option value="{{ prot.id }}">
+                                    {{ external_orgao_labels.get(prot.tipo_orgao or 'CARTORIO', prot.tipo_orgao or 'Orgao externo') }} · {{ prot.numero_protocolo or prot.descricao }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Descricao da exigencia</label>
+                            <textarea class="form-control form-control-sm" name="descricao" rows="2" required placeholder="O que o orgao exigiu?"></textarea>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Prazo de resposta</label>
+                                <input type="date" class="form-control form-control-sm" name="prazo_resposta" required>
+                            </div>
+                            <div class="stage-modal-field">
+                                <label class="stage-modal-field-label">Responsavel</label>
+                                <select class="form-select form-select-sm" name="responsavel_id">
+                                    <option value="">Sem responsavel</option>
+                                    {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending">Registrar exigencia</button>
+                    </div>
+                </form>
+                {% else %}
+                <div class="stage-modal-body">
+                    <div class="pmodal-external-empty">Nenhum protocolo em aberto. Cadastre o protocolo na Prefeitura ou no Cartorio para registrar novas exigencias.</div>
+                </div>
+                {% endif %}
+                {% if exig_records %}
+                <div class="pmodal-exig-list-wrap">
+                    <div class="pmodal-protocol-list">
+                        {% for exg in exig_records %}
+                        <div class="pmodal-protocol-item">
+                            <div class="pmodal-protocol-item-info">
+                                <strong>{{ exg.descricao }}</strong>
+                                <small>
+                                    {%- if exg.protocolo_numero %}Protocolo {{ exg.protocolo_numero }}{% else %}{{ external_orgao_labels.get(exg.tipo_orgao or 'CARTORIO', exg.tipo_orgao or 'Orgao externo') }}{% endif %}
+                                    {%- if exg.prazo_resposta %} · prazo {{ format_date(exg.prazo_resposta) }}{% endif %}
+                                    {%- if exg.responsavel_nome %} · {{ exg.responsavel_nome }}{% endif %}
+                                </small>
+                            </div>
+                            <button class="pmodal-btn-ghost pmodal-btn-ghost--success" type="submit" form="form-exig-concluir-{{ exg.id }}">Concluida</button>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+                {% for exg in exig_records %}
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" id="form-exig-concluir-{{ exg.id }}" hidden>
+                    <input type="hidden" name="action" value="update_exigencia">
+                    <input type="hidden" name="exigencia_id" value="{{ exg.id }}">
+                    <input type="hidden" name="tipo_registro" value="exigencia">
+                    <input type="hidden" name="status" value="concluido">
+                    <input type="hidden" name="prazo_resposta" value="{{ exg.prazo_resposta or today_iso }}">
+                    <input type="hidden" name="responsavel_id" value="{{ exg.responsavel_id or '' }}">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                </form>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
     {% endif %}
 
     {# ===== MODAL AVANCAR ===== #}
@@ -527,10 +631,10 @@
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
                             <div class="stage-modal-field">
                                 <label class="stage-modal-field-label">Origem</label>
+                                {# Origem "cartorio" removida: exigencias de orgao externo agora nascem de um protocolo, no botao Exigencia #}
                                 <select class="form-select form-select-sm" name="origem">
                                     <option value="interna">Interna</option>
                                     <option value="cliente">Cliente</option>
-                                    <option value="cartorio">Cartorio</option>
                                     <option value="campo">Campo</option>
                                     <option value="escritorio">Escritorio</option>
                                 </select>

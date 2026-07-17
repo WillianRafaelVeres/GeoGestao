@@ -1641,6 +1641,7 @@ def init_db():
             etapa_id INTEGER,
             tipo_orgao TEXT NOT NULL DEFAULT 'CARTORIO',
             tipo_registro TEXT NOT NULL DEFAULT 'exigencia',
+            protocolo_id INTEGER,
             data_protocolo TEXT,
             numero_protocolo TEXT,
             forma_protocolo TEXT,
@@ -1850,6 +1851,7 @@ def init_db():
     add_column_if_missing(db, "exigencias_cartorio", "data_protocolo", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "numero_protocolo", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "forma_protocolo", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "protocolo_id", "INTEGER")
     add_column_if_missing(db, "exigencias_cartorio", "data_pronto_retirada", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "data_retirada", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "observacoes", "TEXT")
@@ -6747,6 +6749,18 @@ def load_project_matrix_modal_context(project_id):
                 WHERE ex.projeto_id = p.id
                   AND COALESCE(ex.tipo_registro, 'exigencia') = 'protocolo'
             ), '[]'::jsonb) AS external_records,
+            COALESCE((
+                SELECT jsonb_agg(
+                    to_jsonb(exg) || jsonb_build_object('responsavel_nome', uexg.nome, 'protocolo_numero', prot.numero_protocolo)
+                    ORDER BY COALESCE(exg.prazo_resposta, '9999-12-31'), exg.id
+                )
+                FROM exigencias_cartorio exg
+                LEFT JOIN usuarios uexg ON uexg.id = exg.responsavel_id
+                LEFT JOIN exigencias_cartorio prot ON prot.id = exg.protocolo_id
+                WHERE exg.projeto_id = p.id
+                  AND COALESCE(exg.tipo_registro, 'exigencia') = 'exigencia'
+                  AND lower(COALESCE(exg.status, '')) NOT IN ('concluido', 'cancelado')
+            ), '[]'::jsonb) AS exigencia_records,
             (
                 SELECT to_jsonb(next_stage)
                 FROM (
@@ -6805,6 +6819,11 @@ def load_project_matrix_modal_context(project_id):
             if external_records
             else {}
         ),
+        "exigencias_by_project": (
+            {project_id: row["exigencia_records"] or []}
+            if row["exigencia_records"]
+            else {}
+        ),
         "next_stage_by_project": {project_id: next_stage} if next_stage else {},
         "matrix_options": matrix_options,
     }
@@ -6829,6 +6848,7 @@ def project_modal_fragment(project_id):
             pending_by_project=context["pending_by_project"],
             notes_by_project=context["notes_by_project"],
             external_controls_by_project=context["external_controls_by_project"],
+            exigencias_by_project=context["exigencias_by_project"],
             next_stage_by_project=context["next_stage_by_project"],
             usuarios=context["matrix_options"]["usuarios"],
             external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
@@ -8402,7 +8422,19 @@ def project_action(project_id):
             flash("Protocolo excluido.", "success")
 
     elif action == "add_exigencia":
-        tipo_orgao = normalize_external_orgao(request.form.get("tipo_orgao", "CARTORIO"))
+        protocolo_ref = None
+        if request.form.get("protocolo_id"):
+            protocolo_ref = query_db(
+                "SELECT * FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s AND tipo_registro = 'protocolo'",
+                (request.form.get("protocolo_id"), project_id),
+                one=True,
+            )
+            if not protocolo_ref:
+                flash("Protocolo nao encontrado. Cadastre o protocolo antes de registrar a exigencia.", "danger")
+                return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
+        tipo_orgao = normalize_external_orgao(
+            protocolo_ref["tipo_orgao"] if protocolo_ref else request.form.get("tipo_orgao", "CARTORIO")
+        )
         description = request.form.get("descricao", "").strip()
         prazo_resposta = request.form.get("prazo_resposta") or None
         if not description:
@@ -8411,18 +8443,24 @@ def project_action(project_id):
             flash("Informe o prazo de resposta da exigencia.", "danger")
         else:
             external_stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
+            etapa_exigencia_id = (
+                protocolo_ref["etapa_id"]
+                if protocolo_ref and protocolo_ref["etapa_id"]
+                else (external_stage["id"] if external_stage else None)
+            )
             exigencia_id = execute_db(
                 """
                 INSERT INTO exigencias_cartorio
-                    (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, data_recebimento, prazo_resposta,
+                    (projeto_id, cartorio_id, etapa_id, tipo_orgao, tipo_registro, protocolo_id, data_recebimento, prazo_resposta,
                      descricao, status, responsavel_id, observacoes, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, 'exigencia', %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, 'exigencia', %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     project_id,
-                    request.form.get("cartorio_id") or project["cartorio_id"],
-                    external_stage["id"] if external_stage else None,
+                    (protocolo_ref["cartorio_id"] if protocolo_ref else None) or request.form.get("cartorio_id") or project["cartorio_id"],
+                    etapa_exigencia_id,
                     tipo_orgao,
+                    protocolo_ref["id"] if protocolo_ref else None,
                     request.form.get("data_recebimento") or app_today().isoformat(),
                     prazo_resposta,
                     description,
@@ -8433,8 +8471,8 @@ def project_action(project_id):
                     app_now_iso(),
                 ),
             )
-            if external_stage:
-                execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", external_stage["id"]))
+            if etapa_exigencia_id:
+                execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", etapa_exigencia_id))
             origem_externa = normalize_text(external_stage_label(tipo_orgao)) or "orgaoexterno"
             execute_db(
                 """
@@ -8444,7 +8482,7 @@ def project_action(project_id):
                 """,
                 (
                     project_id,
-                    external_stage["id"] if external_stage else None,
+                    etapa_exigencia_id,
                     description,
                     origem_externa,
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
@@ -8462,7 +8500,7 @@ def project_action(project_id):
                 """,
                 (
                     project_id,
-                    external_stage["id"] if external_stage else None,
+                    etapa_exigencia_id,
                     f"Responder exigencia de {external_stage_label(tipo_orgao)}",
                     description,
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
