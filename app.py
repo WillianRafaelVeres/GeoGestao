@@ -11558,13 +11558,6 @@ def ensure_financeiro_schema():
     _financeiro_schema_ready = True
 
 
-def require_admin_or_redirect():
-    if can_admin():
-        return None
-    flash("Somente administrador pode acessar o financeiro.", "danger")
-    return redirect(url_for("dashboard"))
-
-
 def parse_payment_date(raw):
     raw = (raw or "").strip()
     if raw:
@@ -11578,9 +11571,6 @@ def parse_payment_date(raw):
 @app.route("/financeiro")
 @login_required
 def financeiro():
-    denied = require_admin_or_redirect()
-    if denied:
-        return denied
     ensure_financeiro_schema()
 
     rows = query_db(
@@ -11765,9 +11755,6 @@ def financeiro():
 @app.route("/financeiro/pagamento", methods=["POST"])
 @login_required
 def financeiro_registrar_pagamento():
-    denied = require_admin_or_redirect()
-    if denied:
-        return denied
     ensure_financeiro_schema()
     projeto_id = request.form.get("projeto_id")
     projeto = query_db("SELECT id, nome, valor FROM projetos WHERE id = %s", (projeto_id,), one=True)
@@ -11838,9 +11825,6 @@ def financeiro_registrar_pagamento():
 @app.route("/financeiro/custo", methods=["POST"])
 @login_required
 def financeiro_registrar_custo():
-    denied = require_admin_or_redirect()
-    if denied:
-        return denied
     ensure_financeiro_schema()
     projeto_id = request.form.get("projeto_id")
     projeto = query_db("SELECT id, nome, caminho_pasta FROM projetos WHERE id = %s", (projeto_id,), one=True)
@@ -11901,9 +11885,6 @@ def financeiro_registrar_custo():
 @app.route("/financeiro/pagamento/<int:payment_id>/excluir", methods=["POST"])
 @login_required
 def financeiro_excluir_pagamento(payment_id):
-    denied = require_admin_or_redirect()
-    if denied:
-        return denied
     ensure_financeiro_schema()
     payment = query_db("SELECT id, valor FROM projeto_pagamentos WHERE id = %s", (payment_id,), one=True)
     if not payment:
@@ -11917,9 +11898,6 @@ def financeiro_excluir_pagamento(payment_id):
 @app.route("/financeiro/custo/<int:cost_id>/cancelar", methods=["POST"])
 @login_required
 def financeiro_cancelar_custo(cost_id):
-    denied = require_admin_or_redirect()
-    if denied:
-        return denied
     ensure_financeiro_schema()
     cost = query_db(
         """
@@ -11946,9 +11924,6 @@ def financeiro_cancelar_custo(cost_id):
 @app.route("/financeiro/projeto/<int:project_id>/valor", methods=["POST"])
 @login_required
 def financeiro_definir_valor(project_id):
-    denied = require_admin_or_redirect()
-    if denied:
-        return denied
     projeto = query_db("SELECT id FROM projetos WHERE id = %s", (project_id,), one=True)
     if not projeto:
         flash("Projeto nao encontrado.", "danger")

@@ -31,9 +31,7 @@
             <a class="{{ 'active' if request.endpoint == 'cartorio_board' else '' }}" href="{{ url_for('cartorio_board') }}">Cartorio e orgaos</a>
             <a class="{{ 'active' if request.endpoint == 'reports' else '' }}" href="{{ url_for('reports') }}">Relatorios</a>
             <a class="{{ 'active' if request.endpoint == 'arquivados' else '' }}" href="{{ url_for('arquivados') }}">Arquivados</a>
-            {% if can_admin() %}
-                <a class="{{ 'active' if request.endpoint == 'financeiro' else '' }}" href="{{ url_for('financeiro') }}">Financeiro</a>
-            {% endif %}
+            <a class="{{ 'active' if request.endpoint == 'financeiro' else '' }}" href="{{ url_for('financeiro') }}">Financeiro</a>
             <div class="nav-label">Cadastros</div>
             <a class="{{ 'active' if request.endpoint == 'clients' else '' }}" href="{{ url_for('clients') }}">Clientes</a>
             <a class="{{ 'active' if request.endpoint == 'cartorios' else '' }}" href="{{ url_for('cartorios') }}">Cartorios</a>
