@@ -1796,6 +1796,7 @@ def init_db():
     add_column_if_missing(db, "projetos", "atualizado_em", "TEXT")
     add_column_if_missing(db, "projetos", "tipo_servico_legado", "TEXT")
     add_column_if_missing(db, "projetos", "servicos_adicionais", "TEXT")
+    add_column_if_missing(db, "projetos", "tipo_terreno", "TEXT")
     add_column_if_missing(db, "clientes", "tipo_pessoa", "TEXT DEFAULT 'fisica'")
     add_column_if_missing(db, "clientes", "tipo_cliente", "TEXT DEFAULT 'PESSOA_FISICA'")
     add_column_if_missing(db, "clientes", "nome_exibicao", "TEXT")
@@ -5512,6 +5513,11 @@ def normalize_project_process_type(value):
     return resolve_process_type_key((value or "").strip())
 
 
+def normalize_project_terrain_type(value):
+    value = (value or "").strip().upper()
+    return value if value in ("URBANO", "RURAL") else None
+
+
 def normalize_additional_process_types(values, primary_key=None):
     primary = normalize_project_process_type(primary_key) if primary_key else None
     normalized = []
@@ -7047,6 +7053,7 @@ def project_create():
 
         process_key = normalize_project_process_type(request.form.get("tipo_servico"))
         additional_processes = normalize_additional_process_types(request.form.getlist("servicos_adicionais"), process_key)
+        terreno = normalize_project_terrain_type(request.form.get("tipo_terreno"))
         valor = parse_currency_value(request.form.get("valor", "").strip())
 
         db = get_db()
@@ -7055,8 +7062,8 @@ def project_create():
             project_id = db.execute(
                 """
                 INSERT INTO projetos
-                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, servicos_adicionais, valor, caminho_pasta, observacoes, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, tipo_terreno, servicos_adicionais, valor, caminho_pasta, observacoes, criado_em, atualizado_em)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -7068,6 +7075,7 @@ def project_create():
                     request.form.get("uf", "").strip().upper(),
                     request.form.get("cartorio_id") or None,
                     process_key,
+                    terreno,
                     encode_process_list(additional_processes),
                     valor,
                     request.form.get("caminho_pasta", "").strip(),
@@ -7809,6 +7817,7 @@ def project_action(project_id):
         new_process_key = normalize_project_process_type(request.form.get("tipo_servico"))
         additional_processes = normalize_additional_process_types(request.form.getlist("servicos_adicionais"), new_process_key)
         old_process_key = normalize_project_process_type(project["tipo_servico"])
+        terreno = normalize_project_terrain_type(request.form.get("tipo_terreno"))
         workflow_initialized = project_has_workflow_initialized_db(get_db(), project_id)
 
         db = get_db()
@@ -7816,7 +7825,7 @@ def project_action(project_id):
             db.execute(
                 """
                 UPDATE projetos
-                SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s, servicos_adicionais = %s,
+                SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s, tipo_terreno = %s, servicos_adicionais = %s,
                     prioridade = %s, status = %s, prazo_critico = %s, responsavel_geral_id = %s, caminho_pasta = %s,
                     observacoes = %s, valor = %s, atualizado_em = %s
                 WHERE id = %s
@@ -7829,6 +7838,7 @@ def project_action(project_id):
                     request.form.get("uf", "").strip().upper(),
                     request.form.get("cartorio_id") or None,
                     new_process_key,
+                    terreno,
                     encode_process_list(additional_processes),
                     request.form.get("prioridade", "Media"),
                     request.form.get("status", "Em andamento"),

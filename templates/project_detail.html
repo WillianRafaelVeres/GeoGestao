@@ -25,6 +25,10 @@
         {% endif %}
     </div>
     <div>
+        <span>Terreno</span>
+        <strong>{{ 'Urbano' if project.tipo_terreno == 'URBANO' else ('Rural' if project.tipo_terreno == 'RURAL' else 'Nao informado') }}</strong>
+    </div>
+    <div>
         <span>Valor</span>
         <strong>{{ format_currency(project.valor) if project.valor is not none else 'Nao informado' }}</strong>
     </div>
@@ -181,12 +185,20 @@
                         <input class="form-control" name="cidade" value="{{ project.cidade or '' }}" readonly />
                     {% endif %}
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-4">
                     <label class="form-label">Tipo de processo</label>
                     <select class="form-select" name="tipo_servico" {% if not can_manage() %}disabled{% endif %}>
                         {% for process_type in process_types %}
                             <option value="{{ process_type.chave }}" {% if project.tipo_servico == process_type.chave %}selected{% endif %}>{{ process_type.nome }}</option>
                         {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Tipo de terreno</label>
+                    <select class="form-select" name="tipo_terreno" {% if not can_manage() %}disabled{% endif %}>
+                        <option value="" {% if not project.tipo_terreno %}selected{% endif %}>Nao informado</option>
+                        <option value="URBANO" {% if project.tipo_terreno == 'URBANO' %}selected{% endif %}>Urbano</option>
+                        <option value="RURAL" {% if project.tipo_terreno == 'RURAL' %}selected{% endif %}>Rural</option>
                     </select>
                 </div>
                 <div class="col-12">
