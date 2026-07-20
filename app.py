@@ -11630,6 +11630,8 @@ def ensure_financeiro_schema():
     add_column_if_missing(db, "projeto_custos", "status", "TEXT DEFAULT 'a_cobrar'")
     add_column_if_missing(db, "projeto_custos", "criado_em", "TEXT")
     add_column_if_missing(db, "projeto_custos", "usuario_id", "INTEGER")
+    add_column_if_missing(db, "projeto_custos", "anexo_path", "TEXT")
+    add_column_if_missing(db, "projeto_custos", "anexo_nome", "TEXT")
     db.execute_statements(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_custos_registro_uid ON projeto_custos (registro_uid)"
     )
@@ -11882,13 +11884,14 @@ def financeiro_registrar_pagamento():
     anexo_aviso = None
     comprovante = request.files.get("comprovante")
     if comprovante and comprovante.filename:
+        anexo_nome = f"Pagamento - {comprovante.filename}"
         dropbox_path, error = dropbox_upload_project_attachment(
-            projeto["caminho_pasta"], "Financeiro", comprovante.filename, comprovante.read()
+            projeto["caminho_pasta"], "Financeiro", anexo_nome, comprovante.read()
         )
         if dropbox_path:
             execute_db(
                 "UPDATE projeto_pagamentos SET anexo_path = %s, anexo_nome = %s WHERE id = %s",
-                (dropbox_path, comprovante.filename, payment_id),
+                (dropbox_path, anexo_nome, payment_id),
             )
         else:
             anexo_aviso = f" O comprovante nao pode ser anexado: {error}"
@@ -11946,7 +11949,7 @@ def financeiro_registrar_custo():
         return redirect(url_for("financeiro"))
 
     try:
-        execute_db(
+        cost_id = execute_db(
             """
             INSERT INTO projeto_custos
                 (projeto_id, descricao, categoria, valor, data_custo, observacoes, status,
@@ -11969,12 +11972,27 @@ def financeiro_registrar_custo():
         flash("Este custo ja havia sido salvo; o envio repetido foi ignorado.", "info")
         return redirect(url_for("financeiro"))
 
+    anexo_aviso = ""
+    comprovante = request.files.get("comprovante")
+    if comprovante and comprovante.filename:
+        anexo_nome = f"Custo - {comprovante.filename}"
+        dropbox_path, error = dropbox_upload_project_attachment(
+            projeto["caminho_pasta"], "Financeiro", anexo_nome, comprovante.read()
+        )
+        if dropbox_path:
+            execute_db(
+                "UPDATE projeto_custos SET anexo_path = %s, anexo_nome = %s WHERE id = %s",
+                (dropbox_path, anexo_nome, cost_id),
+            )
+        else:
+            anexo_aviso = f" O comprovante nao pode ser anexado: {error}"
+
     record_event(
         projeto["id"],
         "custo_financeiro",
         f"Custo registrado: {descricao} ({CATEGORIAS_CUSTO.get(categoria, 'Outro custo')}) - {format_currency(valor)}.",
     )
-    flash(f"Custo de {format_currency(valor)} registrado para cobranca futura.", "success")
+    flash(f"Custo de {format_currency(valor)} registrado para cobranca futura.{anexo_aviso}", "success" if not anexo_aviso else "warning")
     return redirect(url_for("financeiro"))
 
 

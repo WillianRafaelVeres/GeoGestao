@@ -100,7 +100,7 @@
                     <small class="text-muted">Valores registrados para cobranca futura</small>
                 </div>
                 <table class="table compact-table mb-0">
-                    <thead><tr><th>Data</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Registrado por</th><th></th></tr></thead>
+                    <thead><tr><th>Data</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Anexo</th><th>Registrado por</th><th></th></tr></thead>
                     <tbody>
                         {% for custo in costs_by_project.get(item.id, []) %}
                         <tr>
@@ -111,6 +111,13 @@
                             </td>
                             <td>{{ categorias_custo.get(custo.categoria, custo.categoria or '-') }}</td>
                             <td><strong>{{ format_currency(custo.valor) }}</strong></td>
+                            <td>
+                                {% if custo.anexo_path %}
+                                <a href="{{ dropbox_web_url(custo.anexo_path) }}" target="_blank" rel="noopener">{{ custo.anexo_nome or 'Ver comprovante' }}</a>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
                             <td>{{ custo.usuario_nome or '-' }}</td>
                             <td class="text-end">
                                 <form method="post" action="{{ url_for('financeiro_cancelar_custo', cost_id=custo.id) }}"
@@ -258,7 +265,7 @@
 
 <div class="modal fade" id="modalCusto" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
-        <form method="post" action="{{ url_for('financeiro_registrar_custo') }}" class="modal-content" data-modal-finance-form>
+        <form method="post" action="{{ url_for('financeiro_registrar_custo') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form>
             <input type="hidden" name="projeto_id" id="custoProjetoId">
             <input type="hidden" name="registro_uid" id="custoRegistroUid">
             <div class="modal-header">
@@ -293,6 +300,11 @@
                     <div class="col-12">
                         <label class="form-label">Observacoes</label>
                         <input class="form-control" name="observacoes" placeholder="Ex.: solicitado no cartorio, protocolo, observacao de cobranca..." autocomplete="off">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Comprovante <span class="text-muted">(opcional)</span></label>
+                        <input class="form-control" type="file" name="comprovante">
+                        <small class="form-text">Se anexado, e salvo automaticamente na pasta "Financeiro" dentro da pasta do projeto no Dropbox.</small>
                     </div>
                 </div>
             </div>
