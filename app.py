@@ -6828,6 +6828,40 @@ def load_project_matrix_modal_context(project_id):
     notes = row["notes"] or []
     external_records = row["external_records"] or []
     next_stage = row["next_stage"]
+
+    # Etapas reais do projeto (com id verdadeiro), usadas para o botao "Retornar etapa"
+    # e para permitir retomar direto numa etapa mais avancada que ja foi visitada antes
+    # (quando o projeto retornou e agora esta resolvendo a pendencia). etapas_projeto
+    # acima traz placeholders (id=None) para as colunas nao ativas, entao nao serve pra isso.
+    real_stage_rows = load_stage_rows(project_id)
+    active_stage_row = row["active_stage"] or {}
+    active_order = active_stage_row.get("etapa_ordem")
+    active_legacy_col = active_stage_row.get("legacy_etapa_ordem")
+
+    previous_stages = []
+    forward_options = []
+    if active_order is not None:
+        previous_stages = [
+            r for r in real_stage_rows
+            if r.get("id") != active_stage_id and (r.get("etapa_ordem") or 0) < active_order
+        ]
+        previous_stages.sort(key=lambda r: r.get("etapa_ordem") or 0, reverse=True)
+
+        max_reached_col = max(
+            [active_legacy_col or 0] + [r["legacy_etapa_ordem"] for r in real_stage_rows if r.get("data_inicio")]
+        )
+        forward_options = [
+            r for r in real_stage_rows
+            if (r.get("etapa_ordem") or 0) > active_order
+            and (r.get("legacy_etapa_ordem") or 0) <= (max_reached_col or 0)
+        ]
+        forward_options.sort(key=lambda r: r.get("etapa_ordem") or 0)
+        if next_stage and not any(r["id"] == next_stage["id"] for r in forward_options):
+            next_stage_full = next((r for r in real_stage_rows if r["id"] == next_stage["id"]), None)
+            if next_stage_full:
+                forward_options.append(next_stage_full)
+                forward_options.sort(key=lambda r: r.get("etapa_ordem") or 0)
+
     return {
         "project": project,
         "etapas_projeto": etapas_projeto,
@@ -6850,6 +6884,8 @@ def load_project_matrix_modal_context(project_id):
             else {}
         ),
         "next_stage_by_project": {project_id: next_stage} if next_stage else {},
+        "previous_stages_by_project": {project_id: previous_stages} if previous_stages else {},
+        "forward_options_by_project": {project_id: forward_options} if forward_options else {},
         "matrix_options": matrix_options,
     }
 
@@ -6876,6 +6912,8 @@ def project_modal_fragment(project_id):
             exigencias_by_project=context["exigencias_by_project"],
             exigencia_itens_by_project=context["exigencia_itens_by_project"],
             next_stage_by_project=context["next_stage_by_project"],
+            previous_stages_by_project=context["previous_stages_by_project"],
+            forward_options_by_project=context["forward_options_by_project"],
             usuarios=context["matrix_options"]["usuarios"],
             external_orgao_options=EXTERNAL_ORGAO_OPTIONS,
             external_orgao_labels=EXTERNAL_ORGAO_LABELS,
@@ -8037,11 +8075,17 @@ def project_action(project_id):
                     flash("Resolva as pendencias abertas deste projeto antes de avancar para a proxima etapa.", "danger")
                     return redirect(redirect_url)
 
-                # So permite avancar para a proxima coluna utilizada (sem pular etapas).
-                used_cols = sorted({row["legacy_etapa_ordem"] for row in load_stage_rows(project_id)})
+                # So permite pular direto para uma coluna se o projeto ja passou por ela antes
+                # (ex.: retornou de uma etapa mais avancada e agora esta retomando). Para uma
+                # coluna que o projeto nunca alcancou, so permite avancar uma de cada vez.
+                stage_rows_for_project = load_stage_rows(project_id)
+                used_cols = sorted({r["legacy_etapa_ordem"] for r in stage_rows_for_project})
+                max_reached_col = max(
+                    [old_col] + [r["legacy_etapa_ordem"] for r in stage_rows_for_project if r.get("data_inicio")]
+                )
                 next_cols = [col for col in used_cols if col > old_col]
-                if not next_cols or new_col != next_cols[0]:
-                    flash("Nao e permitido pular etapas. Avance apenas para a proxima etapa em sequencia.", "danger")
+                if new_col > max_reached_col and (not next_cols or new_col != next_cols[0]):
+                    flash("Nao e permitido pular etapas ainda nao alcancadas. Avance apenas para a proxima etapa em sequencia.", "danger")
                     return redirect(redirect_url)
 
             if is_return:

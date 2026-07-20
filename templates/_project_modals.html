@@ -35,12 +35,10 @@
     {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and external_has_protocols and not external_all_withdrawn %}
     {% set project_pendings = pending_by_project.get(project.id, []) %}
     {% set proxima_etapa = next_stage_by_project.get(project.id) %}
-    {% set ns_next = namespace(anteriores=[]) %}
-    {% for etapa in etapas_projeto %}
-        {% if etapa.etapa_ordem < active_stage.etapa_ordem and etapa.id %}
-            {% set ns_next.anteriores = ns_next.anteriores + [etapa] %}
-        {% endif %}
-    {% endfor %}
+    {# Etapas reais anteriores (com id verdadeiro) para o botao "Retornar etapa", e opcoes
+       de avanco que incluem etapas ja visitadas antes (retomar direto sem ir 1 a 1). #}
+    {% set previous_stages = previous_stages_by_project.get(project.id, []) %}
+    {% set forward_options = forward_options_by_project.get(project.id, []) %}
 
     {# ===== MODAL PRINCIPAL DO PROJETO ===== #}
     <div class="modal fade" id="project-modal-{{ project.id }}" tabindex="-1" aria-hidden="true">
@@ -186,7 +184,7 @@
                         <button class="pmodal-btn-advance" type="button" id="advance-btn-{{ active_stage.id }}"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-avancar-{{ project.id }}')"
                             {% if docs_travados %}style="display:none"{% endif %}>
-                            Avancar -> {{ proxima_etapa.etapa_nome }}
+                            {{ 'Retomar etapa...' if forward_options|length > 1 else 'Avancar -> ' ~ proxima_etapa.etapa_nome }}
                         </button>
                         {% endif %}
                         <button class="pmodal-btn-set-top" type="button"
@@ -195,7 +193,7 @@
                             ↑ Prioridade maxima
                         </button>
                         <div class="pmodal-actions-sec">
-                            {% if ns_next.anteriores %}
+                            {% if previous_stages %}
                             <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="button"
                                 onclick="openSubModal('project-modal-{{ project.id }}', 'modal-retornar-{{ project.id }}')">
                                 ← Retornar etapa
@@ -556,7 +554,7 @@
             <div class="modal-content stage-modal">
                 <div class="stage-modal-header stage-modal-header--advance">
                     <div>
-                        <div class="stage-modal-label">Avancar etapa</div>
+                        <div class="stage-modal-label">{{ 'Retomar etapa' if forward_options|length > 1 else 'Avancar etapa' }}</div>
                         <div class="stage-modal-title">{{ active_stage.etapa_nome }} -> {{ proxima_etapa.etapa_nome }}</div>
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -564,9 +562,21 @@
                 <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
                     <input type="hidden" name="action" value="move_stage">
                     <input type="hidden" name="next" value="{{ modal_next }}">
-                    <input type="hidden" name="nova_etapa_id" value="{{ proxima_etapa.id }}">
                     <input type="hidden" name="motivo" value="avanco">
                     <div class="stage-modal-body">
+                        {% if forward_options|length > 1 %}
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Avancar para</label>
+                            <select class="form-select form-select-sm" name="nova_etapa_id" required>
+                                {% for etapa in forward_options %}
+                                <option value="{{ etapa.id }}" {% if etapa.id == proxima_etapa.id %}selected{% endif %}>{{ etapa.etapa_nome }}</option>
+                                {% endfor %}
+                            </select>
+                            <small class="stage-modal-optional">Este projeto ja tinha alcancado uma etapa mais a frente. Voce pode retomar direto nela, sem avancar 1 a 1.</small>
+                        </div>
+                        {% else %}
+                        <input type="hidden" name="nova_etapa_id" value="{{ proxima_etapa.id }}">
+                        {% endif %}
                         <div class="stage-modal-field">
                             <label class="stage-modal-field-label">Responsavel</label>
                             <select class="form-select form-select-sm" name="responsavel_id">
@@ -594,7 +604,7 @@
     {% endif %}
 
     {# ===== MODAL RETORNAR ===== #}
-    {% if ns_next.anteriores %}
+    {% if previous_stages %}
     <div class="modal fade" id="modal-retornar-{{ project.id }}" tabindex="-1">
         <div class="modal-dialog modal-sm">
             <div class="modal-content stage-modal">
@@ -614,7 +624,7 @@
                             <label class="stage-modal-field-label">Retornar para</label>
                             <select class="form-select form-select-sm" name="nova_etapa_id" required>
                                 <option value="">Selecionar etapa...</option>
-                                {% for etapa in ns_next.anteriores | reverse %}
+                                {% for etapa in previous_stages %}
                                 <option value="{{ etapa.id }}">{{ etapa.etapa_nome }}</option>
                                 {% endfor %}
                             </select>
