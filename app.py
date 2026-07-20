@@ -107,6 +107,9 @@ APP_PUBLIC_URL = os.environ.get("GEOGESTAO_PUBLIC_URL", "").strip().rstrip("/")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY", "").strip()
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET", "").strip()
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN", "").strip()
+# Necessario porque o app tambem tem escopos de equipe (team_data.*): sem dizer qual
+# membro da equipe estamos representando, o Dropbox recusa qualquer chamada de arquivo.
+DROPBOX_TEAM_MEMBER_ID = os.environ.get("DROPBOX_TEAM_MEMBER_ID", "").strip()
 DROPBOX_PATH_ALIASES_RAW = os.environ.get(
     "DROPBOX_PATH_ALIASES",
     r"Y:\PASTAS=/SC/Pastas;Z:\PASTAS=/SC/Pastas;X:\PASTAS=/SC/Pastas",
@@ -378,6 +381,8 @@ BACKLOG_FUTURO = [
 
 app = Flask(__name__)
 app.config.from_mapping(SECRET_KEY=SECRET_KEY, DATABASE_URL=DATABASE_URL)
+# Limite de upload (anexos): evita que um arquivo grande demais trave o unico worker do gunicorn.
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 _static_version_cache = {}
 
@@ -5707,6 +5712,7 @@ def utility_processor():
         "checklist_requirement_conditional": REQUIREMENT_CONDITIONAL,
         "can_manage": can_manage,
         "can_admin": can_admin,
+        "dropbox_web_url": dropbox_web_url,
         "today_iso": app_today().isoformat(),
         "ufs": UFS,
     }
@@ -7282,6 +7288,10 @@ def _dropbox_api(endpoint, payload, use_path_root=True):
     """Chama a API do Dropbox. Retorna (json, None) ou (None, error_summary)."""
     token = _dropbox_access_token()
     headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    if DROPBOX_TEAM_MEMBER_ID:
+        # App com escopos de equipe (team_data.*): toda chamada precisa dizer
+        # qual membro representa, senao o Dropbox recusa com "invalid select user".
+        headers["Dropbox-API-Select-User"] = DROPBOX_TEAM_MEMBER_ID
     if use_path_root:
         # Conta Business: sem este header os caminhos resolvem na pasta do membro,
         # nao no espaco da equipe (onde ficam /SC/Pastas/...).
@@ -7301,6 +7311,65 @@ def _dropbox_api(endpoint, payload, use_path_root=True):
         except Exception:
             detail = ""
         return None, detail or f"http_{err.code}"
+
+
+def _dropbox_upload(dropbox_path, file_bytes):
+    """Envia o conteudo de um arquivo para o Dropbox (endpoint de conteudo, nao o de metadados/JSON)."""
+    token = _dropbox_access_token()
+    args = {"path": dropbox_path, "mode": "add", "autorename": True, "mute": False}
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Dropbox-API-Arg": json.dumps(args),
+        "Content-Type": "application/octet-stream",
+    }
+    if DROPBOX_TEAM_MEMBER_ID:
+        headers["Dropbox-API-Select-User"] = DROPBOX_TEAM_MEMBER_ID
+    headers["Dropbox-API-Path-Root"] = json.dumps({".tag": "root", "root": _dropbox_root_namespace()})
+    req = urllib.request.Request(
+        "https://content.dropboxapi.com/2/files/upload",
+        data=file_bytes,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()), None
+    except urllib.error.HTTPError as err:
+        try:
+            detail = json.loads(err.read().decode()).get("error_summary", "")
+        except Exception:
+            detail = ""
+        return None, detail or f"http_{err.code}"
+
+
+def dropbox_ensure_folder(dropbox_path):
+    """Garante que a pasta existe no Dropbox. Trata 'ja existe' como sucesso."""
+    result, error = _dropbox_api("files/create_folder_v2", {"path": dropbox_path, "autorename": False})
+    if result or (error and error.startswith("path/conflict/folder")):
+        return True, None
+    return False, error
+
+
+def dropbox_upload_project_attachment(project_caminho_pasta, subpasta, filename, file_bytes):
+    """Envia um anexo para {pasta do projeto}/{subpasta} no Dropbox.
+
+    Retorna (dropbox_path, None) em caso de sucesso, ou (None, mensagem_de_erro).
+    """
+    if not dropbox_enabled():
+        return None, "Integracao com o Dropbox nao esta configurada."
+    project_dropbox_path = dropbox_path_from_raw(project_caminho_pasta)
+    if not project_dropbox_path:
+        return None, "Este projeto nao tem uma pasta do Dropbox cadastrada (caminho da pasta)."
+    folder_path = f"{project_dropbox_path}/{subpasta}"
+    ok, error = dropbox_ensure_folder(folder_path)
+    if not ok:
+        return None, f"Nao foi possivel preparar a pasta '{subpasta}' no Dropbox: {error}"
+    safe_name = re.sub(r'[\\/:*?"<>|]+', "_", filename).strip() or "anexo"
+    upload_path = f"{folder_path}/{safe_name}"
+    metadata, error = _dropbox_upload(upload_path, file_bytes)
+    if not metadata:
+        return None, f"Falha ao enviar o arquivo para o Dropbox: {error}"
+    return metadata.get("path_display") or upload_path, None
 
 
 def _dropbox_root_namespace():
@@ -11547,6 +11616,8 @@ def ensure_financeiro_schema():
     # aceitar pagamentos identicos de proposito e ignorar reenvios do mesmo
     # formulario (clique duplo, F5 reenviando o POST).
     add_column_if_missing(db, "projeto_pagamentos", "registro_uid", "TEXT")
+    add_column_if_missing(db, "projeto_pagamentos", "anexo_path", "TEXT")
+    add_column_if_missing(db, "projeto_pagamentos", "anexo_nome", "TEXT")
     db.execute_statements(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_pagamentos_registro_uid ON projeto_pagamentos (registro_uid)"
     )
@@ -11767,7 +11838,7 @@ def financeiro():
 def financeiro_registrar_pagamento():
     ensure_financeiro_schema()
     projeto_id = request.form.get("projeto_id")
-    projeto = query_db("SELECT id, nome, valor FROM projetos WHERE id = %s", (projeto_id,), one=True)
+    projeto = query_db("SELECT id, nome, valor, caminho_pasta FROM projetos WHERE id = %s", (projeto_id,), one=True)
     if not projeto:
         flash("Projeto nao encontrado.", "danger")
         return redirect(url_for("financeiro"))
@@ -11787,7 +11858,7 @@ def financeiro_registrar_pagamento():
         flash("Este pagamento ja havia sido salvo — o envio repetido foi ignorado.", "info")
         return redirect(url_for("financeiro"))
     try:
-        execute_db(
+        payment_id = execute_db(
             """
             INSERT INTO projeto_pagamentos
                 (projeto_id, valor, forma_pagamento, data_pagamento, observacoes, criado_em, usuario_id, registro_uid)
@@ -11807,6 +11878,21 @@ def financeiro_registrar_pagamento():
     except psycopg2.errors.UniqueViolation:
         flash("Este pagamento ja havia sido salvo — o envio repetido foi ignorado.", "info")
         return redirect(url_for("financeiro"))
+
+    anexo_aviso = None
+    comprovante = request.files.get("comprovante")
+    if comprovante and comprovante.filename:
+        dropbox_path, error = dropbox_upload_project_attachment(
+            projeto["caminho_pasta"], "Financeiro", comprovante.filename, comprovante.read()
+        )
+        if dropbox_path:
+            execute_db(
+                "UPDATE projeto_pagamentos SET anexo_path = %s, anexo_nome = %s WHERE id = %s",
+                (dropbox_path, comprovante.filename, payment_id),
+            )
+        else:
+            anexo_aviso = f" O comprovante nao pode ser anexado: {error}"
+
     total_pago = scalar(
         get_db(), "SELECT COALESCE(SUM(valor), 0) FROM projeto_pagamentos WHERE projeto_id = %s", (projeto["id"],)
     )
@@ -11822,13 +11908,13 @@ def financeiro_registrar_pagamento():
     saldo = round(float(projeto["valor"] or 0.0) + float(total_custos or 0.0) - float(total_pago or 0.0), 2)
     if projeto["valor"] and saldo < -0.005:
         flash(
-            f"Pagamento registrado. Atencao: o total pago supera o valor do projeto em {format_currency(abs(saldo))}.",
+            f"Pagamento registrado. Atencao: o total pago supera o valor do projeto em {format_currency(abs(saldo))}.{anexo_aviso or ''}",
             "warning",
         )
     elif projeto["valor"]:
-        flash(f"Pagamento de {format_currency(valor)} registrado. Saldo restante: {format_currency(max(saldo, 0))}.", "success")
+        flash(f"Pagamento de {format_currency(valor)} registrado. Saldo restante: {format_currency(max(saldo, 0))}.{anexo_aviso or ''}", "success" if not anexo_aviso else "warning")
     else:
-        flash(f"Pagamento de {format_currency(valor)} registrado. Defina o valor do projeto para acompanhar o saldo.", "success")
+        flash(f"Pagamento de {format_currency(valor)} registrado. Defina o valor do projeto para acompanhar o saldo.{anexo_aviso or ''}", "success" if not anexo_aviso else "warning")
     return redirect(url_for("financeiro"))
 
 

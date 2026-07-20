@@ -129,7 +129,7 @@
             <div>
                 <strong class="d-block mb-2">Pagamentos recebidos</strong>
                 <table class="table compact-table mb-0">
-                    <thead><tr><th>Data</th><th>Valor</th><th>Forma</th><th>Observacoes</th><th>Registrado por</th><th></th></tr></thead>
+                    <thead><tr><th>Data</th><th>Valor</th><th>Forma</th><th>Observacoes</th><th>Anexo</th><th>Registrado por</th><th></th></tr></thead>
                     <tbody>
                         {% for pagamento in payments_by_project.get(item.id, []) %}
                         <tr>
@@ -137,6 +137,13 @@
                             <td><strong>{{ format_currency(pagamento.valor) }}</strong></td>
                             <td>{{ formas_pagamento.get(pagamento.forma_pagamento, pagamento.forma_pagamento or '-') }}</td>
                             <td>{{ pagamento.observacoes or '-' }}</td>
+                            <td>
+                                {% if pagamento.anexo_path %}
+                                <a href="{{ dropbox_web_url(pagamento.anexo_path) }}" target="_blank" rel="noopener">{{ pagamento.anexo_nome or 'Ver comprovante' }}</a>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
                             <td>{{ pagamento.usuario_nome or '-' }}</td>
                             <td class="text-end">
                                 <form method="post" action="{{ url_for('financeiro_excluir_pagamento', payment_id=pagamento.id) }}"
@@ -299,7 +306,7 @@
 
 <div class="modal fade" id="modalPagamento" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <form method="post" action="{{ url_for('financeiro_registrar_pagamento') }}" class="modal-content" data-modal-finance-form>
+        <form method="post" action="{{ url_for('financeiro_registrar_pagamento') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form>
             <input type="hidden" name="projeto_id" id="pagamentoProjetoId">
             <input type="hidden" name="registro_uid" id="pagamentoRegistroUid">
             <div class="modal-header">
@@ -330,6 +337,11 @@
                     <div class="col-12">
                         <label class="form-label">Observacoes</label>
                         <input class="form-control" name="observacoes" placeholder="Ex.: entrada, 2a parcela, sinal..." autocomplete="off">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Comprovante <span class="text-muted">(opcional)</span></label>
+                        <input class="form-control" type="file" name="comprovante">
+                        <small class="form-text">Se anexado, e salvo automaticamente na pasta "Financeiro" dentro da pasta do projeto no Dropbox.</small>
                     </div>
                 </div>
             </div>
