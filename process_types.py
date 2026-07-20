@@ -4,7 +4,7 @@ import unicodedata
 PROCESS_TYPES = [
     {
         "key": "RETIFICACAO_AREA_RURAL",
-        "nome": "Retificacao de Area Rural",
+        "nome": "Retificacao",
         "descricao": "Processo usado para corrigir area, perimetro, confrontacoes ou descricao da matricula.",
         "categoria": "Regularizacao cartorial",
         "usa_campo": "sim",
