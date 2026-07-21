@@ -243,7 +243,8 @@
 
                 <div class="col-12"><h3 class="form-section-title">Observacoes</h3></div>
                 <div class="col-12">
-                    <textarea class="form-control" name="observacoes" rows="3" placeholder="Anotacoes gerais sobre o projeto..." {% if not can_manage() %}readonly{% endif %}>{{ project.observacoes or '' }}</textarea>
+                    <textarea class="form-control project-observations-textarea" name="observacoes" rows="3"
+                              data-auto-grow placeholder="Anotacoes gerais sobre o projeto..." {% if not can_manage() %}readonly{% endif %}>{{ project.observacoes or '' }}</textarea>
                 </div>
 
                 {% if can_manage() %}

@@ -159,7 +159,30 @@ window.addEventListener("DOMContentLoaded", () => {
     initSingleSubmitForms();
     initMissionQuickActions();
     initMatrixLiveFilters();
+    initAutoGrowTextareas();
 });
+
+function initAutoGrowTextareas() {
+    const textareas = Array.from(document.querySelectorAll("textarea[data-auto-grow]"));
+    if (!textareas.length) return;
+
+    const resize = (textarea) => {
+        textarea.style.height = "auto";
+        const styles = window.getComputedStyle(textarea);
+        const minHeight = parseFloat(styles.minHeight) || 78;
+        const maxHeight = Math.max(minHeight, Math.min(520, Math.floor(window.innerHeight * 0.56)));
+        textarea.style.maxHeight = `${maxHeight}px`;
+        const nextHeight = Math.min(maxHeight, Math.max(minHeight, textarea.scrollHeight));
+        textarea.style.height = `${nextHeight}px`;
+        textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+    };
+
+    textareas.forEach((textarea) => {
+        resize(textarea);
+        textarea.addEventListener("input", () => resize(textarea));
+    });
+    window.addEventListener("resize", () => textareas.forEach(resize));
+}
 
 function initSingleSubmitForms() {
     document.querySelectorAll("form[data-single-submit]").forEach((form) => {

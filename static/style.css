@@ -2256,6 +2256,14 @@ a:hover { color: #1d4ed8; }
     font-size: 12px;
 }
 
+.project-observations-textarea {
+    box-sizing: border-box;
+    min-height: 78px;
+    max-height: 520px;
+    overflow-y: hidden;
+    resize: vertical;
+}
+
 @media (max-width: 1180px) {
     .report-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .bottleneck-item { grid-template-columns: 1fr; }
