@@ -15,6 +15,14 @@ projeto pelo Dropbox quando o app esta hospedado (Render):
    Dropbox instalado abre no Explorer a partir da pagina; quem nao tem navega online.
    Nao existe URL oficial do Dropbox que abra o Explorer direto do navegador.
 
+O sistema tambem envia comprovantes financeiros e notas de exigencia. Para notas:
+
+- projetos com o modelo novo usam `04_TEC/EXIG`;
+- projetos antigos com uma pasta `Processos` usam `Processos/Exigencia`;
+- outros projetos usam `Exigencia` na raiz;
+- o conteudo recebe um hash SHA-256 para impedir anexos identicos no mesmo projeto;
+- notas diferentes sao nomeadas `Nota de exigencia`, `Nota de exigencia V2`, `V3` e assim por diante.
+
 ## Caminhos aceitos em `caminho_pasta`
 
 - Caminho local sincronizado: `C:\SC Dropbox\SC\Pastas\PASTA 500 Fulano`
@@ -32,8 +40,9 @@ projeto pelo Dropbox quando o app esta hospedado (Render):
 
 - App "GeoGestao" no Dropbox App Console (Scoped access, Full Dropbox), autorizado
   pela conta Willian (Dropbox Business, equipe "SC").
-- Escopos: `account_info.read`, `files.metadata.read`, `sharing.read`, `sharing.write`.
-  Sem `files.content.*`: o token nao le nem altera conteudo de arquivos.
+- Escopos necessarios: `account_info.read`, `files.metadata.read`, `files.metadata.write`,
+  `files.content.write`, `sharing.read` e `sharing.write`. O sistema envia arquivos,
+  mas nao le o conteudo armazenado no Dropbox.
 - Env vars (no `.env` local e no dashboard do Render):
   `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`.
   O refresh token nao expira; o access token e renovado em memoria pela aplicacao.

@@ -464,7 +464,7 @@
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 {% if ns_prot_open.rows %}
-                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" enctype="multipart/form-data">
                     <input type="hidden" name="action" value="add_exigencia">
                     <input type="hidden" name="next" value="{{ modal_next }}">
                     <div class="stage-modal-body">
@@ -482,6 +482,12 @@
                             <label class="stage-modal-field-label">O que o orgao exigiu <span class="stage-modal-optional">(um item por linha)</span></label>
                             <textarea class="form-control form-control-sm" name="itens" rows="4" required
                                 placeholder="Ex.:&#10;Corrigir memorial descritivo&#10;Reconhecer firma do confrontante"></textarea>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Nota de exigencia <span class="stage-modal-optional">(opcional)</span></label>
+                            <input class="form-control form-control-sm" type="file" name="nota_exigencia"
+                                   accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx">
+                            <small class="stage-modal-optional">O sistema evita arquivos repetidos e organiza as novas notas como V2, V3 e seguintes no Dropbox.</small>
                         </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
                             <div class="stage-modal-field">
@@ -523,7 +529,25 @@
                                     {%- if exg.responsavel_nome %} · {{ exg.responsavel_nome }}{% endif %}
                                 </small>
                             </div>
-                            <button class="pmodal-btn-ghost pmodal-btn-ghost--success" type="submit" form="form-exig-concluir-{{ exg.id }}">Concluida</button>
+                            <div class="pmodal-exig-actions">
+                                {% if exg.anexo_path %}
+                                <a class="pmodal-btn-ghost" href="{{ dropbox_web_url(exg.anexo_path) }}" target="_blank" rel="noopener">
+                                    Abrir {{ exg.anexo_nome or 'nota' }}
+                                </a>
+                                {% else %}
+                                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}"
+                                      enctype="multipart/form-data" class="pmodal-exig-upload">
+                                    <input type="hidden" name="action" value="attach_exigencia_note">
+                                    <input type="hidden" name="exigencia_id" value="{{ exg.id }}">
+                                    <input type="hidden" name="next" value="{{ modal_next }}">
+                                    <input class="visually-hidden" type="file" name="nota_exigencia" id="nota-exigencia-{{ exg.id }}"
+                                           accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx" required
+                                           onchange="this.form.requestSubmit()">
+                                    <label class="pmodal-btn-ghost" for="nota-exigencia-{{ exg.id }}">Anexar nota</label>
+                                </form>
+                                {% endif %}
+                                <button class="pmodal-btn-ghost pmodal-btn-ghost--success" type="submit" form="form-exig-concluir-{{ exg.id }}">Concluida</button>
+                            </div>
                         </div>
                         {% endfor %}
                     </div>

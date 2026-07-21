@@ -25,6 +25,7 @@ import psycopg2.pool
 import unicodedata
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import quote, urlencode, urlparse
@@ -382,6 +383,9 @@ app = Flask(__name__)
 app.config.from_mapping(SECRET_KEY=SECRET_KEY, DATABASE_URL=DATABASE_URL)
 # Limite de upload (anexos): evita que um arquivo grande demais trave o unico worker do gunicorn.
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
+EXIGENCIA_ATTACHMENT_EXTENSIONS = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".doc", ".docx",
+}
 
 _static_version_cache = {}
 
@@ -1686,6 +1690,14 @@ def init_db():
             data_pronto_retirada TEXT,
             data_retirada TEXT,
             observacoes TEXT,
+            anexo_path TEXT,
+            anexo_nome TEXT,
+            anexo_nome_original TEXT,
+            anexo_hash TEXT,
+            anexo_versao INTEGER,
+            anexo_tamanho BIGINT,
+            anexo_criado_em TEXT,
+            anexo_usuario_id INTEGER,
             criado_em TEXT,
             atualizado_em TEXT,
             FOREIGN KEY(projeto_id) REFERENCES projetos(id),
@@ -1902,6 +1914,24 @@ def init_db():
     add_column_if_missing(db, "exigencias_cartorio", "data_pronto_retirada", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "data_retirada", "TEXT")
     add_column_if_missing(db, "exigencias_cartorio", "observacoes", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_path", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_nome", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_nome_original", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_hash", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_versao", "INTEGER")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_tamanho", "BIGINT")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_criado_em", "TEXT")
+    add_column_if_missing(db, "exigencias_cartorio", "anexo_usuario_id", "INTEGER")
+    db.execute_statements(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_exigencias_nota_hash_unique
+            ON exigencias_cartorio (projeto_id, anexo_hash)
+            WHERE COALESCE(tipo_registro, 'exigencia') = 'exigencia' AND anexo_hash IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_exigencias_nota_versao_unique
+            ON exigencias_cartorio (projeto_id, anexo_versao)
+            WHERE COALESCE(tipo_registro, 'exigencia') = 'exigencia' AND anexo_versao IS NOT NULL;
+        """
+    )
     seed_process_types(db)
     seed_process_stage_templates(db)
     seed_process_checklist_templates(db)
@@ -8151,6 +8181,206 @@ def dropbox_upload_project_attachment(project_caminho_pasta, subpasta, filename,
     return metadata.get("path_display") or upload_path, None
 
 
+def read_exigencia_attachment(upload):
+    """Valida e le uma nota de exigencia recebida pelo formulario."""
+    if not upload or not upload.filename:
+        return None, None
+    original_name = os.path.basename(upload.filename.replace("\\", "/")).strip()
+    extension = os.path.splitext(original_name)[1].lower()
+    if extension not in EXIGENCIA_ATTACHMENT_EXTENSIONS:
+        allowed = ", ".join(sorted(EXIGENCIA_ATTACHMENT_EXTENSIONS))
+        return None, f"Formato de nota nao permitido. Use: {allowed}."
+    file_bytes = upload.read()
+    if not file_bytes:
+        return None, "O arquivo da nota de exigencia esta vazio."
+    if not exigencia_attachment_signature_matches(extension, file_bytes):
+        return None, "O conteudo do arquivo nao corresponde ao formato informado."
+    return {
+        "bytes": file_bytes,
+        "hash": hashlib.sha256(file_bytes).hexdigest(),
+        "extension": extension,
+        "original_name": original_name[:255],
+        "size": len(file_bytes),
+    }, None
+
+
+def exigencia_attachment_signature_matches(extension, file_bytes):
+    if extension == ".pdf":
+        return b"%PDF-" in file_bytes[:1024]
+    if extension == ".png":
+        return file_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    if extension in (".jpg", ".jpeg"):
+        return file_bytes.startswith(b"\xff\xd8\xff")
+    if extension == ".webp":
+        return len(file_bytes) >= 12 and file_bytes[:4] == b"RIFF" and file_bytes[8:12] == b"WEBP"
+    if extension in (".tif", ".tiff"):
+        return file_bytes.startswith((b"II*\x00", b"MM\x00*"))
+    if extension == ".doc":
+        return file_bytes.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    if extension == ".docx":
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+                names = set(archive.namelist())
+                return "[Content_Types].xml" in names and "word/document.xml" in names
+        except (OSError, zipfile.BadZipFile):
+            return False
+    return False
+
+
+def find_duplicate_exigencia_attachment(project_id, content_hash, exclude_id=None):
+    params = [project_id, content_hash]
+    exclude_filter = ""
+    if exclude_id:
+        exclude_filter = "AND id != %s"
+        params.append(exclude_id)
+    return query_db(
+        f"""
+        SELECT id, anexo_nome, anexo_versao
+        FROM exigencias_cartorio
+        WHERE projeto_id = %s
+          AND anexo_hash = %s
+          AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+          {exclude_filter}
+        LIMIT 1
+        """,
+        params,
+        one=True,
+    )
+
+
+def next_exigencia_attachment_version(project_id):
+    return int(scalar(
+        get_db(),
+        """
+        SELECT COALESCE(MAX(anexo_versao), 0) + 1
+        FROM exigencias_cartorio
+        WHERE projeto_id = %s
+          AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+        """,
+        (project_id,),
+    ) or 1)
+
+
+def _dropbox_folder_entries(dropbox_path):
+    data, error = _dropbox_api(
+        "files/list_folder",
+        {"path": dropbox_path, "recursive": False, "include_deleted": False},
+    )
+    if not data:
+        return None, error
+    return data.get("entries", []), None
+
+
+def dropbox_exigencia_destination(project_caminho_pasta):
+    """Escolhe a pasta da nota para modelos novos e estruturas antigas."""
+    project_path = dropbox_path_from_raw(project_caminho_pasta)
+    if not project_path:
+        return None, None, "Este projeto nao tem uma pasta do Dropbox cadastrada."
+    entries, error = _dropbox_folder_entries(project_path)
+    if entries is None:
+        return None, None, f"Nao foi possivel verificar a estrutura da pasta do projeto: {error}"
+
+    folders = [entry for entry in entries if entry.get(".tag") == "folder"]
+    technical_folder = next(
+        (entry.get("name") for entry in folders if normalize_text(entry.get("name")) == "04tec"),
+        None,
+    )
+    process_folder = next(
+        (entry.get("name") for entry in folders if normalize_text(entry.get("name")).endswith("processos")),
+        None,
+    )
+    if technical_folder:
+        relative_folder = f"{technical_folder}/EXIG"
+    elif process_folder:
+        relative_folder = f"{process_folder}/Exigencia"
+    else:
+        relative_folder = "Exigencia"
+
+    destination = f"{project_path}/{relative_folder}"
+    ok, error = dropbox_ensure_folder(destination)
+    if not ok:
+        return None, None, f"Nao foi possivel criar a pasta '{relative_folder}' no Dropbox: {error}"
+    return destination, relative_folder, None
+
+
+def _dropbox_exigencia_versions(folder_path):
+    entries, error = _dropbox_folder_entries(folder_path)
+    if entries is None:
+        return [], error
+    versions = []
+    for entry in entries:
+        if entry.get(".tag") != "file":
+            continue
+        stem = os.path.splitext(entry.get("name") or "")[0]
+        match = re.fullmatch(r"(?:notade)?exigencia(?:v(\d+))?", normalize_text(stem))
+        if match:
+            versions.append(int(match.group(1) or 1))
+    return versions, None
+
+
+def dropbox_upload_exigencia_attachment(project_caminho_pasta, attachment, requested_version):
+    """Envia uma nota unica e devolve caminho, nome, versao e pasta utilizados."""
+    if not dropbox_enabled():
+        return None, "Integracao com o Dropbox nao esta configurada."
+    folder_path, relative_folder, error = dropbox_exigencia_destination(project_caminho_pasta)
+    if not folder_path:
+        return None, error
+
+    existing_versions, error = _dropbox_exigencia_versions(folder_path)
+    if error:
+        return None, f"Nao foi possivel verificar as notas existentes: {error}"
+    version = max(int(requested_version or 1), (max(existing_versions) + 1) if existing_versions else 1)
+    version_suffix = "" if version == 1 else f" V{version}"
+    filename = f"Nota de exigencia{version_suffix}{attachment['extension']}"
+    upload_path = f"{folder_path}/{filename}"
+    metadata, error = _dropbox_upload(upload_path, attachment["bytes"])
+    if not metadata:
+        return None, f"Falha ao enviar o arquivo para o Dropbox: {error}"
+    return {
+        "path": metadata.get("path_display") or upload_path,
+        "name": metadata.get("name") or filename,
+        "version": version,
+        "folder": relative_folder,
+    }, None
+
+
+def attach_exigencia_note(project, exigencia_id, attachment):
+    """Deduplica, envia ao Dropbox e vincula a nota ao registro da exigencia."""
+    duplicate = find_duplicate_exigencia_attachment(project["id"], attachment["hash"], exigencia_id)
+    if duplicate:
+        return None, None, duplicate
+    requested_version = next_exigencia_attachment_version(project["id"])
+    uploaded, error = dropbox_upload_exigencia_attachment(
+        project["caminho_pasta"], attachment, requested_version
+    )
+    if not uploaded:
+        return None, error, None
+    execute_db(
+        """
+        UPDATE exigencias_cartorio
+        SET anexo_path = %s, anexo_nome = %s, anexo_nome_original = %s,
+            anexo_hash = %s, anexo_versao = %s, anexo_tamanho = %s,
+            anexo_criado_em = %s, anexo_usuario_id = %s, atualizado_em = %s
+        WHERE id = %s AND projeto_id = %s
+          AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+        """,
+        (
+            uploaded["path"],
+            uploaded["name"],
+            attachment["original_name"],
+            attachment["hash"],
+            uploaded["version"],
+            attachment["size"],
+            app_now_iso(),
+            g.user["id"],
+            app_now_iso(),
+            exigencia_id,
+            project["id"],
+        ),
+    )
+    return uploaded, None, None
+
+
 def _dropbox_root_namespace():
     with _dropbox_lock:
         if _dropbox_cache["root_namespace_id"]:
@@ -9357,6 +9587,43 @@ def project_action(project_id):
                 )
             flash("Protocolo excluido.", "success")
 
+    elif action == "attach_exigencia_note":
+        exigencia_id = request.form.get("exigencia_id")
+        exigencia = query_db(
+            """
+            SELECT id, anexo_path
+            FROM exigencias_cartorio
+            WHERE id = %s AND projeto_id = %s
+              AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+            """,
+            (exigencia_id, project_id),
+            one=True,
+        )
+        if not exigencia:
+            flash("Exigencia nao encontrada.", "danger")
+        elif exigencia["anexo_path"]:
+            flash("Esta exigencia ja possui uma nota anexada.", "info")
+        else:
+            attachment, attachment_error = read_exigencia_attachment(request.files.get("nota_exigencia"))
+            if attachment_error:
+                flash(attachment_error, "danger")
+            elif not attachment:
+                flash("Selecione o arquivo da nota de exigencia.", "danger")
+            else:
+                uploaded, upload_error, duplicate = attach_exigencia_note(project, exigencia_id, attachment)
+                if duplicate:
+                    duplicate_name = duplicate["anexo_nome"] or f"Nota V{duplicate['anexo_versao'] or 1}"
+                    flash(f"Esta mesma nota ja foi anexada como {duplicate_name}. O arquivo repetido foi ignorado.", "info")
+                elif upload_error:
+                    flash(f"Nao foi possivel anexar a nota: {upload_error}", "warning")
+                else:
+                    record_event(
+                        project_id,
+                        "nota_exigencia_anexada",
+                        f"{uploaded['name']} anexada a exigencia #{exigencia_id} em {uploaded['folder']}.",
+                    )
+                    flash(f"{uploaded['name']} anexada na pasta {uploaded['folder']}.", "success")
+
     elif action == "add_exigencia":
         protocolo_ref = None
         if request.form.get("protocolo_id"):
@@ -9376,10 +9643,21 @@ def project_action(project_id):
         if not description and itens_exigidos:
             description = itens_exigidos[0] if len(itens_exigidos) == 1 else f"{itens_exigidos[0]} (+{len(itens_exigidos) - 1} itens)"
         prazo_resposta = request.form.get("prazo_resposta") or None
+        attachment, attachment_error = read_exigencia_attachment(request.files.get("nota_exigencia"))
+        duplicate_attachment = (
+            find_duplicate_exigencia_attachment(project_id, attachment["hash"])
+            if attachment and not attachment_error
+            else None
+        )
         if not description:
             flash("Informe o que o orgao exigiu (um item por linha).", "danger")
         elif not prazo_resposta:
             flash("Informe o prazo de resposta da exigencia.", "danger")
+        elif attachment_error:
+            flash(attachment_error, "danger")
+        elif duplicate_attachment:
+            duplicate_name = duplicate_attachment["anexo_nome"] or f"Nota V{duplicate_attachment['anexo_versao'] or 1}"
+            flash(f"Esta mesma nota ja foi anexada como {duplicate_name}. A exigencia repetida nao foi criada.", "info")
         else:
             external_stage = find_project_stage_by_external_type(get_db(), project_id, tipo_orgao)
             etapa_exigencia_id = (
@@ -9410,6 +9688,25 @@ def project_action(project_id):
                     app_now_iso(),
                 ),
             )
+            attachment_notice = ""
+            attachment_tone = "success"
+            if attachment:
+                uploaded, upload_error, duplicate = attach_exigencia_note(project, exigencia_id, attachment)
+                if duplicate:
+                    execute_db("DELETE FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (exigencia_id, project_id))
+                    duplicate_name = duplicate["anexo_nome"] or f"Nota V{duplicate['anexo_versao'] or 1}"
+                    flash(f"Esta mesma nota ja foi anexada como {duplicate_name}. A exigencia repetida nao foi criada.", "info")
+                    return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
+                if upload_error:
+                    attachment_notice = f" A exigencia foi registrada, mas a nota nao foi anexada: {upload_error}"
+                    attachment_tone = "warning"
+                else:
+                    attachment_notice = f" {uploaded['name']} foi salva em {uploaded['folder']}."
+                    record_event(
+                        project_id,
+                        "nota_exigencia_anexada",
+                        f"{uploaded['name']} anexada a exigencia #{exigencia_id} em {uploaded['folder']}.",
+                    )
             if etapa_exigencia_id:
                 execute_db("UPDATE projeto_etapas SET status = 'atencao', subetapa_ativa = %s WHERE id = %s", ("Exigencia em correcao", etapa_exigencia_id))
             origem_externa = normalize_text(external_stage_label(tipo_orgao)) or "orgaoexterno"
@@ -9464,9 +9761,12 @@ def project_action(project_id):
                 description,
             )
             if moved_to_pending:
-                flash(f"Exigencia registrada. Projeto movido para {moved_to_pending['etapa_nome']}.", "success")
+                flash(
+                    f"Exigencia registrada. Projeto movido para {moved_to_pending['etapa_nome']}.{attachment_notice}",
+                    attachment_tone,
+                )
             else:
-                flash("Exigencia registrada e tarefa criada.", "success")
+                flash(f"Exigencia registrada e tarefa criada.{attachment_notice}", attachment_tone)
 
     elif action == "update_exigencia":
         exigencia_id = request.form.get("exigencia_id")

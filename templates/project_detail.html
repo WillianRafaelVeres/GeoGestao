@@ -479,7 +479,7 @@
             <div class="panel-header"><h2>Controle de orgao externo</h2><small>Protocolos em prefeitura, cartorio, SIGEF, INCRA, SICAR ou outro orgao.</small></div>
             <div class="table-responsive">
                 <table class="table compact-table">
-                    <thead><tr><th>Tipo</th><th>Registro</th><th>Descricao</th><th>Protocolo</th><th>Responsavel</th><th>Prazo</th><th>Pronto</th><th>Retirado</th><th>Status</th><th>Salvar</th></tr></thead>
+                    <thead><tr><th>Tipo</th><th>Registro</th><th>Descricao</th><th>Protocolo</th><th>Nota</th><th>Responsavel</th><th>Prazo</th><th>Pronto</th><th>Retirado</th><th>Status</th><th>Salvar</th></tr></thead>
                     <tbody>
                         {% for exigencia in exigencias %}
                             {% set status_key = exigencia.status|lower %}
@@ -493,6 +493,20 @@
                                 <td>
                                     {% if exigencia.data_protocolo %}{{ format_date(exigencia.data_protocolo) }}{% else %}-{% endif %}
                                     {% if exigencia.numero_protocolo %}<small>{{ exigencia.numero_protocolo }}</small>{% endif %}
+                                </td>
+                                <td>
+                                    {% if exigencia.tipo_registro == 'exigencia' and exigencia.anexo_path %}
+                                        <a class="btn btn-outline-primary btn-sm" href="{{ dropbox_web_url(exigencia.anexo_path) }}" target="_blank" rel="noopener">Abrir {{ exigencia.anexo_nome or 'nota' }}</a>
+                                    {% elif exigencia.tipo_registro == 'exigencia' %}
+                                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" enctype="multipart/form-data">
+                                            <input type="hidden" name="action" value="attach_exigencia_note" />
+                                            <input type="hidden" name="exigencia_id" value="{{ exigencia.id }}" />
+                                            <input type="hidden" name="next" value="{{ url_for('project_detail', project_id=project.id) }}#cartorio" />
+                                            <input class="visually-hidden" type="file" name="nota_exigencia" id="detail-nota-exigencia-{{ exigencia.id }}"
+                                                   accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx" required onchange="this.form.requestSubmit()" />
+                                            <label class="btn btn-outline-primary btn-sm" for="detail-nota-exigencia-{{ exigencia.id }}">Anexar nota</label>
+                                        </form>
+                                    {% else %}-{% endif %}
                                 </td>
                                 <td colspan="6">
                                     <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="inline-update">
@@ -528,7 +542,7 @@
                                 </td>
                             </tr>
                         {% else %}
-                            <tr><td colspan="10">Nenhum protocolo ou exigencia registrado.</td></tr>
+                            <tr><td colspan="11">Nenhum protocolo ou exigencia registrado.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
