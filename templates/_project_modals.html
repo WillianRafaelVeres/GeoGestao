@@ -152,7 +152,12 @@
                     {% endif %}
 
                     <div class="pmodal-actions">
-                        {% if external_stage_blocked %}
+                        {% if external_can_skip and proxima_etapa %}
+                        <button class="pmodal-btn-advance" type="button"
+                            onclick="skipExternalStageFromModal({{ project.id }}, {{ active_stage.id }}, this)">
+                            Avancar -> {{ proxima_etapa.etapa_nome }}
+                        </button>
+                        {% elif external_stage_blocked %}
                         <span class="pmodal-advance-blocked" data-external-lock title="Use o controle de {{ active_external_label }} para liberar o avanco">
                             Retire todos os protocolos para avancar
                         </span>

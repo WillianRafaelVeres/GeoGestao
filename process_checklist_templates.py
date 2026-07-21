@@ -1,4 +1,5 @@
 from process_types import PROCESS_TYPE_BY_KEY, resolve_process_type_key
+from process_stage_templates import RETIRED_WORKFLOW_STAGE_KEYS
 
 
 REQUIREMENT_REQUIRED = "OBRIGATORIO"
@@ -53,7 +54,7 @@ STAGE_LABELS = {
     "ASSINATURAS": "Assinaturas / Anuencias",
     "PREFEITURA": "Prefeitura",
     "ORGAO_EXTERNO": "Cartorio",
-    "PENDENCIAS": "Pendencias / Exigencias",
+    "PENDENCIAS": "Exigencias",
     "ENTREGA": "Entrega / Encerramento",
     "FINALIZADO": "Finalizado",
 }
@@ -915,6 +916,8 @@ def build_process_checklist_templates():
         source = PROCESS_CHECKLIST_SOURCE.get(process_type_key, OUTRO)
         rows = []
         for stage_key, items in source.items():
+            if stage_key in RETIRED_WORKFLOW_STAGE_KEYS:
+                continue
             for index, data in enumerate(items, 1):
                 row = dict(data)
                 row["process_type_key"] = process_type_key

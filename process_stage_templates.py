@@ -22,6 +22,14 @@ EXTERNAL_ACTOR_CITY_HALL = "PREFEITURA"
 EXTERNAL_ACTOR_LAWYER_COURT = "ADVOGADO_FORUM"
 EXTERNAL_ACTOR_MIXED = "MISTO"
 
+RETIRED_WORKFLOW_STAGE_KEYS = frozenset({
+    "ANALISE",
+    "PREPARACAO",
+    "CONFERENCIA",
+    "PREFEITURA",
+    "ENTREGA",
+})
+
 MACRO_STAGES = [
     {
         "key": "ORCAMENTO",
@@ -113,8 +121,8 @@ MACRO_STAGES = [
     },
     {
         "key": "PENDENCIAS",
-        "name": "Pendencias / Exigencias",
-        "description": "Tratamento de exigencias, pendencias, correcoes e retornos.",
+        "name": "Exigencias",
+        "description": "Tratamento das exigencias recebidas de orgaos externos.",
         "order": 12,
         "default_responsible_role": "responsavel_do_caso",
         "default_deadline_days": 5,
@@ -382,14 +390,14 @@ PROCESS_STAGE_OVERRIDES = {
 
 def build_stage_template(process_type_key, macro_stage, override):
     applicability = override.get("applicability", APPLICABILITY_NOT_APPLICABLE)
-    if macro_stage["key"] == "PREFEITURA":
+    if macro_stage["key"] in RETIRED_WORKFLOW_STAGE_KEYS:
         override = {
             **override,
             "applicability": APPLICABILITY_NOT_APPLICABLE,
             "show_in_matrix": False,
             "show_in_project": False,
             "active": True,
-            "notes": "Etapa unificada em Orgao externo.",
+            "notes": "Etapa retirada do fluxo operacional simplificado.",
         }
         applicability = APPLICABILITY_NOT_APPLICABLE
     can_skip = override.get("can_skip")

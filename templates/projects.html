@@ -1432,6 +1432,27 @@ function replaceExternalProtocolRow(section, protocol) {
     if (empty) empty.remove();
 }
 
+async function skipExternalStageFromModal(projectId, stageId, button) {
+    if (!confirm('Este projeto nao precisa de protocolo externo? Avancar para a proxima etapa?')) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Avancando...';
+    try {
+        const response = await fetch(`/api/project/${projectId}/external-stage/skip`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stage_id: stageId }),
+        });
+        const data = await readProjectJsonResponse(response, 'Nao foi possivel avancar a etapa.');
+        showMatrixActionFeedback(data.message || 'Etapa avancada.', 'success');
+        await refreshProjectMatrixUi(projectId, { reopenModal: true });
+    } catch (error) {
+        showMatrixActionFeedback(error.message || 'Nao foi possivel avancar a etapa.', 'danger');
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
 function initExternalProtocolControls(root = document) {
     root.querySelectorAll('[data-external-protocol-add]').forEach((form) => {
         if (form.dataset.externalProtocolReady === '1') return;

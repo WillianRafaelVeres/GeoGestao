@@ -1,5 +1,17 @@
 # Modelos de Processo - GeoGestao
 
+## Fluxo operacional atual
+
+A matriz usa somente etapas que possuem uma coluna operacional propria:
+
+`Orcamento -> Documentos -> Medicao -> Processamento -> Escritorio -> Assinaturas -> Orgao externo -> Exigencias -> Finalizado`
+
+- Cada tipo de processo ativa apenas as colunas aplicaveis ao trabalho.
+- `ANALISE`, `PREPARACAO`, `CONFERENCIA`, `PREFEITURA` e `ENTREGA` permanecem apenas como chaves historicas e nao geram cliques ou colunas.
+- Uma exigencia move o projeto de `ORGAO_EXTERNO` para `PENDENCIAS` (exibida como **Exigencias**).
+- Ao concluir todas as exigencias, o projeto retorna para `ORGAO_EXTERNO`.
+- Retirar todos os protocolos nao finaliza o projeto automaticamente. O usuario decide quando avancar para `FINALIZADO`.
+
 ## Fase 1 - Catalogo de tipos de processo
 
 Esta fase cria a base oficial de tipos de processo/servico usados nos projetos do GeoGestao.
@@ -447,7 +459,7 @@ Internamente, a matriz continua alinhada por colunas macro gerais. Quando uma et
 Exemplo:
 
 - `ORGAO_EXTERNO` aparece na coluna operacional de cartorio/orgao;
-- `ENTREGA` e `FINALIZADO` continuam agrupadas na area final do fluxo;
+- `FINALIZADO` e a ultima coluna e depende de avanco manual;
 - etapas nao aplicaveis nao aparecem como atraso.
 
 ### Aba Etapas

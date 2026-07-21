@@ -80,6 +80,7 @@ from process_stage_templates import (
     APPLICABILITY_OPTIONAL,
     APPLICABILITY_REQUIRED,
     PROCESS_STAGE_TEMPLATES,
+    RETIRED_WORKFLOW_STAGE_KEYS,
     get_applicable_stages_for_process as get_config_applicable_stages_for_process,
     get_stage_template_for_process as get_config_stage_template_for_process,
 )
@@ -216,6 +217,7 @@ REPORT_STAGE_DEFAULT_DAYS = {
     "cartorio": 14,
     "orgaoexterno": 14,
     "pendencia": 7,
+    "exigencias": 7,
     "finalizado": 1,
     "arquivado": 1,
 }
@@ -234,56 +236,44 @@ DEFAULT_STAGES = [
         "checklist": ["Matricula recebida", "Documentos pessoais", "Documentos do imovel", "Pendencias documentais revisadas"],
     },
     {
-        "nome": "Analise",
-        "ordem": 3,
-        "cor": "primary",
-        "checklist": ["Matricula analisada", "Confrontantes conferidos", "Procedimento definido"],
-    },
-    {
         "nome": "Medicao",
-        "ordem": 4,
+        "ordem": 3,
         "cor": "warning",
         "checklist": ["Campo agendado", "Equipe definida", "Levantamento executado", "Fotos/croqui anexados"],
     },
     {
         "nome": "Processamento",
-        "ordem": 5,
+        "ordem": 4,
         "cor": "primary",
         "checklist": ["Dados baixados", "Processamento concluido", "Coordenadas conferidas", "Arquivos exportados"],
     },
     {
         "nome": "Escritorio",
-        "ordem": 6,
+        "ordem": 5,
         "cor": "dark",
         "checklist": ["Planta iniciada", "Memorial iniciado", "Documentacao obrigatoria revisada", "Conferencia interna", "Planta PDF", "Planta DWG/DXF", "Camadas conferidas", "Arquivo final validado", "Memorial descritivo", "ART/RRT", "Requerimento", "Anexos conferidos"],
     },
     {
         "nome": "Assinaturas",
-        "ordem": 9,
+        "ordem": 6,
         "cor": "warning",
         "checklist": ["Cliente notificado", "Assinaturas coletadas", "Reconhecimentos conferidos"],
     },
     {
-        "nome": "Prefeitura",
-        "ordem": 10,
-        "cor": "info",
-        "checklist": ["Protocolo registrado", "Exigencias acompanhadas", "Pronto para retirada", "Retirada concluida"],
-    },
-    {
         "nome": "Orgao externo",
-        "ordem": 11,
+        "ordem": 7,
         "cor": "danger",
         "checklist": ["Protocolo registrado", "Exigencias acompanhadas", "Pronto para retirada", "Retirada concluida"],
     },
     {
-        "nome": "Pendencia",
-        "ordem": 12,
+        "nome": "Exigencias",
+        "ordem": 8,
         "cor": "warning",
-        "checklist": ["Pendencia classificada", "Responsavel definido", "Prazo acompanhado", "Resolucao conferida"],
+        "checklist": ["Exigencia classificada", "Responsavel definido", "Prazo acompanhado", "Resolucao conferida"],
     },
     {
         "nome": "Finalizado",
-        "ordem": 13,
+        "ordem": 9,
         "cor": "success",
         "checklist": ["Entrega ao cliente", "Saldo recebido", "Pasta final organizada", "Backup realizado"],
     },
@@ -298,6 +288,10 @@ STAGE_ALIASES = {
     "finalizado": "finalizado",
     "orgaoexterno": "cartorio",
     "orgao": "cartorio",
+    "pendencia": "exigencias",
+    "pendencias": "exigencias",
+    "exigencia": "exigencias",
+    "exigencias": "exigencias",
 }
 
 PROCESS_STAGE_TO_LEGACY_STAGE = {
@@ -312,7 +306,7 @@ PROCESS_STAGE_TO_LEGACY_STAGE = {
     "ASSINATURAS": "assinaturas",
     "PREFEITURA": "prefeitura",
     "ORGAO_EXTERNO": "cartorio",
-    "PENDENCIAS": "pendencia",
+    "PENDENCIAS": "exigencias",
     "ENTREGA": "finalizado",
     "FINALIZADO": "finalizado",
 }
@@ -346,7 +340,7 @@ PROCESS_CHECKLIST_STAGE_NAMES = {
     "ASSINATURAS": "Assinaturas / Anuencias",
     "PREFEITURA": "Prefeitura",
     "ORGAO_EXTERNO": "Orgao externo",
-    "PENDENCIAS": "Pendencias / Exigencias",
+    "PENDENCIAS": "Exigencias",
     "ENTREGA": "Entrega / Encerramento",
     "FINALIZADO": "Finalizado",
 }
@@ -1916,6 +1910,7 @@ def init_db():
     normalize_legacy_project_process_types(db)
     migrate_legacy_clients(db)
     normalize_stage_models(db)
+    sync_existing_project_workflows(db)
     backfill_project_prefeituras(db)
     db.execute(
         """
@@ -2057,18 +2052,19 @@ def seed_process_checklist_templates(db, process_type_keys=None):
     for process_type_key, checklist_templates in PROCESS_CHECKLIST_TEMPLATES.items():
         if process_type_keys is not None and process_type_key not in process_type_keys:
             continue
+        managed_stage_keys = {"ORCAMENTO", *RETIRED_WORKFLOW_STAGE_KEYS}
         desired_templates = {
             (template["stage_key"], template["title"])
             for template in checklist_templates
-            if template["stage_key"] == "ORCAMENTO"
+            if template["stage_key"] in managed_stage_keys
         }
         existing_templates = db.execute(
             """
             SELECT id, stage_key, title
             FROM process_checklist_templates
-            WHERE process_type_key = %s AND stage_key = 'ORCAMENTO'
+            WHERE process_type_key = %s AND stage_key = ANY(%s::text[])
             """,
-            (process_type_key,),
+            (process_type_key, sorted(managed_stage_keys)),
         ).fetchall()
         stale_template_ids = [
             row["id"]
@@ -2905,6 +2901,208 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
         "created_checklist": created_checklist,
         "warnings": [],
     }
+
+
+def sync_project_workflow_stage_templates(db, project_id, process_type_key):
+    """Atualiza o fluxo existente sem reinicia-lo e pula etapas retiradas."""
+    process_key = normalize_project_process_type(process_type_key)
+    project = first_row(db, "SELECT * FROM projetos WHERE id = %s", (project_id,))
+    if not project:
+        return None
+
+    templates = db.execute(
+        """
+        SELECT *
+        FROM process_stage_templates
+        WHERE process_type_key = %s AND active = 1
+        ORDER BY stage_order, id
+        """,
+        (process_key,),
+    ).fetchall()
+    template_by_key = {row["stage_key"]: row for row in templates}
+    stages = db.execute(
+        """
+        SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+               COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s AND pe.stage_key IS NOT NULL AND pe.stage_key != ''
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        """,
+        (project_id,),
+    ).fetchall()
+    current_stage = next((row for row in stages if row["id"] == project["etapa_atual_id"]), None)
+    current_was_retired = False
+    now = app_now_iso()
+
+    for stage_row in stages:
+        template = template_by_key.get(stage_row["stage_key"])
+        if not template:
+            continue
+        visible = (
+            template["applicability"] != APPLICABILITY_NOT_APPLICABLE
+            and bool(template["show_in_project"])
+        )
+        if stage_row["id"] == project["etapa_atual_id"] and not visible:
+            current_was_retired = True
+        if visible:
+            workflow_active = 1 if template["applicability"] == APPLICABILITY_REQUIRED else stage_row["workflow_active"]
+            if stage_row["id"] == project["etapa_atual_id"]:
+                workflow_active = 1
+            status = stage_row["status"]
+            data_fim = stage_row["data_fim"]
+        else:
+            workflow_active = 0
+            status = stage_row["status"] if (stage_row["status"] or "").lower() in ("concluido", "cancelado") else "nao aplicavel"
+            data_fim = stage_row["data_fim"] or (now if stage_row["id"] == project["etapa_atual_id"] else None)
+
+        stage_name = "Orgao externo" if template["stage_key"] == "ORGAO_EXTERNO" else template["stage_name"]
+        description = (
+            "Protocolo e retirada em prefeitura, cartorio, SIGEF, INCRA, SICAR ou outro orgao externo."
+            if template["stage_key"] == "ORGAO_EXTERNO"
+            else template["description"]
+        )
+        db.execute(
+            """
+            UPDATE projeto_etapas
+            SET process_type_key = %s, stage_name = %s, stage_order = %s, applicability = %s,
+                workflow_active = %s, can_skip = %s, blocks_completion = %s,
+                show_in_matrix = %s, show_in_project = %s, external_actor_type = %s,
+                template_stage_id = %s, stage_description = %s, model_notes = %s,
+                status = %s, data_fim = %s
+            WHERE id = %s
+            """,
+            (
+                process_key,
+                stage_name,
+                template["stage_order"],
+                template["applicability"],
+                workflow_active,
+                1 if template["can_skip"] else 0,
+                1 if template["blocks_completion"] else 0,
+                1 if template["show_in_matrix"] else 0,
+                1 if template["show_in_project"] else 0,
+                template["external_actor_type"],
+                template["id"],
+                description,
+                template["notes"],
+                status,
+                data_fim,
+                stage_row["id"],
+            ),
+        )
+
+    if not current_was_retired or not current_stage:
+        return None
+
+    next_stage = db.execute(
+        """
+        SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome,
+               COALESCE(pe.stage_order, em.ordem) AS etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id AND em.ativa = 1
+        WHERE pe.projeto_id = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+          AND COALESCE(pe.workflow_active, 1) = 1
+          AND COALESCE(pe.applicability, '') != %s
+          AND lower(COALESCE(pe.status, '')) NOT IN ('concluido', 'cancelado', 'nao aplicavel')
+          AND COALESCE(pe.stage_order, em.ordem) > %s
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        LIMIT 1
+        """,
+        (project_id, APPLICABILITY_NOT_APPLICABLE, current_stage["etapa_ordem"]),
+    ).fetchone()
+    if not next_stage:
+        return None
+
+    db.execute(
+        """
+        UPDATE projeto_etapas
+        SET status = 'em andamento', data_inicio = COALESCE(data_inicio, %s), data_fim = NULL,
+            progresso = CASE WHEN COALESCE(progresso, 0) < 10 THEN 10 ELSE progresso END
+        WHERE id = %s
+        """,
+        (now, next_stage["id"]),
+    )
+    db.execute(
+        "UPDATE projetos SET etapa_atual_id = %s, status = 'Em andamento', atualizado_em = %s WHERE id = %s",
+        (next_stage["id"], now, project_id),
+    )
+    db.execute(
+        """
+        INSERT INTO movimentacoes_etapa
+            (projeto_id, etapa_anterior_id, etapa_nova_id, etapa_anterior, etapa_nova,
+             motivo, observacao, responsavel_id, usuario_id, criado_em)
+        VALUES (%s, %s, %s, %s, %s, 'simplificacao_fluxo', %s, %s, NULL, %s)
+        """,
+        (
+            project_id,
+            current_stage["id"],
+            next_stage["id"],
+            current_stage["etapa_nome"],
+            next_stage["etapa_nome"],
+            "Etapa interna retirada; projeto movido para a proxima coluna operacional.",
+            next_stage["responsavel_id"],
+            now,
+        ),
+    )
+    db.execute(
+        """
+        UPDATE project_stage_history
+        SET exited_at = COALESCE(exited_at, %s)
+        WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL
+        """,
+        (now, project_id, current_stage["id"]),
+    )
+    if not first_row(
+        db,
+        "SELECT id FROM project_stage_history WHERE project_id = %s AND stage_id = %s AND exited_at IS NULL LIMIT 1",
+        (project_id, next_stage["id"]),
+    ):
+        db.execute(
+            """
+            INSERT INTO project_stage_history
+                (project_id, stage_id, stage_key, stage_name, entered_at, exited_at,
+                 responsible_id, responsible_name, reason, created_at)
+            VALUES (%s, %s, %s, %s, %s, NULL, %s, NULL, 'simplificacao_fluxo', %s)
+            """,
+            (
+                project_id,
+                next_stage["id"],
+                next_stage["stage_key"],
+                next_stage["etapa_nome"],
+                now,
+                next_stage["responsavel_id"],
+                now,
+            ),
+        )
+    db.execute(
+        """
+        INSERT INTO eventos_historico (projeto_id, usuario_id, tipo_evento, descricao, criado_em)
+        VALUES (%s, NULL, 'simplificacao_fluxo', %s, %s)
+        """,
+        (
+            project_id,
+            f"Etapa {current_stage['etapa_nome']} retirada; projeto movido para {next_stage['etapa_nome']}.",
+            now,
+        ),
+    )
+    return next_stage
+
+
+def sync_existing_project_workflows(db, process_type_keys=None):
+    projects = db.execute(
+        "SELECT id, tipo_servico FROM projetos WHERE COALESCE(arquivado, 0) = 0 ORDER BY id"
+    ).fetchall()
+    selected = set(process_type_keys) if process_type_keys is not None else None
+    moved = 0
+    for project in projects:
+        process_key = normalize_project_process_type(project["tipo_servico"])
+        if selected is not None and process_key not in selected:
+            continue
+        if sync_project_workflow_stage_templates(db, project["id"], process_key):
+            moved += 1
+    return moved
 
 
 def ensure_project_checklists(db):
@@ -4388,6 +4586,11 @@ def can_finish_external_stage(project_id, stage):
 
 
 def maybe_advance_external_stage_after_withdrawal(project_id, tipo_orgao, responsible_id=None):
+    """Mantem o projeto em Orgao externo depois da retirada.
+
+    A retirada conclui o protocolo, nao o projeto. O usuario decide quando usar o
+    avanco manual para Finalizado.
+    """
     db = get_db()
     project = db.execute("SELECT * FROM projetos WHERE id = %s", (project_id,)).fetchone()
     if not project:
@@ -4399,16 +4602,25 @@ def maybe_advance_external_stage_after_withdrawal(project_id, tipo_orgao, respon
     can_finish, _message = can_finish_external_stage(project_id, current_stage)
     if not can_finish:
         return None
-    now = app_now_iso()
     db.execute(
-        "UPDATE projeto_etapas SET status = 'concluido', progresso = 100, data_fim = COALESCE(data_fim, %s) WHERE id = %s",
-        (now, current_stage["id"]),
+        """
+        UPDATE projeto_etapas
+        SET status = 'em andamento', progresso = 100, data_fim = NULL,
+            subetapa_ativa = 'Protocolos retirados'
+        WHERE id = %s
+        """,
+        (current_stage["id"],),
     )
-    db.commit()
-    completed_stage = load_project_stage_for_action(current_stage["id"], project_id)
-    next_stage = advance_project_after_stage_completion(project_id, completed_stage, responsible_id, reason="retirada_orgao_externo")
-    record_event(project_id, "retirada_orgao_externo", f"{external_stage_label(tipo_orgao)} retirado; etapa concluida.")
-    return next_stage
+    db.execute(
+        "UPDATE projetos SET status = 'Em andamento', atualizado_em = %s WHERE id = %s",
+        (app_now_iso(), project_id),
+    )
+    record_event(
+        project_id,
+        "retirada_orgao_externo",
+        f"{external_stage_label(tipo_orgao)} retirado; aguardando finalizacao manual do projeto.",
+    )
+    return None
 
 
 def count_blocking_checklist_pending(stage_id):
@@ -4998,7 +5210,7 @@ def move_project_to_stage(project_id, target_stage, motivo, responsible_id=None,
     """Move o projeto para uma etapa especifica fora do fluxo linear normal.
 
     Usado pelas automacoes internas de exigencia de orgao externo: quando surge uma
-    exigencia, o projeto sai da coluna Orgao externo e vai para Pendencias, onde fica
+    exigencia, o projeto sai da coluna Orgao externo e vai para Exigencias, onde fica
     ate a exigencia ser resolvida; quando resolvida, ele volta para Orgao externo (em
     vez de simplesmente bloquear o avanco na mesma coluna). Mesma mecanica (historico,
     movimentacao) do action move_stage, mas disparado pelo backend, nao por um formulario.
@@ -5067,7 +5279,7 @@ def move_project_to_stage(project_id, target_stage, motivo, responsible_id=None,
 
 def move_project_to_pending_after_exigencia(project_id, source_stage_id, responsible_id, description):
     """Quando surge uma exigencia no orgao externo (cartorio), o projeto sai da coluna
-    Orgao externo e vai para Pendencias, onde fica ate a exigencia ser resolvida."""
+    Orgao externo e vai para Exigencias, onde fica ate a exigencia ser resolvida."""
     db = get_db()
     project = first_row(db, "SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,))
     if not project or not source_stage_id or project["etapa_atual_id"] != source_stage_id:
@@ -5086,8 +5298,8 @@ def move_project_to_pending_after_exigencia(project_id, source_stage_id, respons
 
 def move_project_back_to_external_stage_after_pending_resolved(project_id, tipo_orgao, responsible_id):
     """Quando a ultima exigencia aberta do orgao externo e resolvida e o projeto esta na
-    coluna Pendencias, ele volta para Orgao externo (que continua aguardando a retirada
-    do protocolo). Se o projeto ja saiu de Pendencias por outro caminho, nao faz nada."""
+    coluna Exigencias, ele volta para Orgao externo (que continua aguardando a retirada
+    do protocolo). Se o projeto ja saiu de Exigencias por outro caminho, nao faz nada."""
     db = get_db()
     project = first_row(db, "SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,))
     if not project or not project["etapa_atual_id"]:
@@ -9244,7 +9456,7 @@ def project_action(project_id):
                 )
             record_event(project_id, "exigencia_criada", f"Exigencia #{exigencia_id} registrada.")
             # Exigencia do orgao externo: o projeto sai da coluna Orgao externo e vai para
-            # Pendencias ate a exigencia ser resolvida (ver update_exigencia mais abaixo).
+            # Exigencias ate o registro ser resolvido (ver update_exigencia mais abaixo).
             moved_to_pending = move_project_to_pending_after_exigencia(
                 project_id,
                 etapa_exigencia_id,
@@ -9350,7 +9562,7 @@ def project_action(project_id):
                 )
             if not next_stage and exigencia_row and tipo_registro == "exigencia" and status in ("concluido", "cancelado"):
                 # Exigencia resolvida: se nao houver mais nenhuma exigencia aberta no projeto,
-                # ele sai da coluna Pendencias e volta para o orgao externo (aguardando a
+                # ele sai da coluna Exigencias e volta para o orgao externo (aguardando a
                 # retirada do protocolo, se ainda houver um em aberto).
                 remaining_open = scalar(
                     get_db(),

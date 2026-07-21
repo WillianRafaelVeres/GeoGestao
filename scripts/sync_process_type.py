@@ -31,6 +31,8 @@ def main() -> int:
             geogestao.seed_process_types(db, selected)
             geogestao.seed_process_stage_templates(db, selected)
             geogestao.seed_process_checklist_templates(db, selected)
+            geogestao.normalize_stage_models(db)
+            moved_projects = geogestao.sync_existing_project_workflows(db, selected)
             for process_type_key in sorted(selected):
                 projects = db.execute(
                     "SELECT id FROM projetos WHERE tipo_servico = %s ORDER BY id",
@@ -46,7 +48,7 @@ def main() -> int:
         finally:
             db.close()
 
-    print(f"Tipos de processo sincronizados: {', '.join(sorted(selected))}.")
+    print(f"Tipos de processo sincronizados: {', '.join(sorted(selected))}. Projetos reposicionados: {moved_projects}.")
     return 0
 
 
