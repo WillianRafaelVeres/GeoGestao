@@ -2057,6 +2057,42 @@ def seed_process_checklist_templates(db, process_type_keys=None):
     for process_type_key, checklist_templates in PROCESS_CHECKLIST_TEMPLATES.items():
         if process_type_keys is not None and process_type_key not in process_type_keys:
             continue
+        desired_templates = {
+            (template["stage_key"], template["title"])
+            for template in checklist_templates
+            if template["stage_key"] == "ORCAMENTO"
+        }
+        existing_templates = db.execute(
+            """
+            SELECT id, stage_key, title
+            FROM process_checklist_templates
+            WHERE process_type_key = %s AND stage_key = 'ORCAMENTO'
+            """,
+            (process_type_key,),
+        ).fetchall()
+        stale_template_ids = [
+            row["id"]
+            for row in existing_templates
+            if (row["stage_key"], row["title"]) not in desired_templates
+        ]
+        if stale_template_ids:
+            db.execute(
+                """
+                UPDATE process_checklist_templates
+                SET active = 0, updated_at = %s
+                WHERE id = ANY(%s::integer[])
+                """,
+                (now, stale_template_ids),
+            )
+            # Os registros permanecem no historico, mas deixam de aparecer nos projetos.
+            db.execute(
+                """
+                UPDATE project_checklist_items
+                SET active = 0, updated_at = %s
+                WHERE template_id = ANY(%s::integer[]) AND active = 1
+                """,
+                (now, stale_template_ids),
+            )
         for template in checklist_templates:
             existing = first_row(
                 db,

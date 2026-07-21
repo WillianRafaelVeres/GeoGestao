@@ -133,16 +133,15 @@ def prefeitura_item(**kwargs):
     )
 
 
-RETIFICACAO_AREA_RURAL = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao do cliente"),
-        item("Entender o problema da matricula", criticality=CRITICALITY_HIGH),
-        item("Verificar se e caso de retificacao ou outro processo", criticality=CRITICALITY_HIGH),
-        item("Levantar informacoes basicas do imovel"),
+def orcamento_padrao():
+    return [
         item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Enviar orcamento ao cliente", role=ROLE_MANAGER),
-        item("Registrar aceite/fechamento", role=ROLE_MANAGER),
-    ],
+        item("Enviar orcamento ao cliente", role=ROLE_MANAGER, criticality=CRITICALITY_HIGH),
+    ]
+
+
+RETIFICACAO_AREA_RURAL = {
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matricula/transcricao atualizada", criticality=CRITICALITY_HIGH, requires_attachment=True),
         item("Solicitar documentos pessoais do proprietario", requires_attachment=True),
@@ -232,13 +231,7 @@ RETIFICACAO_AREA_RURAL = {
 }
 
 DESMEMBRAMENTO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender divisao pretendida", criticality=CRITICALITY_HIGH),
-        item("Confirmar se matricula esta correta/retificada", criticality=CRITICALITY_HIGH),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matricula atualizada", requires_attachment=True),
         item("Solicitar documentos do proprietario"),
@@ -305,13 +298,7 @@ DESMEMBRAMENTO = {
 }
 
 DESTACAMENTO_ESTREMACAO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender area a destacar/estremar"),
-        item("Confirmar contexto de condominio ou situacao equivalente"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matricula/transcricao"),
         item("Solicitar documentos dos interessados"),
@@ -373,12 +360,7 @@ DESTACAMENTO_ESTREMACAO = {
 }
 
 UNIFICACAO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender matriculas/areas a unificar"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matriculas atualizadas", criticality=CRITICALITY_HIGH),
         item("Solicitar documentos do proprietario"),
@@ -440,13 +422,7 @@ UNIFICACAO = {
 }
 
 USUCAPIAO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender situacao da posse", criticality=CRITICALITY_HIGH),
-        item("Identificar modalidade provavel"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar documentos pessoais"),
         item("Solicitar documentos do imovel"),
@@ -508,13 +484,7 @@ USUCAPIAO = {
 }
 
 GEORREFERENCIAMENTO_TECNICO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender objetivo do georreferenciamento"),
-        item("Levantar localizacao e area aproximada"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matricula ou documento do imovel"),
         item("Solicitar CCIR/SNCR, se aplicavel"),
@@ -573,12 +543,7 @@ GEORREFERENCIAMENTO_TECNICO = {
 }
 
 CERTIFICACAO_SIGEF = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Identificar se ha levantamento existente"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matricula"),
         item("Solicitar CCIR/SNCR"),
@@ -637,13 +602,7 @@ CERTIFICACAO_SIGEF = {
 }
 
 AVERBACAO_CERTIFICACAO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Confirmar que a certificacao SIGEF ja foi emitida", criticality=CRITICALITY_HIGH),
-        item("Identificar matricula e cartorio competente"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matricula atualizada"),
         item("Solicitar certificado SIGEF", criticality=CRITICALITY_HIGH),
@@ -707,12 +666,7 @@ AVERBACAO_CERTIFICACAO = {
 }
 
 CAR = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Identificar se e novo CAR, retificacao ou analise de pendencia"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar dados do proprietario"),
         item("Solicitar matricula ou documento do imovel"),
@@ -784,12 +738,7 @@ CAR = {
 }
 
 ATUALIZACAO_CCIR = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Identificar necessidade do cliente"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar CPF/CNPJ do titular"),
         item("Solicitar matricula ou dados do imovel"),
@@ -835,13 +784,7 @@ ATUALIZACAO_CCIR = {
 }
 
 MEDICAO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender finalidade da medicao"),
-        item("Levantar localizacao e tamanho aproximado"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "PREPARACAO": [
         item("Criar pasta do projeto"),
         item("Planejar campo"),
@@ -880,12 +823,7 @@ MEDICAO = {
 }
 
 REGULARIZACAO_TITULARIDADE = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender problema de titularidade"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "DOCUMENTOS": [
         item("Solicitar matricula/documentos do imovel"),
         item("Solicitar documentos pessoais das partes"),
@@ -931,12 +869,7 @@ REGULARIZACAO_TITULARIDADE = {
 }
 
 OUTRO = {
-    "ORCAMENTO": [
-        item("Registrar solicitacao"),
-        item("Entender necessidade do cliente"),
-        item("Elaborar orcamento", role=ROLE_FINANCE),
-        item("Registrar aceite"),
-    ],
+    "ORCAMENTO": orcamento_padrao(),
     "PREPARACAO": [
         item("Organizar pasta"),
         item("Definir proximas acoes"),
