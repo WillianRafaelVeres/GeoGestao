@@ -497,6 +497,13 @@
                                 <td>
                                     {% if exigencia.tipo_registro == 'exigencia' and exigencia.anexo_path %}
                                         <a class="btn btn-outline-primary btn-sm" href="{{ dropbox_web_url(exigencia.anexo_path) }}" target="_blank" rel="noopener">Abrir {{ exigencia.anexo_nome or 'nota' }}</a>
+                                        <button class="btn btn-outline-secondary btn-sm mt-1" type="button"
+                                                data-exigencia-ai
+                                                data-project-id="{{ project.id }}"
+                                                data-exigencia-id="{{ exigencia.id }}"
+                                                data-note-name="{{ exigencia.anexo_nome or 'Nota de exigencia' }}">
+                                            Gerar checklist
+                                        </button>
                                     {% elif exigencia.tipo_registro == 'exigencia' %}
                                         <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" enctype="multipart/form-data">
                                             <input type="hidden" name="action" value="attach_exigencia_note" />

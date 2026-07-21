@@ -534,6 +534,13 @@
                                 <a class="pmodal-btn-ghost" href="{{ dropbox_web_url(exg.anexo_path) }}" target="_blank" rel="noopener">
                                     Abrir {{ exg.anexo_nome or 'nota' }}
                                 </a>
+                                <button class="pmodal-btn-ghost pmodal-btn-ghost--ai" type="button"
+                                        data-exigencia-ai
+                                        data-project-id="{{ project.id }}"
+                                        data-exigencia-id="{{ exg.id }}"
+                                        data-note-name="{{ exg.anexo_nome or 'Nota de exigencia' }}">
+                                    Gerar checklist
+                                </button>
                                 {% else %}
                                 <form method="post" action="{{ url_for('project_action', project_id=project.id) }}"
                                       enctype="multipart/form-data" class="pmodal-exig-upload">

@@ -4,9 +4,9 @@ Data: 2026-07-21
 
 ## Conclusao
 
-E tecnicamente possivel preencher uma proposta de checklist a partir da nota anexada.
-Esta automacao nao esta ativa nesta entrega. O arquivo apenas e validado, deduplicado,
-versionado e enviado ao Dropbox.
+O fluxo de teste esta ativo. Depois que a nota e validada, deduplicada, versionada e
+enviada ao Dropbox, um usuario pode solicitar um rascunho de checklist, revisar cada
+item e confirmar sua inclusao. A IA nunca conclui itens nem movimenta o projeto.
 
 ## Fluxo recomendado
 
@@ -23,17 +23,27 @@ versionado e enviado ao Dropbox.
 - datas, numeros de matricula e nomes nao podem ser inferidos incorretamente;
 - o documento pode conter dados pessoais e registrais.
 
-## Implementacao futura segura
+## Implementacao segura
 
 - processar apenas arquivos permitidos e limitar tamanho e quantidade de paginas;
 - nao expor credenciais do Dropbox ao navegador;
-- registrar o texto extraido, o mecanismo usado e a confirmacao do usuario;
+- nao armazenar o texto integral extraido; guardar apenas o rascunho revisavel e a auditoria;
+- registrar o mecanismo usado e a confirmacao do usuario;
 - nunca concluir itens ou movimentar o projeto automaticamente;
-- oferecer uma opcao explicita de apagar o texto extraido sem apagar o documento original;
-- definir com a empresa se o processamento pode usar um servico externo ou deve ocorrer localmente.
+- impedir a aplicacao duplicada do mesmo rascunho com bloqueio transacional;
+- manter o cadastro manual disponivel quando o provedor estiver indisponivel.
+
+## Componentes da versao de teste
+
+- PyMuPDF para extracao local de texto e renderizacao de paginas escaneadas;
+- Groq `openai/gpt-oss-120b` para estruturar texto em JSON;
+- Groq `qwen/qwen3.6-27b` para leitura de paginas sem camada de texto;
+- Supabase para guardar somente o rascunho, metadados de uso e confirmacao;
+- revisao humana obrigatoria antes de criar registros em `exigencia_itens`.
 
 ## Referencias tecnicas
 
-- pypdf, extracao de texto de PDFs digitais: https://pypdf.readthedocs.io/en/latest/
-- OCRmyPDF, camada de texto para PDFs digitalizados: https://ocrmypdf.readthedocs.io/en/latest/
-- Tesseract, formatos de imagem suportados: https://tesseract-ocr.github.io/tessdoc/InputFormats.html
+- PyMuPDF: https://pymupdf.readthedocs.io/
+- Groq Structured Outputs: https://console.groq.com/docs/structured-outputs
+- Groq Images and Vision: https://console.groq.com/docs/vision
+- Groq Data Controls: https://console.groq.com/docs/your-data

@@ -80,6 +80,17 @@ No Render:
    GEOGESTAO_PUBLIC_URL=https://seu-app.onrender.com
    ```
 
+   Para gerar um rascunho de checklist a partir da nota de exigencia, cadastre
+   uma chave criada no GroqCloud. A chave fica somente no backend:
+   ```text
+   GROQ_API_KEY=gsk_...
+   GROQ_TEXT_MODEL=openai/gpt-oss-120b
+   GROQ_VISION_MODEL=qwen/qwen3.6-27b
+   ```
+   O sistema aceita PDF, PDF escaneado, imagem e DOCX, mas so cria os itens
+   depois da revisao e confirmacao de um usuario. O cadastro manual continua
+   funcionando quando a IA estiver indisponivel.
+
    Para envio automatico de recuperacao de senha, cadastre tambem:
    ```text
    GEOGESTAO_SMTP_HOST=smtp.seuprovedor.com

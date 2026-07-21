@@ -68,6 +68,47 @@
         {% block content %}{% endblock %}
     </main>
 </div>
+
+<div class="modal fade" id="exigencia-ai-modal" tabindex="-1" aria-labelledby="exigencia-ai-title" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content exigencia-ai-dialog">
+            <div class="modal-header">
+                <div>
+                    <span class="module-label">Nota de exigencia</span>
+                    <h2 class="modal-title" id="exigencia-ai-title">Revisar checklist sugerido</h2>
+                    <small class="text-muted" data-ai-note-name></small>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="exigencia-ai-loading" data-ai-loading hidden>
+                    <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                    <strong>Analisando a nota...</strong>
+                    <small>O projeto continua disponivel em outra aba enquanto o rascunho e preparado.</small>
+                </div>
+                <div class="alert alert-danger mb-3" data-ai-error role="alert" hidden></div>
+                <div class="alert alert-warning mb-3" data-ai-warning role="status" hidden></div>
+                <div class="exigencia-ai-review" data-ai-review hidden>
+                    <div class="exigencia-ai-review-head">
+                        <div>
+                            <strong>Itens encontrados</strong>
+                            <small>Revise o texto antes de criar o checklist.</small>
+                        </div>
+                        <span class="badge text-bg-light" data-ai-count>0 itens</span>
+                    </div>
+                    <div class="exigencia-ai-items" data-ai-items></div>
+                </div>
+                <div class="exigencia-ai-empty" data-ai-empty hidden>Nenhum rascunho disponivel.</div>
+            </div>
+            <div class="modal-footer exigencia-ai-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
+                <button type="button" class="btn btn-outline-primary" data-ai-reanalyze hidden>Analisar novamente</button>
+                <button type="button" class="btn btn-outline-secondary" data-ai-add hidden>Adicionar item</button>
+                <button type="button" class="btn btn-primary" data-ai-apply hidden>Criar checklist</button>
+            </div>
+        </div>
+    </div>
+</div>
 <script type="speculationrules">
 {
     "prerender": [{

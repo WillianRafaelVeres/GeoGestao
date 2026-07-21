@@ -12,6 +12,12 @@ services:
         value: "0"
       - key: GEOGESTAO_AUTO_INIT_DB
         value: "0"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_TEXT_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_VISION_MODEL
+        value: qwen/qwen3.6-27b
       - key: GEOGESTAO_SECRET_KEY
         generateValue: true
       - key: DATABASE_URL

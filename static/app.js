@@ -160,6 +160,7 @@ window.addEventListener("DOMContentLoaded", () => {
     initMissionQuickActions();
     initMatrixLiveFilters();
     initAutoGrowTextareas();
+    initExigenciaAi();
 });
 
 function initAutoGrowTextareas() {
@@ -1669,4 +1670,301 @@ function setDocStatus(status, message, state) {
     if (!status) return;
     status.textContent = message;
     status.dataset.state = state || "";
+}
+
+// --- Rascunho de checklist a partir da nota de exigencia ---
+
+function initExigenciaAi() {
+    const modalElement = document.getElementById("exigencia-ai-modal");
+    if (!modalElement || !window.bootstrap) return;
+
+    const elements = {
+        modalElement,
+        modal: bootstrap.Modal.getOrCreateInstance(modalElement),
+        noteName: modalElement.querySelector("[data-ai-note-name]"),
+        loading: modalElement.querySelector("[data-ai-loading]"),
+        error: modalElement.querySelector("[data-ai-error]"),
+        warning: modalElement.querySelector("[data-ai-warning]"),
+        review: modalElement.querySelector("[data-ai-review]"),
+        empty: modalElement.querySelector("[data-ai-empty]"),
+        items: modalElement.querySelector("[data-ai-items]"),
+        count: modalElement.querySelector("[data-ai-count]"),
+        reanalyze: modalElement.querySelector("[data-ai-reanalyze]"),
+        add: modalElement.querySelector("[data-ai-add]"),
+        apply: modalElement.querySelector("[data-ai-apply]"),
+    };
+    const state = {
+        projectId: null,
+        exigenciaId: null,
+        endpoint: "",
+        returnModal: null,
+        reopenParent: false,
+        applied: false,
+    };
+
+    document.addEventListener("click", (event) => {
+        const trigger = event.target.closest("[data-exigencia-ai]");
+        if (!trigger) return;
+        event.preventDefault();
+        state.projectId = trigger.dataset.projectId;
+        state.exigenciaId = trigger.dataset.exigenciaId;
+        state.endpoint = `/api/project/${state.projectId}/exigencia/${state.exigenciaId}/ai-analysis`;
+        state.returnModal = trigger.closest(".modal.show");
+        state.reopenParent = Boolean(state.returnModal);
+        state.applied = false;
+        elements.noteName.textContent = trigger.dataset.noteName || "Nota de exigencia";
+        resetExigenciaAiDialog(elements);
+
+        const openAiModal = () => {
+            elements.modal.show();
+            loadExigenciaAiAnalysis(elements, state);
+        };
+        if (state.returnModal) {
+            state.returnModal.addEventListener("hidden.bs.modal", openAiModal, { once: true });
+            bootstrap.Modal.getInstance(state.returnModal)?.hide();
+        } else {
+            openAiModal();
+        }
+    });
+
+    elements.reanalyze.addEventListener("click", () => analyzeExigenciaNote(elements, state));
+    elements.add.addEventListener("click", () => {
+        appendExigenciaAiItem(elements, { codigo: "", titulo: "", resumo: "", pagina: 0, trecho_origem: "" }, false);
+        updateExigenciaAiCount(elements);
+        elements.items.lastElementChild?.querySelector("textarea")?.focus();
+    });
+    elements.items.addEventListener("click", (event) => {
+        const removeButton = event.target.closest("[data-ai-remove-item]");
+        if (!removeButton) return;
+        removeButton.closest(".exigencia-ai-item")?.remove();
+        updateExigenciaAiCount(elements);
+    });
+    elements.apply.addEventListener("click", () => applyExigenciaAiChecklist(elements, state));
+
+    modalElement.addEventListener("hidden.bs.modal", () => {
+        const returnModal = state.returnModal;
+        const shouldReopen = state.reopenParent && !state.applied && returnModal?.isConnected;
+        state.returnModal = null;
+        if (shouldReopen) {
+            setTimeout(() => bootstrap.Modal.getOrCreateInstance(returnModal).show(), 100);
+        }
+    });
+}
+
+function resetExigenciaAiDialog(elements) {
+    elements.loading.hidden = true;
+    elements.error.hidden = true;
+    elements.warning.hidden = true;
+    elements.review.hidden = true;
+    elements.empty.hidden = true;
+    elements.items.replaceChildren();
+    elements.reanalyze.hidden = true;
+    elements.add.hidden = true;
+    elements.apply.hidden = true;
+    elements.apply.disabled = false;
+}
+
+function setExigenciaAiLoading(elements, loading) {
+    elements.loading.hidden = !loading;
+    if (loading) {
+        elements.error.hidden = true;
+        elements.warning.hidden = true;
+        elements.review.hidden = true;
+        elements.empty.hidden = true;
+        elements.reanalyze.hidden = true;
+        elements.add.hidden = true;
+        elements.apply.hidden = true;
+    }
+}
+
+function showExigenciaAiMessage(elements, message, tone = "danger") {
+    const target = tone === "danger" ? elements.error : elements.warning;
+    target.classList.toggle("alert-success", tone === "success");
+    target.classList.toggle("alert-warning", tone !== "success" && tone !== "danger");
+    target.classList.toggle("alert-danger", tone === "danger");
+    target.textContent = message;
+    target.hidden = false;
+}
+
+async function fetchExigenciaAiJson(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({ ok: false, error: "Resposta invalida do servidor." }));
+    if (!response.ok || !data.ok) {
+        const error = new Error(data.error || "Nao foi possivel concluir a operacao.");
+        error.payload = data;
+        throw error;
+    }
+    return data;
+}
+
+async function loadExigenciaAiAnalysis(elements, state) {
+    setExigenciaAiLoading(elements, true);
+    try {
+        const data = await fetchExigenciaAiJson(state.endpoint);
+        if (data.analysis) {
+            renderExigenciaAiAnalysis(elements, data.analysis);
+            return;
+        }
+        if (!data.configured) {
+            setExigenciaAiLoading(elements, false);
+            showExigenciaAiMessage(elements, "Configure GROQ_API_KEY no Render para liberar a analise automatica.");
+            return;
+        }
+        await analyzeExigenciaNote(elements, state);
+    } catch (error) {
+        setExigenciaAiLoading(elements, false);
+        showExigenciaAiMessage(elements, error.message);
+    }
+}
+
+async function analyzeExigenciaNote(elements, state) {
+    setExigenciaAiLoading(elements, true);
+    try {
+        const data = await fetchExigenciaAiJson(state.endpoint, { method: "POST" });
+        renderExigenciaAiAnalysis(elements, data.analysis);
+        if (data.message) showExigenciaAiMessage(elements, data.message, "success");
+    } catch (error) {
+        setExigenciaAiLoading(elements, false);
+        if (error.payload?.analysis) {
+            renderExigenciaAiAnalysis(elements, error.payload.analysis);
+        }
+        showExigenciaAiMessage(elements, error.message);
+        elements.reanalyze.hidden = false;
+    }
+}
+
+function renderExigenciaAiAnalysis(elements, analysis) {
+    setExigenciaAiLoading(elements, false);
+    elements.items.replaceChildren();
+    const applied = analysis.status === "aplicado";
+    (analysis.items || []).forEach((item) => appendExigenciaAiItem(elements, item, applied));
+    elements.review.hidden = false;
+    elements.empty.hidden = (analysis.items || []).length > 0;
+    elements.reanalyze.hidden = applied;
+    elements.add.hidden = applied;
+    elements.apply.hidden = applied;
+    updateExigenciaAiCount(elements);
+    if (analysis.warning) showExigenciaAiMessage(elements, analysis.warning, "warning");
+    if (applied) showExigenciaAiMessage(elements, "Este rascunho ja foi transformado em checklist.", "success");
+}
+
+function makeExigenciaAiField(labelText, className, control) {
+    const label = document.createElement("label");
+    label.className = className;
+    const caption = document.createElement("span");
+    caption.textContent = labelText;
+    label.append(caption, control);
+    return label;
+}
+
+function appendExigenciaAiItem(elements, item, readOnly) {
+    const row = document.createElement("div");
+    row.className = "exigencia-ai-item";
+    row.dataset.page = String(item.pagina || 0);
+    row.dataset.source = item.trecho_origem || "";
+
+    const codeInput = document.createElement("input");
+    codeInput.className = "form-control form-control-sm";
+    codeInput.type = "text";
+    codeInput.maxLength = 40;
+    codeInput.placeholder = "2.1";
+    codeInput.value = item.codigo || "";
+    codeInput.readOnly = readOnly;
+
+    const titleInput = document.createElement("textarea");
+    titleInput.className = "form-control form-control-sm";
+    titleInput.maxLength = 600;
+    titleInput.rows = 1;
+    titleInput.placeholder = "Acao exigida";
+    titleInput.value = item.titulo || "";
+    titleInput.readOnly = readOnly;
+
+    const summaryInput = document.createElement("textarea");
+    summaryInput.className = "form-control form-control-sm";
+    summaryInput.maxLength = 1200;
+    summaryInput.rows = 1;
+    summaryInput.placeholder = "Contexto que ajuda a equipe a executar o item";
+    summaryInput.value = item.resumo || "";
+    summaryInput.readOnly = readOnly;
+
+    const removeButton = document.createElement("button");
+    removeButton.className = "btn btn-outline-danger btn-sm exigencia-ai-item-remove";
+    removeButton.type = "button";
+    removeButton.title = "Remover item";
+    removeButton.setAttribute("aria-label", "Remover item");
+    removeButton.dataset.aiRemoveItem = "";
+    removeButton.textContent = "x";
+    removeButton.hidden = readOnly;
+
+    row.append(
+        makeExigenciaAiField("Numero", "exigencia-ai-item-code", codeInput),
+        makeExigenciaAiField("Item do checklist", "exigencia-ai-item-title", titleInput),
+        removeButton,
+        makeExigenciaAiField("Detalhe", "exigencia-ai-item-summary", summaryInput),
+    );
+    if (item.pagina || item.trecho_origem) {
+        const source = document.createElement("small");
+        source.className = "exigencia-ai-item-source";
+        const pageLabel = item.pagina ? `Pagina ${item.pagina}` : "Pagina nao identificada";
+        source.textContent = item.trecho_origem ? `${pageLabel}: ${item.trecho_origem}` : pageLabel;
+        row.appendChild(source);
+    }
+    elements.items.appendChild(row);
+}
+
+function updateExigenciaAiCount(elements) {
+    const count = elements.items.querySelectorAll(".exigencia-ai-item").length;
+    elements.count.textContent = `${count} ${count === 1 ? "item" : "itens"}`;
+    elements.empty.hidden = count > 0;
+}
+
+function collectExigenciaAiItems(elements) {
+    return Array.from(elements.items.querySelectorAll(".exigencia-ai-item")).map((row) => ({
+        codigo: row.querySelector(".exigencia-ai-item-code input")?.value.trim() || "",
+        titulo: row.querySelector(".exigencia-ai-item-title textarea")?.value.trim() || "",
+        resumo: row.querySelector(".exigencia-ai-item-summary textarea")?.value.trim() || "",
+        pagina: Number(row.dataset.page || 0),
+        trecho_origem: row.dataset.source || "",
+    })).filter((item) => item.titulo);
+}
+
+async function applyExigenciaAiChecklist(elements, state) {
+    const items = collectExigenciaAiItems(elements);
+    if (!items.length) {
+        showExigenciaAiMessage(elements, "Mantenha pelo menos um item no checklist.");
+        return;
+    }
+    elements.apply.disabled = true;
+    const originalText = elements.apply.textContent;
+    elements.apply.textContent = "Criando...";
+    try {
+        const data = await fetchExigenciaAiJson(`${state.endpoint}/apply`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ items }),
+        });
+        state.applied = true;
+        state.reopenParent = false;
+        showExigenciaAiMessage(elements, data.message, "success");
+        elements.reanalyze.hidden = true;
+        elements.add.hidden = true;
+        elements.apply.hidden = true;
+        document.querySelectorAll(`[data-exigencia-ai][data-exigencia-id="${state.exigenciaId}"]`).forEach((button) => {
+            button.textContent = "Checklist criado";
+            button.disabled = true;
+        });
+        const projectId = state.projectId;
+        setTimeout(() => {
+            elements.modalElement.addEventListener("hidden.bs.modal", () => {
+                if (typeof window.refreshProjectMatrixUi === "function") {
+                    window.refreshProjectMatrixUi(projectId, { reopenModal: true }).catch(() => {});
+                }
+            }, { once: true });
+            elements.modal.hide();
+        }, 650);
+    } catch (error) {
+        showExigenciaAiMessage(elements, error.message);
+        elements.apply.disabled = false;
+        elements.apply.textContent = originalText;
+    }
 }
