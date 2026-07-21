@@ -35,6 +35,7 @@
             <div class="nav-label">Cadastros</div>
             <a class="{{ 'active' if request.endpoint == 'clients' else '' }}" href="{{ url_for('clients') }}">Clientes</a>
             <a class="{{ 'active' if request.endpoint == 'cartorios' else '' }}" href="{{ url_for('cartorios') }}">Cartorios</a>
+            <a class="{{ 'active' if request.endpoint in ('prefeituras', 'prefeituras_checklist') else '' }}" href="{{ url_for('prefeituras') }}">Prefeituras</a>
             {% if can_admin() %}
                 <a class="{{ 'active' if request.endpoint == 'users' else '' }}" href="{{ url_for('users') }}">Usuarios</a>
             {% endif %}
@@ -70,7 +71,7 @@
 <script type="speculationrules">
 {
     "prerender": [{
-        "where": {"href_matches": ["/", "/projects", "/my-missions", "/cartorio", "/reports", "/clients", "/cartorios", "/users"]},
+        "where": {"href_matches": ["/", "/projects", "/my-missions", "/cartorio", "/reports", "/clients", "/cartorios", "/prefeituras", "/users"]},
         "eagerness": "moderate"
     }]
 }

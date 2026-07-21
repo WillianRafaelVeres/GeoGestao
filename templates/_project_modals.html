@@ -122,25 +122,14 @@
                     </form>
 
                     {% if active_external_type %}
-                    {% set ns_orgao = namespace(pref_open=0, cart_open=0) %}
+                    {% set ns_orgao = namespace(cart_open=0) %}
                     {% for ext in active_external_records %}
                         {% if not (ext.data_retirada and ext.status|lower == 'concluido') %}
-                            {% if ext.tipo_orgao == 'PREFEITURA' %}
-                                {% set ns_orgao.pref_open = ns_orgao.pref_open + 1 %}
-                            {% elif (ext.tipo_orgao or 'CARTORIO') == 'CARTORIO' %}
-                                {% set ns_orgao.cart_open = ns_orgao.cart_open + 1 %}
-                            {% endif %}
+                            {% set ns_orgao.cart_open = ns_orgao.cart_open + 1 %}
                         {% endif %}
                     {% endfor %}
                     {% set exig_records = exigencias_by_project.get(project.id, []) %}
                     <div class="pmodal-protocol-row">
-                        <button type="button" class="pmodal-protocol-btn"
-                            onclick="openSubModal('project-modal-{{ project.id }}', 'modal-protocolo-{{ project.id }}-PREFEITURA')">
-                            <strong>Prefeitura</strong>
-                            <span class="{{ 'is-open' if ns_orgao.pref_open else '' }}">
-                                {{ ns_orgao.pref_open ~ ' protocolo' ~ ('s' if ns_orgao.pref_open != 1 else '') ~ ' em aberto' if ns_orgao.pref_open else 'Protocolar' }}
-                            </span>
-                        </button>
                         <button type="button" class="pmodal-protocol-btn"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-protocolo-{{ project.id }}-CARTORIO')">
                             <strong>Cartorio</strong>
@@ -152,7 +141,7 @@
                             {% if ns_external.pending_count or exig_records %}
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-exigencia-{{ project.id }}')"
                             {% else %}
-                            onclick="alert('Nenhum protocolo em aberto. Cadastre primeiro o protocolo na Prefeitura ou no Cartorio para registrar uma exigencia.')"
+                            onclick="alert('Nenhum protocolo em aberto. Cadastre primeiro o protocolo no Cartorio para registrar uma exigencia.')"
                             {% endif %}>
                             <strong>Exigencia</strong>
                             <span class="{{ 'is-open' if exig_records else '' }}">
@@ -215,6 +204,10 @@
                                 </button>
                             </form>
                             {% endif %}
+                            <button class="pmodal-btn-ghost" type="button"
+                                onclick="openSubModal('project-modal-{{ project.id }}', 'modal-prefeitura-{{ project.id }}')">
+                                Prefeitura
+                            </button>
                             <a class="pmodal-btn-ghost" href="{{ url_for('project_detail', project_id=project.id) }}">
                                 Detalhes completos ↗
                             </a>
@@ -353,9 +346,9 @@
         </div>
     </div>
 
-    {# ===== MODAIS DE PROTOCOLO (prefeitura / cartorio) ===== #}
+    {# ===== MODAL DE PROTOCOLO (cartorio) ===== #}
     {% if active_external_type %}
-    {% for orgao_value, orgao_label in [('PREFEITURA', 'Prefeitura'), ('CARTORIO', 'Cartorio')] %}
+    {% for orgao_value, orgao_label in [('CARTORIO', 'Cartorio')] %}
     <div class="modal fade" id="modal-protocolo-{{ project.id }}-{{ orgao_value }}" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content stage-modal">
@@ -506,7 +499,7 @@
                 </form>
                 {% else %}
                 <div class="stage-modal-body">
-                    <div class="pmodal-external-empty">Nenhum protocolo em aberto. Cadastre o protocolo na Prefeitura ou no Cartorio para registrar novas exigencias.</div>
+                    <div class="pmodal-external-empty">Nenhum protocolo em aberto. Cadastre o protocolo no Cartorio para registrar novas exigencias.</div>
                 </div>
                 {% endif %}
                 {% if exig_records %}
@@ -546,6 +539,62 @@
         </div>
     </div>
     {% endif %}
+
+    {# ===== MODAL PREFEITURA (referencia: o que a prefeitura exige + link para solicitar) ===== #}
+    {% set prefeitura_requisitos = prefeitura_requisitos_by_project.get(project.id, []) %}
+    <div class="modal fade" id="modal-prefeitura-{{ project.id }}" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content stage-modal">
+                <div class="stage-modal-header stage-modal-header--advance">
+                    <div>
+                        <div class="stage-modal-label">Prefeitura</div>
+                        <div class="stage-modal-title">{{ project.prefeitura_nome or project.nome }}</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="stage-modal-body">
+                    {% if project.prefeitura_nome %}
+                        {% if project.prefeitura_contato or project.prefeitura_telefone or project.prefeitura_email or project.prefeitura_whatsapp %}
+                        <div class="pmodal-external-empty" style="margin-bottom:10px;">
+                            {%- if project.prefeitura_contato %}{{ project.prefeitura_contato }}{% endif -%}
+                            {%- if project.prefeitura_telefone %} · {{ project.prefeitura_telefone }}{% endif -%}
+                            {%- if project.prefeitura_whatsapp %} · WhatsApp {{ project.prefeitura_whatsapp }}{% endif -%}
+                            {%- if project.prefeitura_email %} · {{ project.prefeitura_email }}{% endif -%}
+                        </div>
+                        {% endif %}
+                        {% if prefeitura_requisitos %}
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">O que esta prefeitura exige</label>
+                            <div class="pmodal-notes">
+                                {% for requisito in prefeitura_requisitos %}
+                                <div class="pmodal-note">
+                                    <div class="pmodal-note-text">{{ requisito.titulo }}</div>
+                                    {% if requisito.observacoes %}<div class="pmodal-note-meta">{{ requisito.observacoes }}</div>{% endif %}
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% else %}
+                        <div class="pmodal-external-empty">Nenhum item cadastrado para esta prefeitura ainda.</div>
+                        {% endif %}
+                    {% else %}
+                        <div class="pmodal-external-empty">Nenhuma prefeitura vinculada a este projeto. Selecione uma em Detalhes completos.</div>
+                    {% endif %}
+                </div>
+                <div class="stage-modal-footer">
+                    {% if project.prefeitura_nome and project.prefeitura_link %}
+                    <a class="stage-modal-confirm stage-modal-confirm--advance" href="{{ project.prefeitura_link }}" target="_blank" rel="noopener">Solicitar online ↗</a>
+                    {% endif %}
+                    {% if can_manage() %}
+                    <a class="stage-modal-cancel" href="{{ url_for('prefeituras_checklist', prefeitura_id=project.prefeitura_id) if project.prefeitura_id else url_for('prefeituras') }}" target="_blank" rel="noopener">
+                        {{ 'Editar lista' if project.prefeitura_id else 'Cadastrar prefeitura' }}
+                    </a>
+                    {% endif %}
+                    <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Fechar</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     {# ===== MODAL AVANCAR ===== #}
     {% if proxima_etapa %}

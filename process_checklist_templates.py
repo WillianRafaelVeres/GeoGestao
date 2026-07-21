@@ -118,14 +118,19 @@ def cond(title, condition_text="", **kwargs):
     return item(title, requirement_level=REQUIREMENT_CONDITIONAL, condition_text=condition_text, **kwargs)
 
 
-def prefeitura_checklist():
-    return [
-        item("Protocolar na prefeitura", role=ROLE_REGISTRY, criticality=CRITICALITY_HIGH),
-        item("Registrar data e numero de protocolo", role=ROLE_REGISTRY),
-        item("Acompanhar exigencias da prefeitura", role=ROLE_REGISTRY),
-        item("Registrar pronto para retirada", role=ROLE_REGISTRY),
-        item("Registrar retirada na prefeitura", role=ROLE_REGISTRY, criticality=CRITICALITY_HIGH),
-    ]
+def prefeitura_item(**kwargs):
+    """Item de checklist da etapa Assinaturas que remete ao botao Prefeitura (popup com
+    o que aquela prefeitura exige e o link para solicitar online). A prefeitura e tratada
+    aqui como uma anuencia/exigencia a resolver junto com as demais assinaturas, e nao
+    mais como parte do fluxo de protocolo do orgao externo (que agora e somente cartorio).
+    """
+    return item(
+        "Prefeitura",
+        role=ROLE_DOCUMENTATION,
+        criticality=CRITICALITY_HIGH,
+        help_text="Confira o que a prefeitura do municipio exige no botao Prefeitura, ao lado de Detalhes completos.",
+        **kwargs,
+    )
 
 
 RETIFICACAO_AREA_RURAL = {
@@ -198,13 +203,13 @@ RETIFICACAO_AREA_RURAL = {
         item("Revisar pendencias antes de assinatura"),
     ],
     "ASSINATURAS": [
+        prefeitura_item(),
         item("Coletar assinatura do proprietario", role=ROLE_CLIENT),
         cond("Coletar assinatura do conjuge, se aplicavel", "Quando juridicamente necessario.", role=ROLE_CLIENT),
         cond("Coletar assinatura do procurador, se aplicavel", "Quando assina por procuracao.", role=ROLE_CLIENT),
         cond("Coletar anuencia de confrontantes, se aplicavel", "Quando o procedimento exigir anuencia.", role=ROLE_CLIENT),
         cond("Conferir reconhecimento de firma, se necessario", "Conforme exigencia do cartorio.", role=ROLE_DOCUMENTATION),
     ],
-    "PREFEITURA": prefeitura_checklist(),
     "ORGAO_EXTERNO": [
         item("Protocolar no cartorio", role=ROLE_REGISTRY, criticality=CRITICALITY_HIGH),
         item("Registrar data de protocolo", role=ROLE_REGISTRY),
@@ -277,13 +282,13 @@ DESMEMBRAMENTO = {
         item("Conferir documentos antes de assinatura/protocolo"),
     ],
     "ASSINATURAS": [
+        prefeitura_item(),
         item("Coletar assinatura do proprietario", role=ROLE_CLIENT),
         cond("Coletar assinatura do conjuge/procurador, se aplicavel", "Quando juridicamente necessario.", role=ROLE_CLIENT),
         cond("Coletar assinaturas exigidas pelo cartorio ou orgao competente", "Conforme exigencia externa.", role=ROLE_CLIENT),
     ],
-    "PREFEITURA": prefeitura_checklist(),
     "ORGAO_EXTERNO": [
-        item("Protocolar no cartorio ou prefeitura, conforme caso", role=ROLE_REGISTRY),
+        item("Protocolar no cartorio", role=ROLE_REGISTRY),
         item("Registrar protocolo", role=ROLE_REGISTRY),
         item("Acompanhar analise", role=ROLE_REGISTRY),
     ],
@@ -345,11 +350,11 @@ DESTACAMENTO_ESTREMACAO = {
         item("Conferir pecas finais"),
     ],
     "ASSINATURAS": [
+        prefeitura_item(),
         item("Coletar assinatura do interessado", role=ROLE_CLIENT),
         item("Coletar anuencias necessarias", role=ROLE_CLIENT),
         cond("Conferir reconhecimento de firma, se aplicavel", "Conforme exigencia externa."),
     ],
-    "PREFEITURA": prefeitura_checklist(),
     "ORGAO_EXTERNO": [
         item("Protocolar no cartorio ou orgao competente", role=ROLE_REGISTRY),
         item("Registrar protocolo", role=ROLE_REGISTRY),
@@ -413,10 +418,10 @@ UNIFICACAO = {
         item("Conferir documentos"),
     ],
     "ASSINATURAS": [
+        prefeitura_item(),
         item("Coletar assinatura do proprietario", role=ROLE_CLIENT),
         cond("Coletar assinatura do conjuge/procurador, se aplicavel", "Quando juridicamente necessario.", role=ROLE_CLIENT),
     ],
-    "PREFEITURA": prefeitura_checklist(),
     "ORGAO_EXTERNO": [
         item("Protocolar no cartorio", role=ROLE_REGISTRY),
         item("Registrar protocolo", role=ROLE_REGISTRY),
@@ -480,11 +485,11 @@ USUCAPIAO = {
         item("Conferir confrontantes"),
     ],
     "ASSINATURAS": [
+        prefeitura_item(),
         item("Coletar assinatura do interessado", role=ROLE_CLIENT),
         cond("Coletar anuencias, se aplicavel", "Quando solicitado pelo advogado/cartorio.", role=ROLE_CLIENT),
         cond("Coletar assinaturas exigidas pelo advogado/cartorio", "Conforme modalidade.", role=ROLE_CLIENT),
     ],
-    "PREFEITURA": prefeitura_checklist(),
     "ORGAO_EXTERNO": [
         item("Encaminhar ao advogado, forum ou cartorio", role=ROLE_LEGAL),
         item("Registrar protocolo ou andamento", role=ROLE_LEGAL),
@@ -683,7 +688,14 @@ CAR = {
         cond("Conferir recibo/demonstrativo", "Quando emitido.", role=ROLE_ENVIRONMENTAL),
         item("Conferir pendencias antes da entrega", role=ROLE_ENVIRONMENTAL),
     ],
-    "PREFEITURA": prefeitura_checklist(),
+    "ASSINATURAS": [
+        cond(
+            "Prefeitura",
+            "Somente quando houver protocolo ambiental ou municipal na prefeitura.",
+            role=ROLE_DOCUMENTATION,
+            help_text="Confira o que a prefeitura do municipio exige no botao Prefeitura, ao lado de Detalhes completos.",
+        ),
+    ],
     "ORGAO_EXTERNO": [
         item("Enviar/atualizar cadastro no SICAR", role=ROLE_ENVIRONMENTAL, criticality=CRITICALITY_HIGH),
         item("Registrar protocolo/recibo", role=ROLE_ENVIRONMENTAL),
@@ -827,10 +839,10 @@ REGULARIZACAO_TITULARIDADE = {
         item("Conferir necessidade de assinatura/reconhecimento"),
     ],
     "ASSINATURAS": [
+        prefeitura_item(),
         item("Coletar assinaturas necessarias", role=ROLE_CLIENT),
         cond("Coletar procuracoes ou reconhecimentos, se aplicavel", "Quando exigido pelo procedimento.", role=ROLE_CLIENT),
     ],
-    "PREFEITURA": prefeitura_checklist(),
     "ORGAO_EXTERNO": [
         item("Protocolar ou encaminhar ao orgao competente", role=ROLE_LEGAL),
         item("Registrar andamento", role=ROLE_LEGAL),
@@ -865,7 +877,6 @@ OUTRO = {
         rec("Registrar observacoes"),
         item("Conferir resultado"),
     ],
-    "PREFEITURA": prefeitura_checklist(),
     "ORGAO_EXTERNO": [
         item("Protocolar ou encaminhar ao orgao competente", role=ROLE_REGISTRY),
         item("Registrar andamento", role=ROLE_REGISTRY),

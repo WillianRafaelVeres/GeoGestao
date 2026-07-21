@@ -113,6 +113,15 @@
                         {% endfor %}
                     </select>
                 </div>
+                <div class="col-md-6">
+                    <label class="form-label">Prefeitura</label>
+                    <select class="form-select" name="prefeitura_id" {% if not can_manage() %}disabled{% endif %}>
+                        <option value="">Sem prefeitura</option>
+                        {% for prefeitura in prefeituras %}
+                            <option value="{{ prefeitura.id }}" {% if project.prefeitura_id == prefeitura.id %}selected{% endif %}>{{ prefeitura.nome }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
                 <div class="col-12 project-owners-manager" data-project-owners-manager>
                     <div class="project-owners-heading">
                         <div>

@@ -153,7 +153,6 @@ REPRESENTATIVE_TYPES = {
 
 EXTERNAL_ORGAO_OPTIONS = [
     ("CARTORIO", "Cartorio"),
-    ("PREFEITURA", "Prefeitura"),
     ("SIGEF", "SIGEF"),
     ("INCRA", "INCRA"),
     ("SICAR", "SICAR"),
@@ -1123,6 +1122,8 @@ def ensure_performance_indexes(db):
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_pagamentos_registro_uid ON projeto_pagamentos (registro_uid)",
         "CREATE INDEX IF NOT EXISTS idx_projeto_custos_projeto ON projeto_custos (projeto_id, data_custo DESC, id DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_custos_registro_uid ON projeto_custos (registro_uid)",
+        "CREATE INDEX IF NOT EXISTS idx_prefeitura_requisitos_lookup ON prefeitura_requisitos (prefeitura_id, active, order_index, id)",
+        "CREATE INDEX IF NOT EXISTS idx_projetos_prefeitura_id ON projetos (prefeitura_id)",
     ]
     cur = db.cursor()
     try:
@@ -1628,6 +1629,33 @@ def init_db():
             FOREIGN KEY(template_id) REFERENCES cartorio_checklist_templates(id)
         );
 
+        CREATE TABLE IF NOT EXISTS prefeituras (
+            id SERIAL PRIMARY KEY,
+            nome TEXT NOT NULL,
+            cidade TEXT,
+            uf TEXT,
+            contato TEXT,
+            email TEXT,
+            telefone TEXT,
+            whatsapp TEXT,
+            link_solicitacao TEXT,
+            observacoes TEXT,
+            criado_em TEXT,
+            atualizado_em TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS prefeitura_requisitos (
+            id SERIAL PRIMARY KEY,
+            prefeitura_id INTEGER NOT NULL,
+            titulo TEXT NOT NULL,
+            observacoes TEXT,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY(prefeitura_id) REFERENCES prefeituras(id)
+        );
+
         CREATE TABLE IF NOT EXISTS eventos_historico (
             id SERIAL PRIMARY KEY,
             projeto_id INTEGER,
@@ -1841,6 +1869,7 @@ def init_db():
     add_column_if_missing(db, "projetos", "arquivado_em", "TEXT")
     add_column_if_missing(db, "projetos", "arquivado_motivo", "TEXT")
     add_column_if_missing(db, "projetos", "proximo_passo", "TEXT")
+    add_column_if_missing(db, "projetos", "prefeitura_id", "INTEGER")
     add_column_if_missing(db, "projeto_etapas", "subetapa_ativa", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "atraso_origem", "TEXT")
     add_column_if_missing(db, "projeto_etapas", "process_type_key", "TEXT")
@@ -4898,6 +4927,140 @@ def advance_project_after_stage_completion(project_id, completed_stage, responsi
     return None
 
 
+def find_project_stage_by_key(db, project_id, stage_key_value):
+    return first_row(
+        db,
+        """
+        SELECT pe.*, COALESCE(pe.stage_name, em.nome) AS etapa_nome, COALESCE(pe.stage_order, em.ordem) AS etapa_ordem,
+               em.nome AS legacy_etapa_nome, em.ordem AS legacy_etapa_ordem
+        FROM projeto_etapas pe
+        JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+        WHERE pe.projeto_id = %s
+          AND pe.stage_key = %s
+          AND COALESCE(pe.show_in_project, 1) = 1
+        ORDER BY COALESCE(pe.stage_order, em.ordem), pe.id
+        LIMIT 1
+        """,
+        (project_id, stage_key_value),
+    )
+
+
+def move_project_to_stage(project_id, target_stage, motivo, responsible_id=None, observacao="", new_status=None):
+    """Move o projeto para uma etapa especifica fora do fluxo linear normal.
+
+    Usado pelas automacoes internas de exigencia de orgao externo: quando surge uma
+    exigencia, o projeto sai da coluna Orgao externo e vai para Pendencias, onde fica
+    ate a exigencia ser resolvida; quando resolvida, ele volta para Orgao externo (em
+    vez de simplesmente bloquear o avanco na mesma coluna). Mesma mecanica (historico,
+    movimentacao) do action move_stage, mas disparado pelo backend, nao por um formulario.
+    """
+    if not target_stage:
+        return None
+    db = get_db()
+    project = first_row(db, "SELECT * FROM projetos WHERE id = %s", (project_id,))
+    if not project:
+        return None
+    current_stage_id = project["etapa_atual_id"] or infer_current_stage_id_db(db, project_id)
+    if current_stage_id == target_stage["id"]:
+        return None
+    old_stage = load_project_stage_for_action(current_stage_id, project_id) if current_stage_id else None
+    now = app_now_iso()
+    is_rework = motivo in ("retorno", "exigencia_cartorio", "retrabalho", "pendencia_externa")
+
+    if old_stage:
+        old_status = "atencao" if is_rework else "concluido"
+        execute_db(
+            "UPDATE projeto_etapas SET status = %s, data_fim = %s WHERE id = %s",
+            (old_status, None if is_rework else now, old_stage["id"]),
+        )
+
+    target_status = new_status or ("retrabalho" if is_rework else "em andamento")
+    execute_db(
+        """
+        UPDATE projeto_etapas
+        SET status = %s, workflow_active = 1, responsavel_id = COALESCE(responsavel_id, %s),
+            data_inicio = COALESCE(data_inicio, %s), data_fim = NULL
+        WHERE id = %s
+        """,
+        (target_status, responsible_id, now, target_stage["id"]),
+    )
+    execute_db(
+        "UPDATE projetos SET etapa_atual_id = %s, status = %s, atualizado_em = %s WHERE id = %s",
+        (target_stage["id"], "Atencao" if is_rework else "Em andamento", now, project_id),
+    )
+    execute_db(
+        """
+        INSERT INTO movimentacoes_etapa
+            (projeto_id, etapa_anterior_id, etapa_nova_id, etapa_anterior, etapa_nova, motivo, observacao, responsavel_id, usuario_id, criado_em)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            project_id,
+            old_stage["id"] if old_stage else None,
+            target_stage["id"],
+            old_stage["etapa_nome"] if old_stage else None,
+            target_stage["etapa_nome"],
+            motivo,
+            observacao,
+            responsible_id,
+            g.user["id"] if getattr(g, "user", None) else None,
+            now,
+        ),
+    )
+    record_stage_history_transition(project_id, old_stage, target_stage, now, responsible_id, motivo)
+    record_event(
+        project_id,
+        "movimentacao_etapa",
+        f"Projeto movido de {old_stage['etapa_nome'] if old_stage else '-'} para {target_stage['etapa_nome']} ({motivo}).",
+    )
+    return target_stage
+
+
+def move_project_to_pending_after_exigencia(project_id, source_stage_id, responsible_id, description):
+    """Quando surge uma exigencia no orgao externo (cartorio), o projeto sai da coluna
+    Orgao externo e vai para Pendencias, onde fica ate a exigencia ser resolvida."""
+    db = get_db()
+    project = first_row(db, "SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,))
+    if not project or not source_stage_id or project["etapa_atual_id"] != source_stage_id:
+        return None
+    pendencias_stage = find_project_stage_by_key(db, project_id, "PENDENCIAS")
+    if not pendencias_stage:
+        return None
+    return move_project_to_stage(
+        project_id,
+        pendencias_stage,
+        "exigencia_cartorio",
+        responsible_id,
+        f"Exigencia registrada no orgao externo: {description}",
+    )
+
+
+def move_project_back_to_external_stage_after_pending_resolved(project_id, tipo_orgao, responsible_id):
+    """Quando a ultima exigencia aberta do orgao externo e resolvida e o projeto esta na
+    coluna Pendencias, ele volta para Orgao externo (que continua aguardando a retirada
+    do protocolo). Se o projeto ja saiu de Pendencias por outro caminho, nao faz nada."""
+    db = get_db()
+    project = first_row(db, "SELECT etapa_atual_id FROM projetos WHERE id = %s", (project_id,))
+    if not project or not project["etapa_atual_id"]:
+        return None
+    current_stage = load_project_stage_for_action(project["etapa_atual_id"], project_id)
+    if not current_stage or (current_stage.get("stage_key") or "") != "PENDENCIAS":
+        return None
+    external_stage = find_project_stage_by_external_type(db, project_id, tipo_orgao)
+    if not external_stage:
+        return None
+    summary = external_stage_protocol_summary(project_id, EXTERNAL_PROTOCOL_SCOPE, external_stage["id"])
+    target_status = "aguardando externo" if summary["pending_count"] else "em andamento"
+    return move_project_to_stage(
+        project_id,
+        external_stage,
+        "pendencia_resolvida",
+        responsible_id,
+        "Exigencia resolvida; retorno ao orgao externo.",
+        new_status=target_status,
+    )
+
+
 def can_manage():
     user = getattr(g, "user", None)
     return bool(user and user["perfil_acesso"] in ("admin", "coordenador"))
@@ -5180,6 +5343,13 @@ def get_cartorio_options():
     )
 
 
+def get_prefeitura_options():
+    return get_cached_lookup(
+        "prefeitura_options",
+        lambda: query_db("SELECT * FROM prefeituras ORDER BY nome"),
+    )
+
+
 def get_matrix_summary_counts(today_iso, in_7):
     """Mantém os totais globais quando um filtro não retorna nenhum projeto."""
     return get_cached_lookup(
@@ -5262,6 +5432,13 @@ def get_matrix_static_options():
                 ) AS cartorios,
                 COALESCE(
                     (
+                        SELECT json_agg(row_to_json(pr))
+                        FROM (SELECT * FROM prefeituras ORDER BY nome) pr
+                    ),
+                    '[]'::json
+                ) AS prefeituras,
+                COALESCE(
+                    (
                         SELECT json_agg(row_to_json(tp))
                         FROM (SELECT * FROM tipos_processo WHERE ativo = 1 ORDER BY ordem, nome) tp
                     ),
@@ -5297,6 +5474,7 @@ def get_matrix_static_options():
             "etapas": row["etapas"] or [],
             "usuarios": row["usuarios"] or [],
             "cartorios": row["cartorios"] or [],
+            "prefeituras": row["prefeituras"] or [],
             "process_types": row["process_types"] or [],
             "initial_stage_rows": row["initial_stage_rows"] or [],
         }
@@ -6641,6 +6819,12 @@ def load_project_matrix_modal_context(project_id):
                     NULLIF(CASE WHEN p.proprietario = p.codigo THEN '' ELSE p.proprietario END, '')
                 ) AS cliente_nome,
                 ct.nome AS cartorio_nome,
+                pref.nome AS prefeitura_nome,
+                pref.contato AS prefeitura_contato,
+                pref.telefone AS prefeitura_telefone,
+                pref.whatsapp AS prefeitura_whatsapp,
+                pref.email AS prefeitura_email,
+                pref.link_solicitacao AS prefeitura_link,
                 u.nome AS responsavel_nome
             FROM projetos p
             LEFT JOIN clientes c ON c.id = p.cliente_id
@@ -6659,6 +6843,7 @@ def load_project_matrix_modal_context(project_id):
                 WHERE opp.projeto_id = p.id
             ) owners ON TRUE
             LEFT JOIN cartorios ct ON ct.id = p.cartorio_id
+            LEFT JOIN prefeituras pref ON pref.id = p.prefeitura_id
             LEFT JOIN usuarios u ON u.id = p.responsavel_geral_id
             WHERE p.id = %s
         ),
@@ -6793,6 +6978,11 @@ def load_project_matrix_modal_context(project_id):
                   AND COALESCE(exi.tipo_registro, 'exigencia') = 'exigencia'
                   AND lower(COALESCE(exi.status, '')) NOT IN ('concluido', 'cancelado')
             ), '[]'::jsonb) AS exigencia_item_records,
+            COALESCE((
+                SELECT jsonb_agg(to_jsonb(pr) ORDER BY pr.order_index, pr.id)
+                FROM prefeitura_requisitos pr
+                WHERE pr.prefeitura_id = p.prefeitura_id AND pr.active = 1
+            ), '[]'::jsonb) AS prefeitura_requisitos,
             (
                 SELECT to_jsonb(next_stage)
                 FROM (
@@ -6895,6 +7085,11 @@ def load_project_matrix_modal_context(project_id):
             if row["exigencia_item_records"]
             else {}
         ),
+        "prefeitura_requisitos_by_project": (
+            {project_id: row["prefeitura_requisitos"] or []}
+            if row["prefeitura_requisitos"]
+            else {}
+        ),
         "next_stage_by_project": {project_id: next_stage} if next_stage else {},
         "previous_stages_by_project": {project_id: previous_stages} if previous_stages else {},
         "forward_options_by_project": {project_id: forward_options} if forward_options else {},
@@ -6923,6 +7118,7 @@ def project_modal_fragment(project_id):
             external_controls_by_project=context["external_controls_by_project"],
             exigencias_by_project=context["exigencias_by_project"],
             exigencia_itens_by_project=context["exigencia_itens_by_project"],
+            prefeitura_requisitos_by_project=context["prefeitura_requisitos_by_project"],
             next_stage_by_project=context["next_stage_by_project"],
             previous_stages_by_project=context["previous_stages_by_project"],
             forward_options_by_project=context["forward_options_by_project"],
@@ -7068,8 +7264,8 @@ def project_create():
             project_id = db.execute(
                 """
                 INSERT INTO projetos
-                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, tipo_servico, tipo_terreno, servicos_adicionais, valor, caminho_pasta, observacoes, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (codigo, nome, proprietario, cliente_id, cidade, uf, cartorio_id, prefeitura_id, tipo_servico, tipo_terreno, servicos_adicionais, valor, caminho_pasta, observacoes, criado_em, atualizado_em)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -7080,6 +7276,7 @@ def project_create():
                     request.form.get("cidade", "").strip(),
                     request.form.get("uf", "").strip().upper(),
                     request.form.get("cartorio_id") or None,
+                    request.form.get("prefeitura_id") or None,
                     process_key,
                     terreno,
                     encode_process_list(additional_processes),
@@ -7123,6 +7320,7 @@ def project_create():
         "project_form.html",
         clientes_json=fetch_cliente_autocomplete_options(),
         cartorios=form_options["cartorios"],
+        prefeituras=form_options["prefeituras"],
         process_types=form_options["process_types"],
         initial_stage_options=group_process_initial_stage_options(
             form_options["initial_stage_rows"]
@@ -7216,6 +7414,41 @@ def api_add_cartorio():
     except Exception:
         get_db().rollback()
         return {"error": "Nao foi possivel cadastrar o cartorio."}, 500
+
+
+@app.route("/api/add-prefeitura", methods=["POST"])
+@login_required
+def api_add_prefeitura():
+    if not can_manage():
+        return {"error": "Permissao negada"}, 403
+
+    data = request.get_json() or {}
+    nome = (data.get("nome") or "").strip()
+    if not nome:
+        return {"error": "Nome obrigatorio"}, 400
+
+    try:
+        lock_cur = get_db().execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("prefeituras:dedupe",))
+        lock_cur.close()
+        duplicate = first_row(
+            get_db(),
+            "SELECT id, nome FROM prefeituras WHERE lower(trim(nome)) = lower(trim(%s))",
+            (nome,),
+        )
+        if duplicate:
+            get_db().commit()
+            return {"id": duplicate["id"], "nome": duplicate["nome"], "existing": True}, 200
+        now = app_now_iso()
+        prefeitura_id = execute_db(
+            "INSERT INTO prefeituras (nome, criado_em, atualizado_em) VALUES (%s, %s, %s)",
+            (nome, now, now),
+        )
+        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
+        invalidate_runtime_caches()
+        return {"id": prefeitura_id, "nome": nome}, 201
+    except Exception:
+        get_db().rollback()
+        return {"error": "Nao foi possivel cadastrar a prefeitura."}, 500
 
 
 @app.route("/api/select-folder", methods=["POST"])
@@ -7844,6 +8077,7 @@ def project_detail(project_id):
         usuarios=ui_options["usuarios"],
         clientes_json=fetch_cliente_autocomplete_options(),
         cartorios=ui_options["cartorios"],
+        prefeituras=ui_options["prefeituras"],
         process_types=ui_options["process_types"],
         servicos_adicionais=decode_process_list(project["servicos_adicionais"]),
         financeiro=financeiro_context,
@@ -7894,7 +8128,7 @@ def project_action(project_id):
             db.execute(
                 """
                 UPDATE projetos
-                SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, tipo_servico = %s, tipo_terreno = %s, servicos_adicionais = %s,
+                SET nome = %s, proprietario = %s, cliente_id = %s, cidade = %s, uf = %s, cartorio_id = %s, prefeitura_id = %s, tipo_servico = %s, tipo_terreno = %s, servicos_adicionais = %s,
                     prioridade = %s, status = %s, prazo_critico = %s, responsavel_geral_id = %s, caminho_pasta = %s,
                     observacoes = %s, valor = %s, atualizado_em = %s
                 WHERE id = %s
@@ -7906,6 +8140,7 @@ def project_action(project_id):
                     request.form.get("cidade", "").strip(),
                     request.form.get("uf", "").strip().upper(),
                     request.form.get("cartorio_id") or None,
+                    request.form.get("prefeitura_id") or None,
                     new_process_key,
                     terreno,
                     encode_process_list(additional_processes),
@@ -8668,7 +8903,18 @@ def project_action(project_id):
                     (exigencia_id, titulo_item, app_now_iso()),
                 )
             record_event(project_id, "exigencia_criada", f"Exigencia #{exigencia_id} registrada.")
-            flash("Exigencia registrada e tarefa criada.", "success")
+            # Exigencia do orgao externo: o projeto sai da coluna Orgao externo e vai para
+            # Pendencias ate a exigencia ser resolvida (ver update_exigencia mais abaixo).
+            moved_to_pending = move_project_to_pending_after_exigencia(
+                project_id,
+                etapa_exigencia_id,
+                request.form.get("responsavel_id") or project["responsavel_geral_id"],
+                description,
+            )
+            if moved_to_pending:
+                flash(f"Exigencia registrada. Projeto movido para {moved_to_pending['etapa_nome']}.", "success")
+            else:
+                flash("Exigencia registrada e tarefa criada.", "success")
 
     elif action == "update_exigencia":
         exigencia_id = request.form.get("exigencia_id")
@@ -8762,6 +9008,25 @@ def project_action(project_id):
                     exigencia_row["tipo_orgao"] or "CARTORIO",
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                 )
+            if not next_stage and exigencia_row and tipo_registro == "exigencia" and status in ("concluido", "cancelado"):
+                # Exigencia resolvida: se nao houver mais nenhuma exigencia aberta no projeto,
+                # ele sai da coluna Pendencias e volta para o orgao externo (aguardando a
+                # retirada do protocolo, se ainda houver um em aberto).
+                remaining_open = scalar(
+                    get_db(),
+                    """
+                    SELECT COUNT(*) FROM exigencias_cartorio
+                    WHERE projeto_id = %s AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+                      AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+                    """,
+                    (project_id,),
+                )
+                if not remaining_open:
+                    next_stage = move_project_back_to_external_stage_after_pending_resolved(
+                        project_id,
+                        exigencia_row["tipo_orgao"] or "CARTORIO",
+                        request.form.get("responsavel_id") or project["responsavel_geral_id"],
+                    )
             if next_stage:
                 flash(f"Registro atualizado. Projeto avancou para {next_stage['etapa_nome']}.", "success")
             else:
@@ -11487,6 +11752,236 @@ def cartorios_checklist():
         selected_process=selected_process,
         items=items,
         inherited_source=inherited_source,
+    )
+
+
+@app.route("/prefeituras", methods=["GET", "POST"])
+@login_required
+def prefeituras():
+    """Cadastro de prefeituras: dados de contato e link para solicitar documentos online.
+    A lista do que cada prefeitura exige e mantida em /prefeituras/checklist."""
+    if request.method == "POST":
+        if not can_manage():
+            flash("Permissao negada.", "danger")
+            return redirect(url_for("prefeituras"))
+        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
+        action = request.form.get("action", "create")
+        prefeitura_id = request.form.get("prefeitura_id")
+        if action == "delete" and prefeitura_id:
+            usage = query_db(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM projetos WHERE prefeitura_id = %s) AS projetos,
+                    (SELECT COUNT(*) FROM prefeitura_requisitos WHERE prefeitura_id = %s) AS requisitos
+                """,
+                (prefeitura_id, prefeitura_id),
+                one=True,
+            )
+            total_usage = sum(int(usage[key] or 0) for key in ("projetos", "requisitos"))
+            if total_usage:
+                flash("Esta prefeitura nao pode ser excluida porque possui projetos ou requisitos vinculados.", "danger")
+            else:
+                execute_db("DELETE FROM prefeituras WHERE id = %s", (prefeitura_id,))
+                invalidate_runtime_caches()
+                flash("Prefeitura excluida.", "success")
+            return redirect(url_for("prefeituras"))
+
+        name = request.form.get("nome", "").strip()
+        if not name:
+            flash("Informe o nome da prefeitura.", "danger")
+            return redirect(url_for("prefeituras"))
+        now = app_now_iso()
+        values = (
+            name,
+            request.form.get("cidade", "").strip(),
+            request.form.get("uf", "").strip().upper(),
+            request.form.get("contato", "").strip(),
+            request.form.get("email", "").strip(),
+            request.form.get("telefone", "").strip(),
+            request.form.get("whatsapp", "").strip(),
+            request.form.get("link_solicitacao", "").strip(),
+            request.form.get("observacoes", "").strip(),
+        )
+        duplicate = first_row(
+            get_db(),
+            """
+            SELECT id, nome FROM prefeituras
+            WHERE lower(trim(nome)) = lower(trim(%s))
+              AND (COALESCE(%s::integer, 0) = 0 OR id <> %s::integer)
+            """,
+            (name, prefeitura_id if action == "update" else None, prefeitura_id if action == "update" else None),
+        )
+        if duplicate:
+            flash(f"Ja existe uma prefeitura cadastrada como {duplicate['nome']}.", "warning")
+            return redirect(url_for("prefeituras"))
+        if action == "update" and prefeitura_id:
+            execute_db(
+                """
+                UPDATE prefeituras
+                SET nome = %s, cidade = %s, uf = %s, contato = %s, email = %s,
+                    telefone = %s, whatsapp = %s, link_solicitacao = %s, observacoes = %s, atualizado_em = %s
+                WHERE id = %s
+                """,
+                values + (now, prefeitura_id),
+            )
+            flash("Prefeitura atualizada.", "success")
+        else:
+            execute_db(
+                """
+                INSERT INTO prefeituras
+                    (nome, cidade, uf, contato, email, telefone, whatsapp, link_solicitacao, observacoes, criado_em, atualizado_em)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                values + (now, now),
+            )
+            flash("Prefeitura cadastrada.", "success")
+        invalidate_runtime_caches()
+        return redirect(url_for("prefeituras"))
+
+    rows = query_db(
+        """
+        SELECT pr.*, COUNT(p.id) AS projetos
+        FROM prefeituras pr
+        LEFT JOIN projetos p ON p.prefeitura_id = pr.id
+        GROUP BY pr.id
+        ORDER BY pr.nome
+        """
+    )
+    return render_template("prefeituras.html", prefeituras=rows, ufs=UFS)
+
+
+@app.route("/prefeituras/checklist", methods=["GET", "POST"])
+@login_required
+def prefeituras_checklist():
+    """Gestao da lista do que cada prefeitura exige (etapa Assinaturas)."""
+    if not can_manage():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("prefeituras"))
+
+    prefeitura_options = query_db("SELECT id, nome FROM prefeituras ORDER BY nome")
+    raw_prefeitura = (request.values.get("prefeitura_id") or "").strip()
+    selected_prefeitura_id = int(raw_prefeitura) if raw_prefeitura.isdigit() else None
+    if not selected_prefeitura_id and prefeitura_options:
+        selected_prefeitura_id = prefeitura_options[0]["id"]
+
+    def manager_redirect():
+        args = {"prefeitura_id": selected_prefeitura_id} if selected_prefeitura_id else {}
+        return redirect(url_for("prefeituras_checklist", **args))
+
+    def scope_items(db, prefeitura_id):
+        return db.execute(
+            """
+            SELECT * FROM prefeitura_requisitos
+            WHERE prefeitura_id = %s AND active = 1
+            ORDER BY order_index, id
+            """,
+            (prefeitura_id,),
+        ).fetchall()
+
+    if request.method == "POST":
+        if not selected_prefeitura_id:
+            flash("Selecione uma prefeitura.", "danger")
+            return manager_redirect()
+        action = request.form.get("action", "")
+        db = get_db()
+        now = app_now_iso()
+
+        if action == "add":
+            titulo = (request.form.get("titulo") or "").strip()
+            observacoes = (request.form.get("observacoes") or "").strip()
+            if not titulo:
+                flash("Informe o que a prefeitura exige.", "danger")
+                return manager_redirect()
+            duplicate = first_row(
+                db,
+                """
+                SELECT id FROM prefeitura_requisitos
+                WHERE prefeitura_id = %s AND lower(titulo) = lower(%s) AND active = 1
+                """,
+                (selected_prefeitura_id, titulo),
+            )
+            if duplicate:
+                flash("Ja existe um item com esse nome nesta lista.", "warning")
+                return manager_redirect()
+            next_order = scalar(
+                db,
+                "SELECT COALESCE(MAX(order_index), 0) + 1 FROM prefeitura_requisitos WHERE prefeitura_id = %s AND active = 1",
+                (selected_prefeitura_id,),
+            )
+            db.execute(
+                """
+                INSERT INTO prefeitura_requisitos
+                    (prefeitura_id, titulo, observacoes, order_index, active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, 1, %s, %s)
+                """,
+                (selected_prefeitura_id, titulo, observacoes, next_order, now, now),
+            )
+            db.commit()
+            flash("Item adicionado.", "success")
+            return manager_redirect()
+
+        if action == "remove":
+            raw_item_id = (request.form.get("item_id") or "").strip()
+            item = first_row(
+                db,
+                "SELECT id FROM prefeitura_requisitos WHERE id = %s AND prefeitura_id = %s AND active = 1",
+                (raw_item_id, selected_prefeitura_id),
+            ) if raw_item_id.isdigit() else None
+            if not item:
+                flash("Item nao encontrado.", "danger")
+                return manager_redirect()
+            db.execute(
+                "UPDATE prefeitura_requisitos SET active = 0, updated_at = %s WHERE id = %s",
+                (now, item["id"]),
+            )
+            db.commit()
+            flash("Item removido.", "success")
+            return manager_redirect()
+
+        if action in ("move_up", "move_down"):
+            items = scope_items(db, selected_prefeitura_id)
+            index = next(
+                (i for i, item in enumerate(items) if str(item["id"]) == request.form.get("item_id")),
+                None,
+            )
+            if index is None:
+                return manager_redirect()
+            neighbor = index - 1 if action == "move_up" else index + 1
+            if not (0 <= neighbor < len(items)):
+                return manager_redirect()
+            order = [item["id"] for item in items]
+            order[index], order[neighbor] = order[neighbor], order[index]
+            execute_values_db(
+                db,
+                """
+                UPDATE prefeitura_requisitos AS target
+                SET order_index = source.order_index, updated_at = source.updated_at
+                FROM (VALUES %s) AS source(id, order_index, updated_at)
+                WHERE target.id = source.id
+                """,
+                [(item_id, position, now) for position, item_id in enumerate(order, 1)],
+                page_size=1000,
+            )
+            db.commit()
+            return manager_redirect()
+
+        flash("Acao invalida.", "danger")
+        return manager_redirect()
+
+    db = get_db()
+    selected_prefeitura = (
+        first_row(db, "SELECT * FROM prefeituras WHERE id = %s", (selected_prefeitura_id,))
+        if selected_prefeitura_id
+        else None
+    )
+    items = scope_items(db, selected_prefeitura_id) if selected_prefeitura_id else []
+
+    return render_template(
+        "prefeituras_checklist.html",
+        prefeitura_options=prefeitura_options,
+        selected_prefeitura_id=selected_prefeitura_id,
+        selected_prefeitura=selected_prefeitura,
+        items=items,
     )
 
 

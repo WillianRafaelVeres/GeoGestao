@@ -1,0 +1,116 @@
+{% extends 'base.html' %}
+{% block title %}O que a prefeitura exige{% endblock %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>O que a prefeitura exige (Assinaturas)</h1>
+        <p>Lista do que cada prefeitura pede, usada no botao Prefeitura dentro do projeto.</p>
+    </div>
+    <div>
+        <a class="btn btn-outline-secondary" href="{{ url_for('prefeituras') }}">Voltar as prefeituras</a>
+    </div>
+</div>
+
+<div class="content-grid two-columns">
+    <section class="panel">
+        <div class="panel-header">
+            <h2>Lista em edicao</h2>
+            {% if selected_prefeitura and selected_prefeitura.link_solicitacao %}
+                <small><a href="{{ selected_prefeitura.link_solicitacao }}" target="_blank" rel="noopener">Link para solicitar online</a></small>
+            {% elif selected_prefeitura %}
+                <small class="text-muted">Sem link de solicitacao cadastrado. <a href="{{ url_for('prefeituras') }}">Cadastrar</a></small>
+            {% endif %}
+        </div>
+
+        <form method="get" class="row g-2 align-items-end" style="padding: 0 1rem 1rem;">
+            <div class="col-12">
+                <label class="form-label">Prefeitura</label>
+                <select class="form-select" name="prefeitura_id" onchange="this.form.submit()">
+                    <option value="">Selecione...</option>
+                    {% for prefeitura in prefeitura_options %}
+                        <option value="{{ prefeitura.id }}" {% if selected_prefeitura_id == prefeitura.id %}selected{% endif %}>{{ prefeitura.nome }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </form>
+
+        {% if not prefeitura_options %}
+            <div style="padding: 0 1rem 1rem;">
+                <p class="text-muted mb-0">Nenhuma prefeitura cadastrada ainda. <a href="{{ url_for('prefeituras') }}">Cadastre uma prefeitura</a> primeiro.</p>
+            </div>
+        {% elif items %}
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead>
+                        <tr>
+                            <th>O que exige</th>
+                            <th style="width:11rem">Acoes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in items %}
+                            <tr>
+                                <td>
+                                    <strong>{{ item.titulo }}</strong>
+                                    {% if item.observacoes %}
+                                        <small>{{ item.observacoes }}</small>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <div class="d-flex gap-1">
+                                        <form method="post">
+                                            <input type="hidden" name="action" value="move_up" />
+                                            <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                            <input type="hidden" name="prefeitura_id" value="{{ selected_prefeitura_id }}" />
+                                            <button class="btn btn-outline-secondary btn-sm" type="submit" title="Mover para cima" {% if loop.first %}disabled{% endif %}>↑</button>
+                                        </form>
+                                        <form method="post">
+                                            <input type="hidden" name="action" value="move_down" />
+                                            <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                            <input type="hidden" name="prefeitura_id" value="{{ selected_prefeitura_id }}" />
+                                            <button class="btn btn-outline-secondary btn-sm" type="submit" title="Mover para baixo" {% if loop.last %}disabled{% endif %}>↓</button>
+                                        </form>
+                                        <form method="post" onsubmit="return confirm('Remover este item da lista?');">
+                                            <input type="hidden" name="action" value="remove" />
+                                            <input type="hidden" name="item_id" value="{{ item.id }}" />
+                                            <input type="hidden" name="prefeitura_id" value="{{ selected_prefeitura_id }}" />
+                                            <button class="btn btn-outline-danger btn-sm" type="submit">Excluir</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div style="padding: 0 1rem 1rem;">
+                <p class="text-muted mb-0">Nenhum item cadastrado nesta lista.</p>
+            </div>
+        {% endif %}
+    </section>
+
+    <section class="panel">
+        <div class="panel-header"><h2>Adicionar item</h2></div>
+        {% if selected_prefeitura_id %}
+        <form method="post" class="vstack gap-3" style="padding: 0 1rem 1rem;" data-single-submit>
+            <input type="hidden" name="action" value="add" />
+            <input type="hidden" name="prefeitura_id" value="{{ selected_prefeitura_id }}" />
+            <div>
+                <label class="form-label">O que a prefeitura exige</label>
+                <input class="form-control" name="titulo" placeholder="Ex.: Certidao de numeracao" required />
+            </div>
+            <div>
+                <label class="form-label">Observacoes</label>
+                <textarea class="form-control" name="observacoes" rows="3" placeholder="Ex.: solicitar pelo portal, prazo de 5 dias uteis."></textarea>
+            </div>
+            <button class="btn btn-primary" type="submit">Adicionar item</button>
+        </form>
+        {% else %}
+        <div style="padding: 0 1rem 1rem;">
+            <p class="text-muted mb-0">Selecione uma prefeitura para adicionar itens.</p>
+        </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

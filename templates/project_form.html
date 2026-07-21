@@ -35,6 +35,15 @@
                 <div class="ac-list" id="cartorioList"></div>
             </div>
         </div>
+        <div class="col-md-6">
+            <label class="form-label">Prefeitura</label>
+            <div class="ac-wrapper">
+                <input class="form-control" type="text" name="prefeitura_nome" id="prefeituraInput"
+                       placeholder="Digite a prefeitura..." autocomplete="off" />
+                <input type="hidden" name="prefeitura_id" id="prefeituraIdInput" />
+                <div class="ac-list" id="prefeituraList"></div>
+            </div>
+        </div>
         <div class="col-12 project-owners-manager" data-project-owners-manager>
             <div class="project-owners-heading">
                 <div>
@@ -184,6 +193,7 @@
 window.projectClientes = {{ clientes_json|tojson }};
 window.projectStageOptions = {{ initial_stage_options|tojson }};
 const cartorios = [{% for c in cartorios %}{ id: {{ c.id }}, nome: {{ c.nome | tojson }} },{% endfor %}];
+const prefeituras = [{% for p in prefeituras %}{ id: {{ p.id }}, nome: {{ p.nome | tojson }} },{% endfor %}];
 
 function initAC(inputId, listId, hiddenId, source, apiUrl) {
     const input = document.getElementById(inputId);
@@ -314,6 +324,7 @@ async function selecionarPasta() {
 
 document.addEventListener('DOMContentLoaded', function() {
     initAC('cartorioInput', 'cartorioList', 'cartorioIdInput', cartorios, '/api/add-cartorio');
+    initAC('prefeituraInput', 'prefeituraList', 'prefeituraIdInput', prefeituras, '/api/add-prefeitura');
 
     const tipo = document.getElementById('tipoServicoInput');
     const etapa = document.getElementById('initialStageInput');
