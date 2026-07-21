@@ -35,15 +35,6 @@
                 <div class="ac-list" id="cartorioList"></div>
             </div>
         </div>
-        <div class="col-md-6">
-            <label class="form-label">Prefeitura</label>
-            <div class="ac-wrapper">
-                <input class="form-control" type="text" name="prefeitura_nome" id="prefeituraInput"
-                       placeholder="Digite a prefeitura..." autocomplete="off" />
-                <input type="hidden" name="prefeitura_id" id="prefeituraIdInput" />
-                <div class="ac-list" id="prefeituraList"></div>
-            </div>
-        </div>
         <div class="col-12 project-owners-manager" data-project-owners-manager>
             <div class="project-owners-heading">
                 <div>
@@ -123,13 +114,27 @@
         </div>
         <div class="col-12">
             <label class="form-label">Caminho da pasta no servidor</label>
-            <div class="input-group">
-                <input class="form-control" name="caminho_pasta" id="caminhoInput" placeholder="Ex: C:\Projetos\Cliente\Projeto" />
-                <button class="btn btn-outline-secondary" type="button" id="btnProcurar" onclick="selecionarPasta()">
-                    Procurar
-                </button>
+            <div class="row g-2">
+                <div class="col-md-8">
+                    <div class="input-group">
+                        <input class="form-control" name="caminho_pasta" id="caminhoInput" placeholder="Ex: C:\Projetos\Cliente\Projeto" />
+                        <button class="btn btn-outline-secondary" type="button" id="btnProcurar" onclick="selecionarPasta()">
+                            Procurar
+                        </button>
+                    </div>
+                    <div id="pastaFeedback" class="form-text" style="display:none;color:#198754;">Pasta selecionada.</div>
+                </div>
+                <div class="col-md-4 d-flex align-items-center">
+                    <label class="inline-check" id="novoTrabalhoLabel" style="margin:0;cursor:pointer;">
+                        <input type="checkbox" id="novoTrabalhoCheck" name="pasta_auto" value="1" />
+                        <span>Trabalho novo (criar pasta automaticamente)</span>
+                    </label>
+                </div>
             </div>
-            <div id="pastaFeedback" class="form-text" style="display:none;color:#198754;">Pasta selecionada.</div>
+            <input type="hidden" name="pasta_owner_name" id="pastaOwnerName" value="" />
+            <div id="novoTrabalhoHint" class="form-text" style="display:none;">
+                A pasta sera criada em <code>C:\SC Dropbox\SC\Novo\CIDADE\PROPRIETARIO\PROJETO</code> (copia do modelo 00_MOD) ao salvar.
+            </div>
         </div>
         <div class="col-12">
             <label class="form-label">Observacoes</label>
@@ -140,6 +145,39 @@
         </div>
     </form>
 </section>
+
+{# ===== MODAL: confirmar pasta de trabalho novo ===== #}
+<div class="modal fade" id="novoTrabalhoModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <span class="module-label">Trabalho novo</span>
+                    <h2 class="modal-title">Confirmar pasta do proprietario</h2>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div id="ntCity" class="form-text mb-2"></div>
+                <div id="ntError" class="alert alert-danger" style="display:none;"></div>
+                <div id="ntBody" style="display:none;">
+                    <p class="mb-2" style="font-size:.9rem;color:#374151;">Escolha a pasta do proprietario nesta cidade ou crie uma nova:</p>
+                    <div id="ntOwnerList" class="vstack gap-1 mb-3"></div>
+                    <label class="inline-check" style="margin-bottom:6px;cursor:pointer;">
+                        <input type="radio" name="ntOwnerChoice" id="ntNewRadio" value="__new__" />
+                        <span>Criar nova pasta</span>
+                    </label>
+                    <input class="form-control" id="ntNewName" placeholder="Nome da pasta do proprietario" />
+                    <small class="form-text">Sugestao editavel. Use um nome curto (ex.: MOBASA).</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-primary" id="ntConfirmBtn">Confirmar e criar projeto</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <style>
 .ac-wrapper {
@@ -193,7 +231,6 @@
 window.projectClientes = {{ clientes_json|tojson }};
 window.projectStageOptions = {{ initial_stage_options|tojson }};
 const cartorios = [{% for c in cartorios %}{ id: {{ c.id }}, nome: {{ c.nome | tojson }} },{% endfor %}];
-const prefeituras = [{% for p in prefeituras %}{ id: {{ p.id }}, nome: {{ p.nome | tojson }} },{% endfor %}];
 
 function initAC(inputId, listId, hiddenId, source, apiUrl) {
     const input = document.getElementById(inputId);
@@ -324,7 +361,6 @@ async function selecionarPasta() {
 
 document.addEventListener('DOMContentLoaded', function() {
     initAC('cartorioInput', 'cartorioList', 'cartorioIdInput', cartorios, '/api/add-cartorio');
-    initAC('prefeituraInput', 'prefeituraList', 'prefeituraIdInput', prefeituras, '/api/add-prefeitura');
 
     const tipo = document.getElementById('tipoServicoInput');
     const etapa = document.getElementById('initialStageInput');
@@ -351,6 +387,118 @@ document.addEventListener('DOMContentLoaded', function() {
         v.addEventListener('blur', function() {
             const raw = this.value.replace(/\D/g, '');
             if (raw) this.value = (parseInt(raw) / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        });
+    }
+
+    // ===== Trabalho novo: criacao automatica de pasta =====
+    const form = document.getElementById('projectForm');
+    const novoCheck = document.getElementById('novoTrabalhoCheck');
+    const caminhoInput = document.getElementById('caminhoInput');
+    const btnProcurar = document.getElementById('btnProcurar');
+    const hint = document.getElementById('novoTrabalhoHint');
+    const pastaOwnerName = document.getElementById('pastaOwnerName');
+    const cidadeInput = document.querySelector('input[name="cidade"]');
+    const clienteInput = document.getElementById('clienteNomeInput');
+    const modalEl = document.getElementById('novoTrabalhoModal');
+
+    if (form && novoCheck && modalEl) {
+        const modal = new bootstrap.Modal(modalEl);
+        const ntCity = document.getElementById('ntCity');
+        const ntError = document.getElementById('ntError');
+        const ntBody = document.getElementById('ntBody');
+        const ntOwnerList = document.getElementById('ntOwnerList');
+        const ntNewRadio = document.getElementById('ntNewRadio');
+        const ntNewName = document.getElementById('ntNewName');
+        const ntConfirmBtn = document.getElementById('ntConfirmBtn');
+        let ntConfirmed = false;
+
+        function resetConfirmed() { ntConfirmed = false; }
+
+        novoCheck.addEventListener('change', function() {
+            resetConfirmed();
+            const on = this.checked;
+            caminhoInput.disabled = on;
+            btnProcurar.disabled = on;
+            if (on) { caminhoInput.value = ''; hint.style.display = 'block'; }
+            else { hint.style.display = 'none'; }
+        });
+        if (cidadeInput) cidadeInput.addEventListener('input', resetConfirmed);
+        if (clienteInput) clienteInput.addEventListener('input', resetConfirmed);
+
+        ntNewName.addEventListener('input', function() { ntNewRadio.checked = true; });
+
+        function openModal() {
+            const cidade = (cidadeInput && cidadeInput.value || '').trim();
+            const proprietario = (clienteInput && clienteInput.value || '').trim();
+            if (!cidade) { alert('Informe a cidade do projeto antes de criar a pasta automaticamente.'); return; }
+            if (!proprietario) { alert('Informe o proprietario principal antes de criar a pasta automaticamente.'); return; }
+            ntError.style.display = 'none';
+            ntBody.style.display = 'none';
+            ntCity.textContent = 'Verificando pastas existentes...';
+            modal.show();
+            fetch('/api/new-work-folder/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cidade: cidade, proprietario: proprietario })
+            })
+            .then(r => r.json().then(d => ({ ok: r.ok, d: d })))
+            .then(function(res) {
+                if (!res.ok || !res.d.ok) {
+                    ntCity.textContent = '';
+                    ntError.textContent = (res.d && res.d.error) || 'Nao foi possivel consultar as pastas.';
+                    ntError.style.display = 'block';
+                    return;
+                }
+                const d = res.d;
+                ntCity.innerHTML = 'Cidade: <strong>' + d.city.folder + '</strong> ' + (d.city.exists ? '(pasta existente)' : '(sera criada)');
+                ntOwnerList.innerHTML = '';
+                (d.owner_folders || []).forEach(function(name, i) {
+                    const label = document.createElement('label');
+                    label.className = 'inline-check';
+                    label.style.cssText = 'cursor:pointer;margin:0;';
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = 'ntOwnerChoice';
+                    radio.value = name;
+                    if (d.best_match === name) radio.checked = true;
+                    const span = document.createElement('span');
+                    span.textContent = 'Usar pasta existente: ' + name + (d.best_match === name ? '  (correspondencia provavel)' : '');
+                    label.appendChild(radio);
+                    label.appendChild(span);
+                    ntOwnerList.appendChild(label);
+                });
+                ntNewName.value = d.suggested_new_name || '';
+                if (!d.best_match) ntNewRadio.checked = true;
+                ntBody.style.display = 'block';
+            })
+            .catch(function() {
+                ntCity.textContent = '';
+                ntError.textContent = 'Falha ao consultar as pastas. Verifique se o Dropbox esta sincronizado.';
+                ntError.style.display = 'block';
+            });
+        }
+
+        form.addEventListener('submit', function(event) {
+            if (!novoCheck.checked) return;   // fluxo normal
+            if (ntConfirmed) return;          // ja confirmado, deixa enviar
+            event.preventDefault();
+            openModal();
+        });
+
+        ntConfirmBtn.addEventListener('click', function() {
+            const choice = document.querySelector('input[name="ntOwnerChoice"]:checked');
+            if (!choice) { alert('Selecione uma pasta existente ou marque "Criar nova pasta".'); return; }
+            let ownerName;
+            if (choice.value === '__new__') {
+                ownerName = (ntNewName.value || '').trim();
+                if (!ownerName) { alert('Informe o nome da nova pasta do proprietario.'); return; }
+            } else {
+                ownerName = choice.value;
+            }
+            pastaOwnerName.value = ownerName;
+            ntConfirmed = true;
+            modal.hide();
+            if (form.requestSubmit) form.requestSubmit(); else form.submit();
         });
     }
 });

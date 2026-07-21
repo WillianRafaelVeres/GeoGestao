@@ -3,128 +3,68 @@
 <div class="page-heading">
     <div>
         <h1>Prefeituras</h1>
-        <p>Prefeituras usadas nos projetos, com o que cada uma exige e o link para solicitar online.</p>
+        <p>Prefeituras das cidades onde ha trabalho. Aparecem sozinhas conforme a cidade dos projetos; aqui voce so define o link e a lista do que cada uma exige.</p>
     </div>
     <div>
         <a class="btn btn-outline-primary" href="{{ url_for('prefeituras_checklist') }}">O que a prefeitura exige</a>
     </div>
 </div>
 
-<div class="content-grid two-columns">
-    <section class="panel">
-        <div class="panel-header"><h2>Cadastros</h2></div>
-        <div class="table-responsive">
-            <table class="table compact-table">
-                <thead><tr><th>Nome</th><th>Cidade/UF</th><th>Contato</th><th>Link para solicitar</th><th>Projetos</th><th>Acoes</th></tr></thead>
-                <tbody>
-                    {% for item in prefeituras %}
-                        <tr>
-                            <td><strong>{{ item.nome }}</strong><small>{{ item.observacoes or '' }}</small></td>
-                            <td>{{ item.cidade or '-' }} / {{ item.uf or '-' }}</td>
-                            <td>
-                                <strong>{{ item.contato or item.telefone or '-' }}</strong>
-                                <small>{{ item.email or item.whatsapp or '' }}</small>
-                            </td>
-                            <td>
-                                {% if item.link_solicitacao %}
-                                    <a href="{{ item.link_solicitacao }}" target="_blank" rel="noopener">Abrir link</a>
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                            <td>{{ item.projetos }}</td>
-                            <td>
-                                <div class="d-flex gap-1">
-                                    <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-prefeitura-{{ item.id }}">Editar</button>
-                                    <a class="btn btn-outline-primary btn-sm" href="{{ url_for('prefeituras_checklist', prefeitura_id=item.id) }}" title="O que esta prefeitura exige">Checklist</a>
-                                    <form method="post" onsubmit="return confirm('Excluir esta prefeitura? Esta ação não poderá ser desfeita.');">
-                                        <input type="hidden" name="action" value="delete" />
-                                        <input type="hidden" name="prefeitura_id" value="{{ item.id }}" />
-                                        <button class="btn btn-outline-danger btn-sm" type="submit" {% if not can_manage() %}disabled{% endif %}>Excluir</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                    {% else %}
-                        <tr><td colspan="6">Nenhum cadastro encontrado.</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-header"><h2>Nova prefeitura</h2></div>
-        <form method="post" class="vstack gap-3" data-single-submit>
-            <input type="hidden" name="action" value="create" />
-            <div><label class="form-label">Nome</label><input class="form-control" name="nome" required /></div>
-            <div class="row g-2">
-                <div class="col-4">
-                    <label class="form-label">UF</label>
-                    <select class="form-select" name="uf" data-city-uf="prefeitura">
-                        <option value="">UF</option>
-                        {% for uf_option in ufs %}
-                            <option value="{{ uf_option }}">{{ uf_option }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-8">
-                    <label class="form-label">Cidade</label>
-                    <input class="form-control" name="cidade" data-city-input="prefeitura" autocomplete="off" placeholder="Selecione a UF e digite..." />
-                    <div class="city-warning" data-city-warning="prefeitura">Verifique a cidade: ela nao foi encontrada para a UF selecionada.</div>
-                </div>
-            </div>
-            <div><label class="form-label">Contato</label><input class="form-control" name="contato" /></div>
-            <div class="row g-2">
-                <div class="col-md-6"><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" /></div>
-                <div class="col-md-6"><label class="form-label">Telefone</label><input class="form-control" name="telefone" /></div>
-            </div>
-            <div><label class="form-label">WhatsApp</label><input class="form-control" name="whatsapp" /></div>
-            <div>
-                <label class="form-label">Link para solicitar online</label>
-                <input class="form-control" type="url" name="link_solicitacao" placeholder="https://..." />
-                <small class="text-muted">Link do portal da prefeitura para solicitar certidoes, alvaras, guias etc.</small>
-            </div>
-            <div><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3"></textarea></div>
-            <button class="btn btn-primary" type="submit" {% if not can_manage() %}disabled{% endif %}>Cadastrar</button>
-        </form>
-    </section>
-</div>
+<section class="panel">
+    <div class="panel-header">
+        <h2>Cadastros</h2>
+        <small>A prefeitura e definida pela cidade do terreno na criacao do projeto. Nao ha cadastro manual.</small>
+    </div>
+    <div class="table-responsive">
+        <table class="table compact-table">
+            <thead><tr><th>Cidade/UF</th><th>Contato</th><th>Link para solicitar</th><th>Exigencias</th><th>Projetos</th><th>Acoes</th></tr></thead>
+            <tbody>
+                {% for item in prefeituras %}
+                    <tr>
+                        <td>
+                            <strong>{{ item.cidade or item.nome }}</strong> / {{ item.uf or '-' }}
+                            {% if item.observacoes %}<small>{{ item.observacoes }}</small>{% endif %}
+                        </td>
+                        <td>
+                            <strong>{{ item.contato or item.telefone or '-' }}</strong>
+                            <small>{{ item.email or item.whatsapp or '' }}</small>
+                        </td>
+                        <td>
+                            {% if item.link_solicitacao %}
+                                <a href="{{ item.link_solicitacao }}" target="_blank" rel="noopener">Abrir link</a>
+                            {% else %}
+                                <span class="text-muted">Sem link</span>
+                            {% endif %}
+                        </td>
+                        <td><a href="{{ url_for('prefeituras_checklist', prefeitura_id=item.id) }}" title="O que esta prefeitura exige">Editar lista</a></td>
+                        <td>{{ item.projetos }}</td>
+                        <td>
+                            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-prefeitura-{{ item.id }}">Editar contato/link</button>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="6">Nenhuma prefeitura ainda. Crie um projeto informando a cidade do terreno e a prefeitura aparecera aqui.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 
 {% for item in prefeituras %}
 <div class="modal fade" id="modal-prefeitura-{{ item.id }}" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <form method="post" class="modal-content">
-            <input type="hidden" name="action" value="update" />
             <input type="hidden" name="prefeitura_id" value="{{ item.id }}" />
             <div class="modal-header">
                 <div>
-                    <span class="module-label">Prefeitura</span>
-                    <h2 class="modal-title">{{ item.nome }}</h2>
+                    <span class="module-label">Prefeitura de {{ item.cidade or item.nome }}{% if item.uf %} / {{ item.uf }}{% endif %}</span>
+                    <h2 class="modal-title">Contato e link</h2>
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
             </div>
             <div class="modal-body">
+                <p class="text-muted" style="font-size:.9rem;">A cidade/UF vem do projeto e nao muda aqui. A lista do que esta prefeitura exige e editada em <a href="{{ url_for('prefeituras_checklist', prefeitura_id=item.id) }}">O que a prefeitura exige</a>.</p>
                 <div class="row g-3">
-                    <div class="col-md-12"><label class="form-label">Nome</label><input class="form-control" name="nome" value="{{ item.nome }}" required /></div>
-                    <div class="col-md-4">
-                        <label class="form-label">UF</label>
-                        <select class="form-select" name="uf" data-city-uf="prefeitura">
-                            <option value="">UF</option>
-                            {% set item_uf = (item.uf or '')|upper %}
-                            {% if item.uf and item_uf not in ufs %}
-                                <option value="{{ item.uf }}" selected>{{ item.uf }}</option>
-                            {% endif %}
-                            {% for uf_option in ufs %}
-                                <option value="{{ uf_option }}" {% if item_uf == uf_option %}selected{% endif %}>{{ uf_option }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="col-md-8">
-                        <label class="form-label">Cidade</label>
-                        <input class="form-control" name="cidade" value="{{ item.cidade or '' }}" data-city-input="prefeitura" autocomplete="off" />
-                        <div class="city-warning" data-city-warning="prefeitura">Verifique a cidade: ela nao foi encontrada para a UF selecionada.</div>
-                    </div>
                     <div class="col-md-6"><label class="form-label">Contato principal</label><input class="form-control" name="contato" value="{{ item.contato or '' }}" /></div>
                     <div class="col-md-6"><label class="form-label">Telefone</label><input class="form-control" name="telefone" value="{{ item.telefone or '' }}" /></div>
                     <div class="col-md-6"><label class="form-label">E-mail</label><input class="form-control" type="email" name="email" value="{{ item.email or '' }}" /></div>
@@ -132,6 +72,7 @@
                     <div class="col-12">
                         <label class="form-label">Link para solicitar online</label>
                         <input class="form-control" type="url" name="link_solicitacao" value="{{ item.link_solicitacao or '' }}" placeholder="https://..." />
+                        <small class="form-text">Link do portal da prefeitura para solicitar certidoes, alvaras, guias etc.</small>
                     </div>
                     <div class="col-12"><label class="form-label">Observacoes</label><textarea class="form-control" name="observacoes" rows="3">{{ item.observacoes or '' }}</textarea></div>
                 </div>

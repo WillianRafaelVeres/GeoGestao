@@ -10,6 +10,7 @@ import io
 import json
 import re
 import secrets
+import shutil
 import smtplib
 import socket
 import sys
@@ -114,6 +115,11 @@ DROPBOX_PATH_ALIASES_RAW = os.environ.get(
     "DROPBOX_PATH_ALIASES",
     r"Y:\PASTAS=/SC/Pastas;Z:\PASTAS=/SC/Pastas;X:\PASTAS=/SC/Pastas",
 ).strip()
+# Criacao automatica de pastas de trabalho novo: base local (sincronizada pelo Dropbox)
+# organizada em Novo\<CIDADE>\<PROPRIETARIO>\<PROJETO>, onde <PROJETO> e uma copia da
+# pasta modelo (00_MOD que fica na raiz de Novo).
+NOVO_WORK_BASE_PATH = os.environ.get("GEOGESTAO_NOVO_WORK_BASE", r"C:\SC Dropbox\SC\Novo").strip().strip('"')
+NOVO_WORK_MODEL_FOLDER = os.environ.get("GEOGESTAO_NOVO_WORK_MODEL", "00_MOD").strip()
 try:
     APP_TIMEZONE = ZoneInfo(os.environ.get("GEOGESTAO_TIMEZONE", "America/Sao_Paulo"))
 except ZoneInfoNotFoundError:
@@ -5350,6 +5356,31 @@ def get_prefeitura_options():
     )
 
 
+def get_or_create_prefeitura_for_city(db, cidade, uf):
+    """A prefeitura de um projeto e a do municipio do terreno. Nao ha cadastro
+    manual: quando um projeto ganha uma cidade, encontramos (ou criamos) a
+    prefeitura daquela cidade/UF e retornamos o id. Compara sem acento/caixa
+    para nao duplicar 'Rio Negrinho' e 'RIO NEGRINHO'."""
+    cidade = (cidade or "").strip()
+    uf = (uf or "").strip().upper()
+    if not cidade:
+        return None
+    wanted = normalize_text(cidade)
+    if not wanted:
+        return None
+    for row in db.execute("SELECT id, nome, cidade, uf FROM prefeituras").fetchall():
+        row_city = normalize_text(row["cidade"] or row["nome"])
+        row_uf = (row["uf"] or "").strip().upper()
+        if row_city == wanted and (not uf or not row_uf or row_uf == uf):
+            return row["id"]
+    now = app_now_iso()
+    created = db.execute(
+        "INSERT INTO prefeituras (nome, cidade, uf, criado_em, atualizado_em) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (cidade, cidade, uf, now, now),
+    ).fetchone()
+    return created["id"] if created else None
+
+
 def get_matrix_summary_counts(today_iso, in_7):
     """Mantém os totais globais quando um filtro não retorna nenhum projeto."""
     return get_cached_lookup(
@@ -5432,13 +5463,6 @@ def get_matrix_static_options():
                 ) AS cartorios,
                 COALESCE(
                     (
-                        SELECT json_agg(row_to_json(pr))
-                        FROM (SELECT * FROM prefeituras ORDER BY nome) pr
-                    ),
-                    '[]'::json
-                ) AS prefeituras,
-                COALESCE(
-                    (
                         SELECT json_agg(row_to_json(tp))
                         FROM (SELECT * FROM tipos_processo WHERE ativo = 1 ORDER BY ordem, nome) tp
                     ),
@@ -5474,7 +5498,6 @@ def get_matrix_static_options():
             "etapas": row["etapas"] or [],
             "usuarios": row["usuarios"] or [],
             "cartorios": row["cartorios"] or [],
-            "prefeituras": row["prefeituras"] or [],
             "process_types": row["process_types"] or [],
             "initial_stage_rows": row["initial_stage_rows"] or [],
         }
@@ -7258,8 +7281,13 @@ def project_create():
         terreno = normalize_project_terrain_type(request.form.get("tipo_terreno"))
         valor = parse_currency_value(request.form.get("valor", "").strip())
 
+        cidade = request.form.get("cidade", "").strip()
+        uf = request.form.get("uf", "").strip().upper()
+
         db = get_db()
         try:
+            # A prefeitura vem da cidade do terreno (nao ha cadastro manual).
+            prefeitura_id = get_or_create_prefeitura_for_city(db, cidade, uf)
             created = app_now_iso()
             project_id = db.execute(
                 """
@@ -7273,10 +7301,10 @@ def project_create():
                     nome,
                     cliente_nome,
                     cliente_id,
-                    request.form.get("cidade", "").strip(),
-                    request.form.get("uf", "").strip().upper(),
+                    cidade,
+                    uf,
                     request.form.get("cartorio_id") or None,
-                    request.form.get("prefeitura_id") or None,
+                    prefeitura_id,
                     process_key,
                     terreno,
                     encode_process_list(additional_processes),
@@ -7309,10 +7337,33 @@ def project_create():
                 )
             db.commit()
             invalidate_runtime_caches()
+            invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
         except Exception:
             db.rollback()
             raise
         flash("Projeto criado com sucesso.", "success")
+
+        # Trabalho novo: cria a estrutura Novo\CIDADE\PROPRIETARIO\PROJETO (copia do 00_MOD)
+        # e salva o caminho no projeto. So roda apos o projeto ja estar gravado, entao uma
+        # falha de pasta nao desfaz o cadastro, apenas avisa.
+        if request.form.get("pasta_auto") == "1":
+            owner_folder_name = (request.form.get("pasta_owner_name") or "").strip() or cliente_nome
+            folder_path, folder_error = create_new_work_folder(
+                request.form.get("cidade", "").strip(),
+                owner_folder_name,
+                nome,
+            )
+            if folder_path:
+                execute_db(
+                    "UPDATE projetos SET caminho_pasta = %s, atualizado_em = %s WHERE id = %s",
+                    (folder_path, app_now_iso(), project_id),
+                )
+                invalidate_runtime_caches()
+                record_event(project_id, "pasta_criada", f"Pasta do projeto criada automaticamente: {folder_path}")
+                flash(f"Pasta criada: {folder_path}", "success")
+            else:
+                flash(f"Projeto criado, mas a pasta nao pode ser criada automaticamente: {folder_error}", "warning")
+
         return redirect(url_for("project_detail", project_id=project_id))
 
     form_options = get_matrix_static_options()
@@ -7320,7 +7371,6 @@ def project_create():
         "project_form.html",
         clientes_json=fetch_cliente_autocomplete_options(),
         cartorios=form_options["cartorios"],
-        prefeituras=form_options["prefeituras"],
         process_types=form_options["process_types"],
         initial_stage_options=group_process_initial_stage_options(
             form_options["initial_stage_rows"]
@@ -7416,39 +7466,171 @@ def api_add_cartorio():
         return {"error": "Nao foi possivel cadastrar o cartorio."}, 500
 
 
-@app.route("/api/add-prefeitura", methods=["POST"])
-@login_required
-def api_add_prefeitura():
-    if not can_manage():
-        return {"error": "Permissao negada"}, 403
+# --- Criacao automatica de pastas de trabalho novo (Novo\CIDADE\PROPRIETARIO\PROJETO) ---
 
-    data = request.get_json() or {}
-    nome = (data.get("nome") or "").strip()
-    if not nome:
-        return {"error": "Nome obrigatorio"}, 400
+_OWNER_COMPANY_SUFFIXES = {
+    "sa", "ltda", "me", "epp", "eireli", "mei", "cia",
+}
+_FOLDER_INVALID_CHARS = re.compile(r'[\\/:*?"<>|]+')
 
+
+def sanitize_folder_name(name):
+    """Nome de pasta seguro no Windows: remove caracteres proibidos e espacos duplicados."""
+    cleaned = _FOLDER_INVALID_CHARS.sub(" ", str(name or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:120]
+
+
+def normalize_owner_key(name):
+    """Chave de comparacao de proprietario: sem acento, minusculo, sem sufixos de empresa
+    nem pontuacao, para casar 'Mobasa Reflorestamento S.A.' com uma pasta 'MOBASA'."""
+    text = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode("ascii").lower()
+    tokens = [tok for tok in re.split(r"[^a-z0-9]+", text) if tok]
+    significant = [tok for tok in tokens if tok not in _OWNER_COMPANY_SUFFIXES]
+    return significant or tokens
+
+
+def suggest_owner_folder_name(name):
+    """Sugestao editavel de nome curto para a pasta de um proprietario novo."""
+    cleaned = sanitize_folder_name(name).upper()
+    return cleaned or "PROPRIETARIO"
+
+
+def match_owner_folder(owner_name, existing_folders):
+    """Melhor pasta de proprietario que corresponde ao nome informado.
+
+    Retorna (folder_name, score) com score 0..100; score alto = casa com confianca.
+    """
+    wanted = normalize_owner_key(owner_name)
+    if not wanted:
+        return None, 0
+    wanted_set = set(wanted)
+    best = (None, 0)
+    for folder in existing_folders:
+        tokens = normalize_owner_key(folder)
+        if not tokens:
+            continue
+        token_set = set(tokens)
+        if tokens == wanted:
+            score = 100
+        elif token_set == wanted_set:
+            score = 95
+        elif token_set <= wanted_set or wanted_set <= token_set:
+            score = 85
+        elif token_set & wanted_set:
+            shared = len(token_set & wanted_set)
+            score = 55 + min(25, shared * 15)
+        else:
+            score = 0
+        if score > best[1]:
+            best = (folder, score)
+    return best
+
+
+def novo_work_base_status():
+    """Verifica se a base de trabalho novo e a pasta modelo existem localmente."""
+    base = NOVO_WORK_BASE_PATH
+    model = os.path.join(base, NOVO_WORK_MODEL_FOLDER)
+    if not hasattr(os, "startfile"):
+        return False, "A criacao automatica de pastas so funciona no aplicativo local (Windows)."
+    if not os.path.isdir(base):
+        return False, f"Pasta base nao encontrada: {base}. Verifique se o Dropbox esta sincronizado."
+    if not os.path.isdir(model):
+        return False, f"Pasta modelo nao encontrada: {model}."
+    return True, None
+
+
+def find_existing_city_folder(city):
+    """Nome real da pasta da cidade (ignorando caixa/acentos), ou None se ainda nao existe."""
+    wanted = normalize_text(city)
+    if not wanted or not os.path.isdir(NOVO_WORK_BASE_PATH):
+        return None
+    for entry in os.listdir(NOVO_WORK_BASE_PATH):
+        full = os.path.join(NOVO_WORK_BASE_PATH, entry)
+        if os.path.isdir(full) and entry != NOVO_WORK_MODEL_FOLDER and normalize_text(entry) == wanted:
+            return entry
+    return None
+
+
+def list_city_owner_folders(city_folder_name):
+    """Subpastas (proprietarios) dentro de Novo\\<cidade>."""
+    if not city_folder_name:
+        return []
+    city_path = os.path.join(NOVO_WORK_BASE_PATH, city_folder_name)
+    if not os.path.isdir(city_path):
+        return []
+    return sorted(
+        entry for entry in os.listdir(city_path)
+        if os.path.isdir(os.path.join(city_path, entry))
+    )
+
+
+def create_new_work_folder(city, owner_folder_name, project_name):
+    """Cria Novo\\<CIDADE>\\<PROPRIETARIO>\\<PROJETO> copiando a pasta modelo 00_MOD.
+
+    Retorna (caminho_criado, None) em sucesso ou (None, mensagem_de_erro).
+    """
+    ok, error = novo_work_base_status()
+    if not ok:
+        return None, error
+    city_folder = find_existing_city_folder(city) or sanitize_folder_name(city).upper()
+    if not city_folder:
+        return None, "Informe a cidade do projeto para criar a pasta."
+    owner_folder = sanitize_folder_name(owner_folder_name)
+    if not owner_folder:
+        return None, "Informe o nome da pasta do proprietario."
+    project_folder = sanitize_folder_name(project_name)
+    if not project_folder:
+        return None, "Informe o nome do projeto para criar a pasta."
+
+    city_path = os.path.join(NOVO_WORK_BASE_PATH, city_folder)
+    owner_path = os.path.join(city_path, owner_folder)
+    target_path = os.path.join(owner_path, project_folder)
+    model_path = os.path.join(NOVO_WORK_BASE_PATH, NOVO_WORK_MODEL_FOLDER)
+
+    if os.path.exists(target_path):
+        return None, f"Ja existe uma pasta chamada '{project_folder}' em {owner_folder}. Escolha outro nome de projeto ou defina a pasta manualmente."
     try:
-        lock_cur = get_db().execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("prefeituras:dedupe",))
-        lock_cur.close()
-        duplicate = first_row(
-            get_db(),
-            "SELECT id, nome FROM prefeituras WHERE lower(trim(nome)) = lower(trim(%s))",
-            (nome,),
-        )
-        if duplicate:
-            get_db().commit()
-            return {"id": duplicate["id"], "nome": duplicate["nome"], "existing": True}, 200
-        now = app_now_iso()
-        prefeitura_id = execute_db(
-            "INSERT INTO prefeituras (nome, criado_em, atualizado_em) VALUES (%s, %s, %s)",
-            (nome, now, now),
-        )
-        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
-        invalidate_runtime_caches()
-        return {"id": prefeitura_id, "nome": nome}, 201
-    except Exception:
-        get_db().rollback()
-        return {"error": "Nao foi possivel cadastrar a prefeitura."}, 500
+        os.makedirs(owner_path, exist_ok=True)
+        shutil.copytree(model_path, target_path)
+    except OSError as exc:
+        return None, f"Falha ao criar a pasta: {exc}"
+    return target_path, None
+
+
+@app.route("/api/new-work-folder/preview", methods=["POST"])
+@login_required
+def api_new_work_folder_preview():
+    """Prepara o popup de trabalho novo: status da base, cidade, pastas de proprietario
+    ja existentes na cidade, melhor correspondencia e sugestao de nome novo."""
+    if not can_manage():
+        return jsonify({"ok": False, "error": "Permissao negada."}), 403
+    data = request.get_json(silent=True) or {}
+    city = (data.get("cidade") or "").strip()
+    owner = (data.get("proprietario") or "").strip()
+    if not city:
+        return jsonify({"ok": False, "error": "Informe a cidade do projeto antes de criar a pasta."}), 400
+    if not owner:
+        return jsonify({"ok": False, "error": "Informe o proprietario principal antes de criar a pasta."}), 400
+
+    base_ok, base_error = novo_work_base_status()
+    if not base_ok:
+        return jsonify({"ok": False, "error": base_error}), 400
+
+    city_folder = find_existing_city_folder(city)
+    owner_folders = list_city_owner_folders(city_folder) if city_folder else []
+    best_match, score = match_owner_folder(owner, owner_folders)
+    return jsonify({
+        "ok": True,
+        "city": {
+            "input": city,
+            "exists": bool(city_folder),
+            "folder": city_folder or sanitize_folder_name(city).upper(),
+        },
+        "owner_folders": owner_folders,
+        "best_match": best_match if score >= 85 else None,
+        "suggested_new_name": suggest_owner_folder_name(owner),
+    })
 
 
 @app.route("/api/select-folder", methods=["POST"])
@@ -8077,7 +8259,6 @@ def project_detail(project_id):
         usuarios=ui_options["usuarios"],
         clientes_json=fetch_cliente_autocomplete_options(),
         cartorios=ui_options["cartorios"],
-        prefeituras=ui_options["prefeituras"],
         process_types=ui_options["process_types"],
         servicos_adicionais=decode_process_list(project["servicos_adicionais"]),
         financeiro=financeiro_context,
@@ -8122,9 +8303,13 @@ def project_action(project_id):
         old_process_key = normalize_project_process_type(project["tipo_servico"])
         terreno = normalize_project_terrain_type(request.form.get("tipo_terreno"))
         workflow_initialized = project_has_workflow_initialized_db(get_db(), project_id)
+        cidade = request.form.get("cidade", "").strip()
+        uf = request.form.get("uf", "").strip().upper()
 
         db = get_db()
         try:
+            # A prefeitura acompanha a cidade do terreno (sem cadastro manual).
+            prefeitura_id = get_or_create_prefeitura_for_city(db, cidade, uf)
             db.execute(
                 """
                 UPDATE projetos
@@ -8137,10 +8322,10 @@ def project_action(project_id):
                     project_name,
                     cliente_nome,
                     cliente_id,
-                    request.form.get("cidade", "").strip(),
-                    request.form.get("uf", "").strip().upper(),
+                    cidade,
+                    uf,
                     request.form.get("cartorio_id") or None,
-                    request.form.get("prefeitura_id") or None,
+                    prefeitura_id,
                     new_process_key,
                     terreno,
                     encode_process_list(additional_processes),
@@ -8161,6 +8346,7 @@ def project_action(project_id):
             db.rollback()
             raise
         invalidate_runtime_caches()
+        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
         if new_process_key != old_process_key:
             if workflow_initialized:
                 flash("Tipo de processo alterado. Este projeto ja possui etapas/checklist; revise o fluxo antes de recriar modelos.", "warning")
@@ -11758,96 +11944,53 @@ def cartorios_checklist():
 @app.route("/prefeituras", methods=["GET", "POST"])
 @login_required
 def prefeituras():
-    """Cadastro de prefeituras: dados de contato e link para solicitar documentos online.
-    A lista do que cada prefeitura exige e mantida em /prefeituras/checklist."""
+    """Prefeituras das cidades onde ha trabalho. Nao ha cadastro manual: a prefeitura
+    e criada automaticamente a partir da cidade do projeto. Aqui so editamos o contato,
+    o link para solicitar online e a lista do que cada prefeitura exige (em /prefeituras/checklist)."""
     if request.method == "POST":
         if not can_manage():
             flash("Permissao negada.", "danger")
             return redirect(url_for("prefeituras"))
-        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
-        action = request.form.get("action", "create")
         prefeitura_id = request.form.get("prefeitura_id")
-        if action == "delete" and prefeitura_id:
-            usage = query_db(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM projetos WHERE prefeitura_id = %s) AS projetos,
-                    (SELECT COUNT(*) FROM prefeitura_requisitos WHERE prefeitura_id = %s) AS requisitos
-                """,
-                (prefeitura_id, prefeitura_id),
-                one=True,
-            )
-            total_usage = sum(int(usage[key] or 0) for key in ("projetos", "requisitos"))
-            if total_usage:
-                flash("Esta prefeitura nao pode ser excluida porque possui projetos ou requisitos vinculados.", "danger")
-            else:
-                execute_db("DELETE FROM prefeituras WHERE id = %s", (prefeitura_id,))
-                invalidate_runtime_caches()
-                flash("Prefeitura excluida.", "success")
-            return redirect(url_for("prefeituras"))
-
-        name = request.form.get("nome", "").strip()
-        if not name:
-            flash("Informe o nome da prefeitura.", "danger")
+        if not prefeitura_id:
+            flash("Prefeitura invalida.", "danger")
             return redirect(url_for("prefeituras"))
         now = app_now_iso()
-        values = (
-            name,
-            request.form.get("cidade", "").strip(),
-            request.form.get("uf", "").strip().upper(),
-            request.form.get("contato", "").strip(),
-            request.form.get("email", "").strip(),
-            request.form.get("telefone", "").strip(),
-            request.form.get("whatsapp", "").strip(),
-            request.form.get("link_solicitacao", "").strip(),
-            request.form.get("observacoes", "").strip(),
-        )
-        duplicate = first_row(
-            get_db(),
+        # So editamos contato e link; a identidade (cidade/UF) vem do projeto.
+        execute_db(
             """
-            SELECT id, nome FROM prefeituras
-            WHERE lower(trim(nome)) = lower(trim(%s))
-              AND (COALESCE(%s::integer, 0) = 0 OR id <> %s::integer)
+            UPDATE prefeituras
+            SET contato = %s, email = %s, telefone = %s, whatsapp = %s,
+                link_solicitacao = %s, observacoes = %s, atualizado_em = %s
+            WHERE id = %s
             """,
-            (name, prefeitura_id if action == "update" else None, prefeitura_id if action == "update" else None),
+            (
+                request.form.get("contato", "").strip(),
+                request.form.get("email", "").strip(),
+                request.form.get("telefone", "").strip(),
+                request.form.get("whatsapp", "").strip(),
+                request.form.get("link_solicitacao", "").strip(),
+                request.form.get("observacoes", "").strip(),
+                now,
+                prefeitura_id,
+            ),
         )
-        if duplicate:
-            flash(f"Ja existe uma prefeitura cadastrada como {duplicate['nome']}.", "warning")
-            return redirect(url_for("prefeituras"))
-        if action == "update" and prefeitura_id:
-            execute_db(
-                """
-                UPDATE prefeituras
-                SET nome = %s, cidade = %s, uf = %s, contato = %s, email = %s,
-                    telefone = %s, whatsapp = %s, link_solicitacao = %s, observacoes = %s, atualizado_em = %s
-                WHERE id = %s
-                """,
-                values + (now, prefeitura_id),
-            )
-            flash("Prefeitura atualizada.", "success")
-        else:
-            execute_db(
-                """
-                INSERT INTO prefeituras
-                    (nome, cidade, uf, contato, email, telefone, whatsapp, link_solicitacao, observacoes, criado_em, atualizado_em)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                values + (now, now),
-            )
-            flash("Prefeitura cadastrada.", "success")
+        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
         invalidate_runtime_caches()
+        flash("Prefeitura atualizada.", "success")
         return redirect(url_for("prefeituras"))
 
+    # Lista apenas as prefeituras das cidades onde ha projeto (as que trabalhamos).
     rows = query_db(
         """
         SELECT pr.*, COUNT(p.id) AS projetos
         FROM prefeituras pr
-        LEFT JOIN projetos p ON p.prefeitura_id = pr.id
+        JOIN projetos p ON p.prefeitura_id = pr.id
         GROUP BY pr.id
         ORDER BY pr.nome
         """
     )
-    return render_template("prefeituras.html", prefeituras=rows, ufs=UFS)
+    return render_template("prefeituras.html", prefeituras=rows)
 
 
 @app.route("/prefeituras/checklist", methods=["GET", "POST"])
