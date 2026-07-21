@@ -241,7 +241,7 @@
                                 </button>
                             </form>
                             {% endif %}
-                            {% if not is_exigencia_stage %}
+                            {% if (active_stage.stage_key or '') == 'ASSINATURAS' %}
                             <button class="pmodal-btn-ghost" type="button"
                                 onclick="openSubModal('project-modal-{{ project.id }}', 'modal-prefeitura-{{ project.id }}')">
                                 Prefeitura
