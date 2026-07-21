@@ -508,92 +508,44 @@
         {% if not (ext.data_retirada and ext.status|lower == 'concluido') %}{% set ns_prot_open.rows = ns_prot_open.rows + [ext] %}{% endif %}
     {% endfor %}
     <div class="modal fade" id="modal-exigencia-{{ project.id }}" tabindex="-1">
-        <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-dialog modal-dialog-centered modal-lg exigencia-create-dialog">
             <div class="modal-content stage-modal">
                 <div class="stage-modal-header stage-modal-header--pending">
                     <div>
-                        <div class="stage-modal-label">Exigencia · {{ project.nome }}</div>
-                        <div class="stage-modal-title">Sempre vinculada a um protocolo</div>
+                        <div class="stage-modal-label">{{ project.nome }}</div>
+                        <div class="stage-modal-title">Registrar exig&ecirc;ncia</div>
+                        <div class="exigencia-modal-subtitle">Vincule a nota ao protocolo que a originou.</div>
                     </div>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
                 </div>
-                {% if ns_prot_open.rows %}
-                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" enctype="multipart/form-data"
-                      data-exigencia-create>
-                    <input type="hidden" name="action" value="add_exigencia">
-                    <input type="hidden" name="next" value="{{ modal_next }}">
-                    <div class="stage-modal-body">
-                        <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Protocolo de origem</label>
-                            <select class="form-select form-select-sm" name="protocolo_id" required>
-                                {% for prot in ns_prot_open.rows %}
-                                <option value="{{ prot.id }}">
-                                    {{ external_orgao_labels.get(prot.tipo_orgao or 'CARTORIO', prot.tipo_orgao or 'Orgao externo') }} · {{ prot.numero_protocolo or prot.descricao }}
-                                </option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Nota de exigencia</label>
-                            <input class="form-control form-control-sm" type="file" name="nota_exigencia"
-                                   accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx" data-exigencia-file>
-                            <small class="stage-modal-optional">Anexe o arquivo e o sistema criara o checklist automaticamente.</small>
-                        </div>
-                        <details class="pmodal-manual-exigencia">
-                            <summary>Ou preencher os itens manualmente</summary>
-                            <div class="stage-modal-field mt-2">
-                                <label class="stage-modal-field-label">O que o orgao exigiu <span class="stage-modal-optional">(um item por linha)</span></label>
-                                <textarea class="form-control form-control-sm" name="itens" rows="4" data-exigencia-items
-                                    placeholder="Ex.:&#10;Corrigir memorial descritivo&#10;Reconhecer firma do confrontante"></textarea>
-                            </div>
-                        </details>
-                        <div class="alert alert-danger py-2 px-3 mb-0" data-exigencia-validation hidden>
-                            Anexe a nota ou preencha pelo menos um item manualmente.
-                        </div>
-                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                            <div class="stage-modal-field">
-                                <label class="stage-modal-field-label">Prazo de resposta <span class="stage-modal-optional">(opcional)</span></label>
-                                <input type="date" class="form-control form-control-sm" name="prazo_resposta">
-                            </div>
-                            <div class="stage-modal-field">
-                                <label class="stage-modal-field-label">Responsavel <span class="stage-modal-optional">(opcional)</span></label>
-                                <select class="form-select form-select-sm" name="responsavel_id">
-                                    <option value="">Sem responsavel</option>
-                                    {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="stage-modal-footer">
-                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending" data-exigencia-submit>Registrar e analisar</button>
-                    </div>
-                </form>
-                {% else %}
-                <div class="stage-modal-body">
-                    <div class="pmodal-external-empty">Nenhum protocolo em aberto. Cadastre o protocolo no Cartorio para registrar novas exigencias.</div>
-                </div>
-                {% endif %}
+                <div class="exigencia-modal-content">
                 {% if exig_records %}
-                <div class="pmodal-exig-list-wrap">
-                    <div class="pmodal-protocol-list">
+                <section class="exigencia-modal-section exigencia-modal-section--current" aria-labelledby="exigencias-atuais-{{ project.id }}">
+                    <div class="exigencia-section-heading">
+                        <div>
+                            <h3 id="exigencias-atuais-{{ project.id }}">Exig&ecirc;ncias em andamento</h3>
+                            <p>Acompanhe a nota e o checklist vinculados a cada protocolo.</p>
+                        </div>
+                        <span class="exigencia-count">{{ exig_records|length }}</span>
+                    </div>
+                    <div class="exigencia-record-list">
                         {% set all_exig_items = exigencia_itens_by_project.get(project.id, []) %}
                         {% for exg in exig_records %}
                         {% set exg_itens = all_exig_items | selectattr('exigencia_id', 'equalto', exg.id) | list %}
-                        <div class="pmodal-protocol-item">
-                            <div class="pmodal-protocol-item-info">
+                        <article class="exigencia-record">
+                            <div class="exigencia-record-copy">
                                 <strong>{{ exg.descricao }}</strong>
-                                <small>
-                                    {%- if exg.protocolo_numero %}Protocolo {{ exg.protocolo_numero }}{% else %}{{ external_orgao_labels.get(exg.tipo_orgao or 'CARTORIO', exg.tipo_orgao or 'Orgao externo') }}{% endif %}
-                                    {%- if exg.prazo_resposta %} · prazo {{ format_date(exg.prazo_resposta) }}{% endif %}
-                                    {%- if exg_itens %} · itens {{ exg_itens | selectattr('concluido') | list | length }}/{{ exg_itens | length }}{% endif %}
-                                    {%- if exg.responsavel_nome %} · {{ exg.responsavel_nome }}{% endif %}
-                                </small>
+                                <div class="exigencia-record-meta">
+                                    <span>{% if exg.protocolo_numero %}Protocolo {{ exg.protocolo_numero }}{% else %}{{ external_orgao_labels.get(exg.tipo_orgao or 'CARTORIO', exg.tipo_orgao or 'Orgao externo') }}{% endif %}</span>
+                                    {% if exg.prazo_resposta %}<span>Prazo {{ format_date(exg.prazo_resposta) }}</span>{% endif %}
+                                    {% if exg_itens %}<span>Checklist {{ exg_itens | selectattr('concluido') | list | length }}/{{ exg_itens | length }}</span>{% endif %}
+                                    {% if exg.responsavel_nome %}<span>{{ exg.responsavel_nome }}</span>{% endif %}
+                                </div>
                             </div>
-                            <div class="pmodal-exig-actions">
+                            <div class="exigencia-record-actions">
                                 {% if exg.anexo_path %}
                                 <a class="pmodal-btn-ghost" href="{{ dropbox_web_url(exg.anexo_path) }}" target="_blank" rel="noopener">
-                                    Abrir {{ exg.anexo_nome or 'nota' }}
+                                    Abrir nota
                                 </a>
                                 <button class="pmodal-btn-ghost pmodal-btn-ghost--ai" type="button"
                                         data-exigencia-ai
@@ -616,11 +568,78 @@
                                 </form>
                                 {% endif %}
                             </div>
-                        </div>
+                        </article>
                         {% endfor %}
                     </div>
-                </div>
+                </section>
                 {% endif %}
+                {% if ns_prot_open.rows %}
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" enctype="multipart/form-data"
+                      class="exigencia-create-form" data-exigencia-create>
+                    <input type="hidden" name="action" value="add_exigencia">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                    <section class="exigencia-modal-section" aria-labelledby="nova-exigencia-{{ project.id }}">
+                        <div class="exigencia-section-heading">
+                            <div>
+                                <h3 id="nova-exigencia-{{ project.id }}">Nova exig&ecirc;ncia</h3>
+                                <p>Anexe a nota recebida. O checklist ser&aacute; criado automaticamente.</p>
+                            </div>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Protocolo de origem</label>
+                            <select class="form-select form-select-sm" name="protocolo_id" required>
+                                {% for prot in ns_prot_open.rows %}
+                                <option value="{{ prot.id }}">
+                                    {{ external_orgao_labels.get(prot.tipo_orgao or 'CARTORIO', prot.tipo_orgao or 'Orgao externo') }} · {{ prot.numero_protocolo or prot.descricao }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Nota de exig&ecirc;ncia</label>
+                            <input class="form-control form-control-sm" type="file" name="nota_exigencia"
+                                   accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx" data-exigencia-file>
+                            <small class="exigencia-field-help">PDF, imagem ou documento do Word. Arquivos repetidos n&atilde;o ser&atilde;o anexados novamente.</small>
+                        </div>
+                        <div class="alert alert-danger py-2 px-3 mb-0" data-exigencia-validation hidden>
+                            Anexe a nota ou preencha pelo menos um item manualmente.
+                        </div>
+                        <details class="exigencia-disclosure pmodal-manual-exigencia">
+                            <summary>N&atilde;o tenho arquivo: preencher os itens manualmente</summary>
+                            <div class="stage-modal-field mt-2">
+                                <label class="stage-modal-field-label">O que o &oacute;rg&atilde;o exigiu <span class="stage-modal-optional">(um item por linha)</span></label>
+                                <textarea class="form-control form-control-sm" name="itens" rows="4" data-exigencia-items
+                                    placeholder="Ex.:&#10;Corrigir memorial descritivo&#10;Reconhecer firma do confrontante"></textarea>
+                            </div>
+                        </details>
+                        <details class="exigencia-disclosure">
+                            <summary>Prazo e respons&aacute;vel <span>(opcional)</span></summary>
+                            <div class="exigencia-options-grid">
+                                <div class="stage-modal-field">
+                                    <label class="stage-modal-field-label">Prazo de resposta</label>
+                                    <input type="date" class="form-control form-control-sm" name="prazo_resposta">
+                                </div>
+                                <div class="stage-modal-field">
+                                    <label class="stage-modal-field-label">Respons&aacute;vel</label>
+                                    <select class="form-select form-select-sm" name="responsavel_id">
+                                        <option value="">Sem respons&aacute;vel</option>
+                                        {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                        </details>
+                    </section>
+                    <div class="stage-modal-footer">
+                        <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending" data-exigencia-submit>Registrar e analisar</button>
+                    </div>
+                </form>
+                {% else %}
+                <section class="exigencia-modal-section">
+                    <div class="pmodal-external-empty">Nenhum protocolo em aberto. Registre um protocolo em &Oacute;rg&atilde;o externo antes de cadastrar uma exig&ecirc;ncia.</div>
+                </section>
+                {% endif %}
+                </div>
             </div>
         </div>
     </div>

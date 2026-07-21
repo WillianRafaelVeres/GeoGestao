@@ -2028,11 +2028,12 @@ function initExigenciaCreateForms(root) {
         const itemsInput = form.querySelector('[data-exigencia-items]');
         const validation = form.querySelector('[data-exigencia-validation]');
         const submitButton = form.querySelector('[data-exigencia-submit]');
+        let validationAttempted = false;
 
         const sync = () => {
             const hasFile = Boolean(fileInput?.files?.length);
             const hasItems = Boolean(itemsInput?.value.trim());
-            if (validation) validation.hidden = hasFile || hasItems;
+            if (validation) validation.hidden = !validationAttempted || hasFile || hasItems;
             if (submitButton) {
                 submitButton.textContent = hasFile ? 'Registrar e analisar' : 'Registrar exigencia';
             }
@@ -2045,7 +2046,8 @@ function initExigenciaCreateForms(root) {
             if (hasFile || hasItems) return;
             event.preventDefault();
             event.stopImmediatePropagation();
-            if (validation) validation.hidden = false;
+            validationAttempted = true;
+            sync();
             fileInput?.focus();
         });
         sync();
