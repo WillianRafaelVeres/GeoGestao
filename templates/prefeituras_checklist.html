@@ -28,7 +28,7 @@
                 <select class="form-select" name="prefeitura_id" onchange="this.form.submit()">
                     <option value="">Selecione...</option>
                     {% for prefeitura in prefeitura_options %}
-                        <option value="{{ prefeitura.id }}" {% if selected_prefeitura_id == prefeitura.id %}selected{% endif %}>{{ prefeitura.nome }}</option>
+                        <option value="{{ prefeitura.id }}" {% if selected_prefeitura_id == prefeitura.id %}selected{% endif %}>{{ prefeitura.nome }}{% if prefeitura.uf %} / {{ prefeitura.uf }}{% endif %}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -36,7 +36,7 @@
 
         {% if not prefeitura_options %}
             <div style="padding: 0 1rem 1rem;">
-                <p class="text-muted mb-0">Nenhuma prefeitura cadastrada ainda. <a href="{{ url_for('prefeituras') }}">Cadastre uma prefeitura</a> primeiro.</p>
+                <p class="text-muted mb-0">Nenhuma prefeitura ainda. Nao ha cadastro de prefeitura: cada cidade de projeto vira uma. Crie um projeto informando a cidade do terreno.</p>
             </div>
         {% elif items %}
             <div class="table-responsive">

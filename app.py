@@ -5402,13 +5402,9 @@ def get_or_create_prefeitura_for_city(db, cidade, uf):
     return created["id"] if created else None
 
 
-def backfill_project_prefeituras(db):
-    """Projetos criados antes de a prefeitura passar a vir da cidade ficaram sem
-    prefeitura (ou apontando para um cadastro manual de outro municipio). Aqui
-    realinhamos todos pela cidade do terreno, para que as prefeituras dos
-    projetos ja existentes aparecam em /prefeituras."""
-    # Cadastros antigos so tinham 'nome' ('Prefeitura de Rio Negrinho'): completa
-    # a cidade antes de comparar, senao criariamos uma prefeitura duplicada.
+def fill_legacy_prefeitura_cities(db):
+    """Cadastros antigos so tinham 'nome' ('Prefeitura de Rio Negrinho') e nenhuma
+    cidade. Completa a cidade para podermos comparar por municipio sem duplicar."""
     legacy = db.execute(
         "SELECT id, nome, cidade FROM prefeituras WHERE COALESCE(TRIM(cidade), '') = ''"
     ).fetchall()
@@ -5421,6 +5417,46 @@ def backfill_project_prefeituras(db):
                 (cidade, now, row["id"]),
             )
 
+
+def sync_prefeituras_from_projects(db):
+    """A prefeitura e o proprio municipio do terreno: nao existe cadastro manual.
+    Garante que todo projeto com cidade esteja ligado a prefeitura daquela cidade,
+    criando a que faltar. Roda tambem nas telas de prefeitura, para que as cidades
+    dos projetos ja criados aparecam sem depender de rodar a migracao.
+    Retorna True quando criou/vinculou algo."""
+    pendentes = db.execute(
+        """
+        SELECT DISTINCT TRIM(cidade) AS cidade, UPPER(TRIM(COALESCE(uf, ''))) AS uf
+        FROM projetos
+        WHERE COALESCE(TRIM(cidade), '') <> '' AND prefeitura_id IS NULL
+        """
+    ).fetchall()
+    if not pendentes:
+        return False
+    fill_legacy_prefeitura_cities(db)
+    changed = False
+    for row in pendentes:
+        prefeitura_id = get_or_create_prefeitura_for_city(db, row["cidade"], row["uf"])
+        if not prefeitura_id:
+            continue
+        # Nao mexe em atualizado_em do projeto: e vinculo automatico, nao edicao.
+        db.execute(
+            """
+            UPDATE projetos SET prefeitura_id = %s
+            WHERE TRIM(cidade) = %s AND UPPER(TRIM(COALESCE(uf, ''))) = %s AND prefeitura_id IS NULL
+            """,
+            (prefeitura_id, row["cidade"], row["uf"]),
+        )
+        changed = True
+    return changed
+
+
+def backfill_project_prefeituras(db):
+    """Alem de vincular os projetos sem prefeitura, realinha os que apontam para
+    um cadastro manual antigo de outro municipio. So na migracao, por ser uma
+    varredura completa."""
+    fill_legacy_prefeitura_cities(db)
+    sync_prefeituras_from_projects(db)
     projetos = db.execute(
         """
         SELECT id, cidade, uf, prefeitura_id
@@ -5436,7 +5472,6 @@ def backfill_project_prefeituras(db):
         if cache_key not in resolved:
             resolved[cache_key] = get_or_create_prefeitura_for_city(db, cidade, uf)
         prefeitura_id = resolved[cache_key]
-        # Nao mexe em atualizado_em: e migracao, nao edicao do projeto.
         if prefeitura_id and prefeitura_id != row["prefeitura_id"]:
             db.execute(
                 "UPDATE projetos SET prefeitura_id = %s WHERE id = %s",
@@ -12043,6 +12078,10 @@ def prefeituras():
         flash("Prefeitura atualizada.", "success")
         return redirect(url_for("prefeituras"))
 
+    # Garante que toda cidade de projeto tenha sua prefeitura antes de listar.
+    if sync_prefeituras_from_projects(get_db()):
+        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
+
     # Lista apenas as prefeituras das cidades onde ha projeto (as que trabalhamos).
     rows = query_db(
         """
@@ -12050,7 +12089,7 @@ def prefeituras():
         FROM prefeituras pr
         JOIN projetos p ON p.prefeitura_id = pr.id
         GROUP BY pr.id
-        ORDER BY pr.nome
+        ORDER BY COALESCE(NULLIF(TRIM(pr.cidade), ''), pr.nome)
         """
     )
     return render_template("prefeituras.html", prefeituras=rows)
@@ -12064,7 +12103,20 @@ def prefeituras_checklist():
         flash("Permissao negada.", "danger")
         return redirect(url_for("prefeituras"))
 
-    prefeitura_options = query_db("SELECT id, nome FROM prefeituras ORDER BY nome")
+    # A prefeitura e a cidade do terreno: so aparecem as cidades que tem projeto.
+    if sync_prefeituras_from_projects(get_db()):
+        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
+    prefeitura_options = query_db(
+        """
+        SELECT pr.id,
+               COALESCE(NULLIF(TRIM(pr.cidade), ''), pr.nome) AS nome,
+               pr.uf
+        FROM prefeituras pr
+        JOIN projetos p ON p.prefeitura_id = pr.id
+        GROUP BY pr.id
+        ORDER BY 2
+        """
+    )
     raw_prefeitura = (request.values.get("prefeitura_id") or "").strip()
     selected_prefeitura_id = int(raw_prefeitura) if raw_prefeitura.isdigit() else None
     if not selected_prefeitura_id and prefeitura_options:
