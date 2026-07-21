@@ -30,6 +30,19 @@ RETIRED_WORKFLOW_STAGE_KEYS = frozenset({
     "ENTREGA",
 })
 
+# Todas as contratacoes percorrem as mesmas colunas operacionais. Exigencias fica
+# fora da sequencia linear porque so e ativada quando um orgao externo a registra.
+STANDARD_WORKFLOW_STAGE_KEYS = frozenset({
+    "ORCAMENTO",
+    "DOCUMENTOS",
+    "MEDICAO",
+    "PROCESSAMENTO",
+    "ESCRITORIO",
+    "ASSINATURAS",
+    "ORGAO_EXTERNO",
+    "FINALIZADO",
+})
+
 MACRO_STAGES = [
     {
         "key": "ORCAMENTO",
@@ -400,6 +413,17 @@ def build_stage_template(process_type_key, macro_stage, override):
             "notes": "Etapa retirada do fluxo operacional simplificado.",
         }
         applicability = APPLICABILITY_NOT_APPLICABLE
+    elif macro_stage["key"] in STANDARD_WORKFLOW_STAGE_KEYS:
+        override = {
+            **override,
+            "applicability": APPLICABILITY_REQUIRED,
+            "show_in_matrix": True,
+            "show_in_project": True,
+            "active": True,
+            "can_skip": macro_stage["key"] == "ORGAO_EXTERNO",
+            "blocks_completion": True,
+        }
+        applicability = APPLICABILITY_REQUIRED
     can_skip = override.get("can_skip")
     if can_skip is None:
         can_skip = applicability != APPLICABILITY_REQUIRED

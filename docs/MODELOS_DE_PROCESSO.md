@@ -2,14 +2,15 @@
 
 ## Fluxo operacional atual
 
-A matriz usa somente etapas que possuem uma coluna operacional propria:
+A matriz usa o mesmo fluxo operacional para todos os tipos de servico:
 
-`Orcamento -> Documentos -> Medicao -> Processamento -> Escritorio -> Assinaturas -> Orgao externo -> Exigencias -> Finalizado`
+`Orcamento -> Documentos -> Medicao -> Processamento -> Escritorio -> Assinaturas -> Orgao externo -> Finalizado`
 
-- Cada tipo de processo ativa apenas as colunas aplicaveis ao trabalho.
+- Todas essas etapas sao criadas e ativadas por padrao, independentemente do tipo de processo.
 - `ANALISE`, `PREPARACAO`, `CONFERENCIA`, `PREFEITURA` e `ENTREGA` permanecem apenas como chaves historicas e nao geram cliques ou colunas.
 - Uma exigencia move o projeto de `ORGAO_EXTERNO` para `PENDENCIAS` (exibida como **Exigencias**).
 - Ao concluir todas as exigencias, o projeto retorna para `ORGAO_EXTERNO`.
+- Quando nao houver protocolo externo, o botao proprio da etapa permite seguir para `FINALIZADO`.
 - Retirar todos os protocolos nao finaliza o projeto automaticamente. O usuario decide quando avancar para `FINALIZADO`.
 
 ## Fase 1 - Catalogo de tipos de processo

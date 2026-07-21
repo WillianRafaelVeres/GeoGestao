@@ -2933,6 +2933,86 @@ def initialize_project_workflow(db, project_id, process_type_key, user_id=None, 
     }
 
 
+def ensure_missing_required_project_stages(db, project, templates, process_key):
+    """Completa o fluxo padrao de projetos antigos sem alterar sua etapa atual."""
+    existing_keys = {
+        row["stage_key"]
+        for row in db.execute(
+            "SELECT stage_key FROM projeto_etapas WHERE projeto_id = %s AND stage_key IS NOT NULL",
+            (project["id"],),
+        ).fetchall()
+    }
+    current_stage = None
+    if project["etapa_atual_id"]:
+        current_stage = first_row(
+            db,
+            """
+            SELECT COALESCE(pe.stage_order, em.ordem) AS effective_order
+            FROM projeto_etapas pe
+            JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            WHERE pe.id = %s AND pe.projeto_id = %s
+            """,
+            (project["etapa_atual_id"], project["id"]),
+        )
+    current_order = current_stage["effective_order"] if current_stage else None
+    created = 0
+
+    for template in templates:
+        if (
+            template["stage_key"] in existing_keys
+            or template["applicability"] != APPLICABILITY_REQUIRED
+            or not template["show_in_project"]
+        ):
+            continue
+        etapa_modelo_id = get_stage_model_id_for_process_stage(db, template["stage_key"])
+        if not etapa_modelo_id:
+            continue
+
+        already_passed = current_order is not None and template["stage_order"] < current_order
+        status = "concluido" if already_passed else "nao iniciado"
+        progress = 100 if already_passed else 0
+        stage_name = "Orgao externo" if template["stage_key"] == "ORGAO_EXTERNO" else template["stage_name"]
+        description = (
+            "Protocolo e retirada em prefeitura, cartorio, SIGEF, INCRA, SICAR ou outro orgao externo."
+            if template["stage_key"] == "ORGAO_EXTERNO"
+            else template["description"]
+        )
+        db.execute(
+            """
+            INSERT INTO projeto_etapas
+                (projeto_id, etapa_modelo_id, process_type_key, stage_key, stage_name, stage_order,
+                 applicability, status, responsavel_id, data_inicio, data_fim, prazo, progresso,
+                 subetapa_ativa, workflow_active, can_skip, blocks_completion, show_in_matrix,
+                 show_in_project, external_actor_type, template_stage_id, stage_description, model_notes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, NULL, %s, %s,
+                    1, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                project["id"],
+                etapa_modelo_id,
+                process_key,
+                template["stage_key"],
+                stage_name,
+                template["stage_order"],
+                template["applicability"],
+                status,
+                progress,
+                default_checklist_for_stage(stage_name)[0],
+                1 if template["can_skip"] else 0,
+                1 if template["blocks_completion"] else 0,
+                1 if template["show_in_matrix"] else 0,
+                1 if template["show_in_project"] else 0,
+                template["external_actor_type"],
+                template["id"],
+                description,
+                template["notes"],
+            ),
+        )
+        existing_keys.add(template["stage_key"])
+        created += 1
+    return created
+
+
 def sync_project_workflow_stage_templates(db, project_id, process_type_key):
     """Atualiza o fluxo existente sem reinicia-lo e pula etapas retiradas."""
     process_key = normalize_project_process_type(process_type_key)
@@ -2949,6 +3029,8 @@ def sync_project_workflow_stage_templates(db, project_id, process_type_key):
         """,
         (process_key,),
     ).fetchall()
+    now = app_now_iso()
+    ensure_missing_required_project_stages(db, project, templates, process_key)
     template_by_key = {row["stage_key"]: row for row in templates}
     stages = db.execute(
         """
@@ -2963,7 +3045,6 @@ def sync_project_workflow_stage_templates(db, project_id, process_type_key):
     ).fetchall()
     current_stage = next((row for row in stages if row["id"] == project["etapa_atual_id"]), None)
     current_was_retired = False
-    now = app_now_iso()
 
     for stage_row in stages:
         template = template_by_key.get(stage_row["stage_key"])
@@ -2981,10 +3062,23 @@ def sync_project_workflow_stage_templates(db, project_id, process_type_key):
                 workflow_active = 1
             status = stage_row["status"]
             data_fim = stage_row["data_fim"]
+            progress = stage_row["progresso"] or 0
+            if template["applicability"] == APPLICABILITY_REQUIRED and (status or "").lower() == "nao aplicavel":
+                if stage_row["id"] == project["etapa_atual_id"]:
+                    status = "em andamento"
+                    progress = max(progress, 10)
+                elif current_stage and stage_row["etapa_ordem"] < current_stage["etapa_ordem"]:
+                    status = "concluido"
+                    progress = 100
+                else:
+                    status = "nao iniciado"
+                    progress = 0
+                data_fim = None
         else:
             workflow_active = 0
             status = stage_row["status"] if (stage_row["status"] or "").lower() in ("concluido", "cancelado") else "nao aplicavel"
             data_fim = stage_row["data_fim"] or (now if stage_row["id"] == project["etapa_atual_id"] else None)
+            progress = stage_row["progresso"] or 0
 
         stage_name = "Orgao externo" if template["stage_key"] == "ORGAO_EXTERNO" else template["stage_name"]
         description = (
@@ -2999,7 +3093,7 @@ def sync_project_workflow_stage_templates(db, project_id, process_type_key):
                 workflow_active = %s, can_skip = %s, blocks_completion = %s,
                 show_in_matrix = %s, show_in_project = %s, external_actor_type = %s,
                 template_stage_id = %s, stage_description = %s, model_notes = %s,
-                status = %s, data_fim = %s
+                status = %s, data_fim = %s, progresso = %s
             WHERE id = %s
             """,
             (
@@ -3018,6 +3112,7 @@ def sync_project_workflow_stage_templates(db, project_id, process_type_key):
                 template["notes"],
                 status,
                 data_fim,
+                progress,
                 stage_row["id"],
             ),
         )
@@ -9171,16 +9266,16 @@ def project_action(project_id):
                     flash("Resolva as pendencias abertas deste projeto antes de avancar para a proxima etapa.", "danger")
                     return redirect(redirect_url)
 
-                # So permite pular direto para uma coluna se o projeto ja passou por ela antes
-                # (ex.: retornou de uma etapa mais avancada e agora esta retomando). Para uma
-                # coluna que o projeto nunca alcancou, so permite avancar uma de cada vez.
+                # A mesma consulta que alimenta o botao define a proxima etapa valida. Assim,
+                # etapas ocultas ou inativas nunca fazem a interface e o servidor discordarem.
                 stage_rows_for_project = load_stage_rows(project_id)
-                used_cols = sorted({r["legacy_etapa_ordem"] for r in stage_rows_for_project})
                 max_reached_col = max(
                     [old_col] + [r["legacy_etapa_ordem"] for r in stage_rows_for_project if r.get("data_inicio")]
                 )
-                next_cols = [col for col in used_cols if col > old_col]
-                if new_col > max_reached_col and (not next_cols or new_col != next_cols[0]):
+                expected_next_stage = get_next_applicable_stage(project_id, old_stage)
+                if new_col > max_reached_col and (
+                    not expected_next_stage or expected_next_stage["id"] != new_stage["id"]
+                ):
                     flash("Nao e permitido pular etapas ainda nao alcancadas. Avance apenas para a proxima etapa em sequencia.", "danger")
                     return redirect(redirect_url)
 
