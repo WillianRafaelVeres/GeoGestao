@@ -1916,6 +1916,7 @@ def init_db():
     normalize_legacy_project_process_types(db)
     migrate_legacy_clients(db)
     normalize_stage_models(db)
+    backfill_project_prefeituras(db)
     db.execute(
         """
         INSERT INTO projeto_proprietarios (projeto_id, cliente_id, principal, ordem, criado_em)
@@ -5356,6 +5357,26 @@ def get_prefeitura_options():
     )
 
 
+LEGACY_PREFEITURA_PREFIX = re.compile(
+    r"^\s*(prefeitura\s+municipal\s+d[eoa]s?|prefeitura\s+d[eoa]s?|prefeitura|munic[ií]pio\s+d[eoa]s?)\s+",
+    re.IGNORECASE,
+)
+
+
+def prefeitura_city_name(nome, cidade=None):
+    """Cidade de uma prefeitura. Cadastros antigos foram digitados a mao como
+    'Prefeitura de Rio Negrinho' e sem cidade, entao tiramos o prefixo."""
+    cidade = (cidade or "").strip()
+    if cidade:
+        return cidade
+    nome = (nome or "").strip()
+    return LEGACY_PREFEITURA_PREFIX.sub("", nome).strip() or nome
+
+
+def prefeitura_city_key(nome, cidade=None):
+    return normalize_text(prefeitura_city_name(nome, cidade))
+
+
 def get_or_create_prefeitura_for_city(db, cidade, uf):
     """A prefeitura de um projeto e a do municipio do terreno. Nao ha cadastro
     manual: quando um projeto ganha uma cidade, encontramos (ou criamos) a
@@ -5369,7 +5390,7 @@ def get_or_create_prefeitura_for_city(db, cidade, uf):
     if not wanted:
         return None
     for row in db.execute("SELECT id, nome, cidade, uf FROM prefeituras").fetchall():
-        row_city = normalize_text(row["cidade"] or row["nome"])
+        row_city = prefeitura_city_key(row["nome"], row["cidade"])
         row_uf = (row["uf"] or "").strip().upper()
         if row_city == wanted and (not uf or not row_uf or row_uf == uf):
             return row["id"]
@@ -5379,6 +5400,48 @@ def get_or_create_prefeitura_for_city(db, cidade, uf):
         (cidade, cidade, uf, now, now),
     ).fetchone()
     return created["id"] if created else None
+
+
+def backfill_project_prefeituras(db):
+    """Projetos criados antes de a prefeitura passar a vir da cidade ficaram sem
+    prefeitura (ou apontando para um cadastro manual de outro municipio). Aqui
+    realinhamos todos pela cidade do terreno, para que as prefeituras dos
+    projetos ja existentes aparecam em /prefeituras."""
+    # Cadastros antigos so tinham 'nome' ('Prefeitura de Rio Negrinho'): completa
+    # a cidade antes de comparar, senao criariamos uma prefeitura duplicada.
+    legacy = db.execute(
+        "SELECT id, nome, cidade FROM prefeituras WHERE COALESCE(TRIM(cidade), '') = ''"
+    ).fetchall()
+    now = app_now_iso()
+    for row in legacy:
+        cidade = prefeitura_city_name(row["nome"], row["cidade"])
+        if cidade:
+            db.execute(
+                "UPDATE prefeituras SET cidade = %s, atualizado_em = %s WHERE id = %s",
+                (cidade, now, row["id"]),
+            )
+
+    projetos = db.execute(
+        """
+        SELECT id, cidade, uf, prefeitura_id
+        FROM projetos
+        WHERE COALESCE(TRIM(cidade), '') <> ''
+        """
+    ).fetchall()
+    resolved = {}
+    for row in projetos:
+        cidade = (row["cidade"] or "").strip()
+        uf = (row["uf"] or "").strip().upper()
+        cache_key = (normalize_text(cidade), uf)
+        if cache_key not in resolved:
+            resolved[cache_key] = get_or_create_prefeitura_for_city(db, cidade, uf)
+        prefeitura_id = resolved[cache_key]
+        # Nao mexe em atualizado_em: e migracao, nao edicao do projeto.
+        if prefeitura_id and prefeitura_id != row["prefeitura_id"]:
+            db.execute(
+                "UPDATE projetos SET prefeitura_id = %s WHERE id = %s",
+                (prefeitura_id, row["id"]),
+            )
 
 
 def get_matrix_summary_counts(today_iso, in_7):
