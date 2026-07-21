@@ -292,7 +292,7 @@
                                     {% if latest_exig and latest_exig.anexo_path %}
                                     <span>O sistema pode ler a nota anexada e organizar os itens automaticamente.</span>
                                     <button class="pmodal-btn-ghost pmodal-btn-ghost--ai" type="button"
-                                            data-exigencia-ai data-exigencia-auto-apply="1"
+                                            data-exigencia-ai
                                             data-project-id="{{ project.id }}"
                                             data-exigencia-id="{{ latest_exig.id }}"
                                             data-note-name="{{ latest_exig.anexo_nome or 'Nota de exigencia' }}">
@@ -548,7 +548,6 @@
                                 </a>
                                 <button class="pmodal-btn-ghost pmodal-btn-ghost--ai" type="button"
                                         data-exigencia-ai
-                                        data-exigencia-auto-apply="1"
                                         data-project-id="{{ project.id }}"
                                         data-exigencia-id="{{ exg.id }}"
                                         data-note-name="{{ exg.anexo_nome or 'Nota de exigencia' }}">

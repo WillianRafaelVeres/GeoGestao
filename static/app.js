@@ -1700,7 +1700,6 @@ function initExigenciaAi() {
         returnModal: null,
         reopenParent: false,
         applied: false,
-        autoApply: false,
     };
 
     document.addEventListener("click", (event) => {
@@ -1710,7 +1709,6 @@ function initExigenciaAi() {
         state.projectId = trigger.dataset.projectId;
         state.exigenciaId = trigger.dataset.exigenciaId;
         state.endpoint = `/api/project/${state.projectId}/exigencia/${state.exigenciaId}/ai-analysis`;
-        state.autoApply = trigger.dataset.exigenciaAutoApply === "1";
         const visibleProjectModal = document.getElementById(`project-modal-${state.projectId}`);
         state.returnModal = trigger.closest(".modal.show")
             || (visibleProjectModal?.classList.contains("show") ? visibleProjectModal : null);
@@ -1807,9 +1805,6 @@ async function loadExigenciaAiAnalysis(elements, state) {
         const data = await fetchExigenciaAiJson(state.endpoint);
         if (data.analysis) {
             renderExigenciaAiAnalysis(elements, data.analysis);
-            if (state.autoApply && data.analysis.status !== "aplicado") {
-                await applyExigenciaAiChecklist(elements, state);
-            }
             return;
         }
         if (!data.configured) {
@@ -1829,9 +1824,7 @@ async function analyzeExigenciaNote(elements, state) {
     try {
         const data = await fetchExigenciaAiJson(state.endpoint, { method: "POST" });
         renderExigenciaAiAnalysis(elements, data.analysis);
-        if (state.autoApply) {
-            await applyExigenciaAiChecklist(elements, state);
-        } else if (data.message) {
+        if (data.message) {
             showExigenciaAiMessage(elements, data.message, "success");
         }
     } catch (error) {
@@ -1946,7 +1939,6 @@ async function applyExigenciaAiChecklist(elements, state) {
             body: JSON.stringify({ items }),
         });
         state.applied = true;
-        state.autoApply = false;
         state.reopenParent = false;
         showExigenciaAiMessage(elements, data.message, "success");
         elements.reanalyze.hidden = true;

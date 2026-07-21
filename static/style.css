@@ -131,7 +131,15 @@ a:hover { color: #1d4ed8; }
 
 /* ===== FLASH MESSAGES ===== */
 .flash-stack { margin-bottom: 10px; }
-.flash-stack .alert { padding: 7px 12px; font-size: 12px; border-radius: 4px; }
+.flash-stack .alert {
+    min-height: 46px;
+    padding: 11px 46px 11px 14px;
+    border-radius: 5px;
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
 
 /* ===== PAGE HEADING ===== */
 .page-heading {
