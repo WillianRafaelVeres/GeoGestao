@@ -2134,7 +2134,7 @@ def seed_process_checklist_templates(db, process_type_keys=None):
     for process_type_key, checklist_templates in PROCESS_CHECKLIST_TEMPLATES.items():
         if process_type_keys is not None and process_type_key not in process_type_keys:
             continue
-        managed_stage_keys = {"ORCAMENTO", *RETIRED_WORKFLOW_STAGE_KEYS}
+        managed_stage_keys = {"ORCAMENTO", "PENDENCIAS", *RETIRED_WORKFLOW_STAGE_KEYS}
         desired_templates = {
             (template["stage_key"], template["title"])
             for template in checklist_templates
@@ -2618,17 +2618,24 @@ def create_project_checklist_from_template(db, project_id, process_type_key):
     custom_office_items = get_cartorio_checklist_rows(
         db, process_key, project_row["cartorio_id"] if project_row else None
     )
-    templates = [template for template in templates if template["stage_key"] not in ("ESCRITORIO", "PREFEITURA")]
+    templates = [
+        template
+        for template in templates
+        if template["stage_key"] not in ("ESCRITORIO", "PREFEITURA", "PENDENCIAS")
+    ]
     now = app_now_iso()
-    # O checklist da etapa Escritorio e composto somente pelos documentos do cartorio
-    # (definidos em /cartorios/checklist). Itens herdados dos modelos de processo sao
-    # aposentados a cada sincronizacao para nao se misturarem a lista de documentos.
+    # Escritorio usa os documentos configurados por cartorio. Exigencias usa os itens
+    # recebidos na nota do orgao externo. Modelos antigos ficam inativos, sem perder historico.
     db.execute(
         """
         UPDATE project_checklist_items
         SET active = 0, updated_at = %s
-        WHERE project_id = %s AND stage_key = 'ESCRITORIO'
-          AND template_id IS NOT NULL AND active = 1
+        WHERE project_id = %s
+          AND (
+              (stage_key = 'ESCRITORIO' AND template_id IS NOT NULL)
+              OR stage_key = 'PENDENCIAS'
+          )
+          AND active = 1
         """,
         (now, project_id),
     )
@@ -5497,6 +5504,97 @@ def move_project_back_to_external_stage_after_pending_resolved(project_id, tipo_
         "Exigencia resolvida; retorno ao orgao externo.",
         new_status=target_status,
     )
+
+
+def complete_external_requirements_and_return(project_id, responsible_id=None):
+    """Encerra o retrabalho somente depois que cada item da nota foi concluido."""
+    db = get_db()
+    project = first_row(
+        db,
+        """
+        SELECT p.etapa_atual_id, p.responsavel_geral_id, pe.responsavel_id,
+               COALESCE(pe.stage_key, '') AS stage_key
+        FROM projetos p
+        LEFT JOIN projeto_etapas pe ON pe.id = p.etapa_atual_id
+        WHERE p.id = %s
+        """,
+        (project_id,),
+    )
+    if not project or project["stage_key"] != "PENDENCIAS":
+        return None, "O projeto nao esta na etapa Exigencias."
+
+    requirements = db.execute(
+        """
+        SELECT exi.id, exi.etapa_id, exi.tipo_orgao, exi.descricao,
+               (SELECT COUNT(*) FROM exigencia_itens ei WHERE ei.exigencia_id = exi.id) AS item_count,
+               (SELECT COUNT(*) FROM exigencia_itens ei
+                WHERE ei.exigencia_id = exi.id AND COALESCE(ei.concluido, 0) = 0) AS pending_count
+        FROM exigencias_cartorio exi
+        WHERE exi.projeto_id = %s
+          AND COALESCE(exi.tipo_registro, 'exigencia') = 'exigencia'
+          AND lower(COALESCE(exi.status, '')) NOT IN ('concluido', 'cancelado')
+        ORDER BY exi.id
+        """,
+        (project_id,),
+    ).fetchall()
+    if not requirements:
+        return None, "Nao ha exigencia aberta para concluir."
+    if any(int(row["item_count"] or 0) == 0 for row in requirements):
+        return None, "Crie o checklist da nota antes de concluir a exigencia."
+    pending_count = sum(int(row["pending_count"] or 0) for row in requirements)
+    if pending_count:
+        return None, f"Conclua os {pending_count} itens restantes da exigencia."
+
+    external_type = requirements[-1]["tipo_orgao"] or "CARTORIO"
+    if not find_project_stage_by_external_type(db, project_id, external_type):
+        return None, "A etapa Orgao externo deste projeto nao foi encontrada."
+
+    requirement_ids = [row["id"] for row in requirements]
+    descriptions = list({row["descricao"] for row in requirements if row["descricao"]})
+    now = app_now_iso()
+    db.execute(
+        """
+        UPDATE exigencias_cartorio
+        SET status = 'concluido', atualizado_em = %s
+        WHERE projeto_id = %s AND id = ANY(%s::integer[])
+        """,
+        (now, project_id, requirement_ids),
+    )
+    if descriptions:
+        db.execute(
+            """
+            UPDATE pendencias
+            SET status = 'resolvida', data_resolucao = COALESCE(data_resolucao, %s), atualizado_em = %s
+            WHERE projeto_id = %s
+              AND descricao = ANY(%s::text[])
+              AND lower(COALESCE(status, '')) NOT IN ('resolvida', 'cancelada')
+            """,
+            (app_today().isoformat(), now, project_id, descriptions),
+        )
+        db.execute(
+            """
+            UPDATE tarefas
+            SET status = 'concluido'
+            WHERE projeto_id = %s
+              AND descricao = ANY(%s::text[])
+              AND lower(COALESCE(status, '')) != 'concluido'
+            """,
+            (project_id, descriptions),
+        )
+
+    target = move_project_back_to_external_stage_after_pending_resolved(
+        project_id,
+        external_type,
+        responsible_id or project["responsavel_id"] or project["responsavel_geral_id"],
+    )
+    if not target:
+        return None, "Nao foi possivel retornar o projeto ao Orgao externo."
+    record_event(
+        project_id,
+        "exigencia_concluida",
+        f"{len(requirement_ids)} exigencia(s) concluida(s); projeto retornou ao Orgao externo.",
+    )
+    return target, None
 
 
 def can_manage():
@@ -10329,6 +10427,19 @@ def project_action(project_id):
             else:
                 flash(f"Exigencia registrada e tarefa criada.{attachment_notice}", attachment_tone)
 
+    elif action == "complete_external_requirements":
+        target_stage, error = complete_external_requirements_and_return(
+            project_id,
+            request.form.get("responsavel_id") or project["responsavel_geral_id"],
+        )
+        if error:
+            flash(error, "danger")
+        else:
+            flash(
+                f"Exigencia concluida. Projeto retornou para {target_stage['etapa_nome']} e o protocolo continua aberto.",
+                "success",
+            )
+
     elif action == "update_exigencia":
         exigencia_id = request.form.get("exigencia_id")
         prazo_resposta = request.form.get("prazo_resposta") or None
@@ -10338,6 +10449,23 @@ def project_action(project_id):
         data_pronto_retirada = request.form.get("data_pronto_retirada") or None
         status = request.form.get("status", "em andamento")
         responsavel_id = request.form.get("responsavel_id") or None
+        if tipo_registro == "exigencia" and status == "concluido":
+            item_counts = query_db(
+                """
+                SELECT COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE COALESCE(concluido, 0) = 0) AS pending
+                FROM exigencia_itens
+                WHERE exigencia_id = %s
+                """,
+                (exigencia_id,),
+                one=True,
+            )
+            if not item_counts or not item_counts["total"]:
+                flash("Crie o checklist da nota antes de concluir a exigencia.", "danger")
+                return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
+            if item_counts["pending"]:
+                flash("Conclua todos os itens do checklist antes de encerrar a exigencia.", "danger")
+                return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
         if tipo_registro == "protocolo":
             if protocol_action == "ready":
                 if not responsavel_id:
@@ -10442,7 +10570,10 @@ def project_action(project_id):
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                 )
         if next_stage:
-            flash(f"Registro atualizado. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+            if tipo_registro == "exigencia":
+                flash(f"Exigencia concluida. Projeto retornou para {next_stage['etapa_nome']}.", "success")
+            else:
+                flash(f"Registro atualizado. Projeto avancou para {next_stage['etapa_nome']}.", "success")
         else:
             flash("Registro atualizado.", "success")
 
@@ -10862,7 +10993,10 @@ def api_apply_exigencia_ai_analysis(project_id, exigencia_id):
         return jsonify({"ok": False, "error": "Mantenha pelo menos um item no checklist."}), 400
     analysis = query_db(
         """
-        SELECT ai.*, exi.anexo_hash, exi.status AS exigencia_status
+        SELECT ai.*, exi.anexo_hash, exi.status AS exigencia_status,
+               exi.etapa_id AS exigencia_etapa_id,
+               exi.responsavel_id AS exigencia_responsavel_id,
+               exi.descricao AS exigencia_descricao
         FROM exigencia_analises_ia ai
         JOIN exigencias_cartorio exi ON exi.id = ai.exigencia_id
         WHERE ai.exigencia_id = %s AND ai.projeto_id = %s
@@ -10925,6 +11059,14 @@ def api_apply_exigencia_ai_analysis(project_id, exigencia_id):
         project_id,
         "checklist_exigencia_criado",
         f"Checklist da exigencia #{exigencia_id} criado com {len(rows_to_insert)} itens revisados.",
+    )
+    # Tambem corrige projetos antigos que, apesar da exigencia aberta, tenham ficado
+    # visualmente na coluna Orgao externo.
+    move_project_to_pending_after_exigencia(
+        project_id,
+        analysis["exigencia_etapa_id"],
+        analysis["exigencia_responsavel_id"],
+        analysis["exigencia_descricao"],
     )
     return jsonify({
         "ok": True,

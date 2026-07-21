@@ -34,6 +34,16 @@
     {% set external_can_skip = active_external_type and active_status != 'nao aplicavel' and not external_has_protocols %}
     {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and external_has_protocols and not external_all_withdrawn %}
     {% set project_pendings = pending_by_project.get(project.id, []) %}
+    {% set is_exigencia_stage = active_stage_key == 'PENDENCIAS' %}
+    {% set exig_records = exigencias_by_project.get(project.id, []) %}
+    {% set exig_items = exigencia_itens_by_project.get(project.id, []) %}
+    {% set exig_done = exig_items | selectattr('concluido') | list | length %}
+    {% set exig_pending = (exig_items|length) - exig_done %}
+    {% set latest_exig = (exig_records | sort(attribute='id') | last) if exig_records else none %}
+    {% set ns_exig_next = namespace(title='') %}
+    {% for item in exig_items %}
+        {% if not item.concluido and not ns_exig_next.title %}{% set ns_exig_next.title = item.titulo %}{% endif %}
+    {% endfor %}
     {% set proxima_etapa = next_stage_by_project.get(project.id) %}
     {# Etapas reais anteriores (com id verdadeiro) para o botao "Retornar etapa", e opcoes
        de avanco que incluem etapas ja visitadas antes (retomar direto sem ir 1 a 1). #}
@@ -100,8 +110,9 @@
                         </div>
                         <div class="pmodal-meta-card">
                             <span>Prox. checklist</span>
-                            <strong title="{{ active_stage.proximo_checklist or '' }}">
-                                {{ (active_stage.proximo_checklist or '—')[:32] }}
+                            {% set next_checklist_label = ns_exig_next.title if is_exigencia_stage and ns_exig_next.title else ('Criar checklist da nota' if is_exigencia_stage and not exig_items else ('Retornar ao Orgao externo' if is_exigencia_stage else active_stage.proximo_checklist)) %}
+                            <strong title="{{ next_checklist_label or '' }}">
+                                {{ (next_checklist_label or '—')[:32] }}
                             </strong>
                         </div>
                     </div>
@@ -128,7 +139,6 @@
                             {% set ns_orgao.cart_open = ns_orgao.cart_open + 1 %}
                         {% endif %}
                     {% endfor %}
-                    {% set exig_records = exigencias_by_project.get(project.id, []) %}
                     <div class="pmodal-protocol-row">
                         <button type="button" class="pmodal-protocol-btn"
                             onclick="openSubModal('project-modal-{{ project.id }}', 'modal-protocolo-{{ project.id }}-CARTORIO')">
@@ -152,7 +162,27 @@
                     {% endif %}
 
                     <div class="pmodal-actions">
-                        {% if external_can_skip and proxima_etapa %}
+                        {% if is_exigencia_stage %}
+                            {% if exig_items %}
+                            <span class="pmodal-advance-blocked" id="exig-return-lock-{{ project.id }}"
+                                {% if not exig_pending %}style="display:none"{% endif %}>
+                                Conclua os itens da nota para retornar ao Orgao externo
+                            </span>
+                            <form method="post" action="{{ url_for('project_action', project_id=project.id) }}"
+                                  id="exig-return-form-{{ project.id }}" class="d-inline"
+                                  {% if exig_pending %}style="display:none"{% endif %}>
+                                <input type="hidden" name="action" value="complete_external_requirements">
+                                <input type="hidden" name="next" value="{{ modal_next }}">
+                                <button class="pmodal-btn-advance" type="submit">
+                                    Concluir exigencia e voltar ao Orgao externo
+                                </button>
+                            </form>
+                            {% else %}
+                            <span class="pmodal-advance-blocked">
+                                Crie o checklist da nota para continuar
+                            </span>
+                            {% endif %}
+                        {% elif external_can_skip and proxima_etapa %}
                         <button class="pmodal-btn-advance" type="button"
                             onclick="skipExternalStageFromModal({{ project.id }}, {{ active_stage.id }}, this)">
                             Avancar -> {{ proxima_etapa.etapa_nome }}
@@ -187,16 +217,18 @@
                             ↑ Prioridade maxima
                         </button>
                         <div class="pmodal-actions-sec">
-                            {% if previous_stages %}
+                            {% if previous_stages and not is_exigencia_stage %}
                             <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="button"
                                 onclick="openSubModal('project-modal-{{ project.id }}', 'modal-retornar-{{ project.id }}')">
                                 ← Retornar etapa
                             </button>
                             {% endif %}
+                            {% if not is_exigencia_stage %}
                             <button class="pmodal-btn-ghost" type="button"
                                 onclick="openSubModal('project-modal-{{ project.id }}', 'modal-pendencia-{{ project.id }}')">
                                 + Pendencia
                             </button>
+                            {% endif %}
                             {% if can_manage() and (active_stage.stage_key or '') in ('FINALIZADO', 'ENTREGA', 'ORCAMENTO') %}
                             {% set archive_motivo = 'finalizado' if active_stage.stage_key in ('FINALIZADO', 'ENTREGA') else 'orcamento_nao_aprovado' %}
                             <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" class="d-inline" data-no-async
@@ -209,10 +241,12 @@
                                 </button>
                             </form>
                             {% endif %}
+                            {% if not is_exigencia_stage %}
                             <button class="pmodal-btn-ghost" type="button"
                                 onclick="openSubModal('project-modal-{{ project.id }}', 'modal-prefeitura-{{ project.id }}')">
                                 Prefeitura
                             </button>
+                            {% endif %}
                             <a class="pmodal-btn-ghost" href="{{ url_for('project_detail', project_id=project.id) }}">
                                 Detalhes completos ↗
                             </a>
@@ -222,19 +256,19 @@
                     {# Grid: checklist | pendências + movimentações + pasta #}
                     <div class="pmodal-grid">
 
-                        {# Coluna esquerda: checklist (ou pendencias da exigencia, quando houver) #}
-                        {% set exig_items = exigencia_itens_by_project.get(project.id, []) %}
+                        {# Na etapa Exigencias, somente a lista extraida da nota e exibida. #}
                         <div class="pmodal-col">
-                            {% if exig_items %}
-                            {# Exigencia aberta com itens: a lista dela substitui o checklist da etapa #}
-                            {% set exig_done = exig_items | selectattr('concluido') | list | length %}
+                            {% if is_exigencia_stage %}
                             <div class="pmodal-section pmodal-section--exigencia">
                                 <div class="pmodal-section-head">
-                                    <span class="pmodal-section-title">Pendencias da exigencia</span>
+                                    <span class="pmodal-section-title">Checklist da nota de exigencia</span>
+                                    {% if exig_items %}
                                     <span class="pmodal-section-count pmodal-section-count--danger" id="exig-counter-{{ project.id }}">
                                         {{ exig_done }}/{{ exig_items|length }}
                                     </span>
+                                    {% endif %}
                                 </div>
+                                {% if exig_items %}
                                 {% set exig_pct = ((exig_done / exig_items|length * 100) | int) if exig_items else 0 %}
                                 <div class="pmodal-progress">
                                     <div class="pmodal-progress-fill pmodal-progress-fill--danger" id="exig-progress-{{ project.id }}" style="width:{{ exig_pct }}%"></div>
@@ -245,11 +279,31 @@
                                         <input type="checkbox" class="pmodal-check-box"
                                             {{ 'checked' if item.concluido else '' }}
                                             onchange="toggleExigItem(this, {{ item.id }}, {{ project.id }})" />
-                                        <span class="pmodal-check-label">{{ item.titulo }}</span>
+                                        <span class="pmodal-check-copy">
+                                            <span class="pmodal-check-label">{{ item.titulo }}</span>
+                                            {% if item.resumo %}<small>{{ item.resumo }}</small>{% endif %}
+                                        </span>
                                     </label>
                                     {% endfor %}
                                 </div>
-                                <small class="pmodal-exig-note">Itens exigidos pelo orgao externo. O checklist da etapa volta quando a exigencia for concluida no botao Exigencia.</small>
+                                <small class="pmodal-exig-note">Conclua todos os itens e use o botao acima para devolver o projeto ao Orgao externo.</small>
+                                {% else %}
+                                <div class="pmodal-exig-empty">
+                                    <strong>O checklist desta nota ainda nao foi criado.</strong>
+                                    {% if latest_exig and latest_exig.anexo_path %}
+                                    <span>O sistema pode ler a nota anexada e organizar os itens automaticamente.</span>
+                                    <button class="pmodal-btn-ghost pmodal-btn-ghost--ai" type="button"
+                                            data-exigencia-ai data-exigencia-auto-apply="1"
+                                            data-project-id="{{ project.id }}"
+                                            data-exigencia-id="{{ latest_exig.id }}"
+                                            data-note-name="{{ latest_exig.anexo_nome or 'Nota de exigencia' }}">
+                                        Ler nota e criar checklist
+                                    </button>
+                                    {% else %}
+                                    <span>Abra os detalhes da exigencia e anexe a nota ou informe os itens manualmente.</span>
+                                    {% endif %}
+                                </div>
+                                {% endif %}
                             </div>
                             {% else %}
                             <div class="pmodal-section">
@@ -284,7 +338,7 @@
                         {# Coluna direita: pendências + movimentações + pasta #}
                         <div class="pmodal-col">
 
-                            {% if project_pendings %}
+                            {% if project_pendings and not is_exigencia_stage %}
                             <div class="pmodal-section">
                                 <div class="pmodal-section-head">
                                     <span class="pmodal-section-title">Pendencias abertas</span>
@@ -483,7 +537,7 @@
                             <label class="stage-modal-field-label">Nota de exigencia</label>
                             <input class="form-control form-control-sm" type="file" name="nota_exigencia"
                                    accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx" data-exigencia-file>
-                            <small class="stage-modal-optional">Anexe o arquivo e o sistema preparara o checklist para sua revisao.</small>
+                            <small class="stage-modal-optional">Anexe o arquivo e o sistema criara o checklist automaticamente.</small>
                         </div>
                         <details class="pmodal-manual-exigencia">
                             <summary>Ou preencher os itens manualmente</summary>
@@ -543,10 +597,11 @@
                                 </a>
                                 <button class="pmodal-btn-ghost pmodal-btn-ghost--ai" type="button"
                                         data-exigencia-ai
+                                        data-exigencia-auto-apply="1"
                                         data-project-id="{{ project.id }}"
                                         data-exigencia-id="{{ exg.id }}"
                                         data-note-name="{{ exg.anexo_nome or 'Nota de exigencia' }}">
-                                    Gerar checklist
+                                    Ler nota e criar checklist
                                 </button>
                                 {% else %}
                                 <form method="post" action="{{ url_for('project_action', project_id=project.id) }}"
@@ -560,24 +615,12 @@
                                     <label class="pmodal-btn-ghost" for="nota-exigencia-{{ exg.id }}">Anexar nota</label>
                                 </form>
                                 {% endif %}
-                                <button class="pmodal-btn-ghost pmodal-btn-ghost--success" type="submit" form="form-exig-concluir-{{ exg.id }}">Concluida</button>
                             </div>
                         </div>
                         {% endfor %}
                     </div>
                 </div>
                 {% endif %}
-                {% for exg in exig_records %}
-                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" id="form-exig-concluir-{{ exg.id }}" hidden>
-                    <input type="hidden" name="action" value="update_exigencia">
-                    <input type="hidden" name="exigencia_id" value="{{ exg.id }}">
-                    <input type="hidden" name="tipo_registro" value="exigencia">
-                    <input type="hidden" name="status" value="concluido">
-                    <input type="hidden" name="prazo_resposta" value="{{ exg.prazo_resposta or '' }}">
-                    <input type="hidden" name="responsavel_id" value="{{ exg.responsavel_id or '' }}">
-                    <input type="hidden" name="next" value="{{ modal_next }}">
-                </form>
-                {% endfor %}
             </div>
         </div>
     </div>

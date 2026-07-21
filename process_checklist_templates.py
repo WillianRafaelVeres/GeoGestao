@@ -916,7 +916,9 @@ def build_process_checklist_templates():
         source = PROCESS_CHECKLIST_SOURCE.get(process_type_key, OUTRO)
         rows = []
         for stage_key, items in source.items():
-            if stage_key in RETIRED_WORKFLOW_STAGE_KEYS:
+            # Exigencias usa exclusivamente os itens recebidos do orgao externo.
+            # Os modelos genericos desta etapa permanecem apenas como historico no fonte.
+            if stage_key in RETIRED_WORKFLOW_STAGE_KEYS or stage_key == "PENDENCIAS":
                 continue
             for index, data in enumerate(items, 1):
                 row = dict(data)

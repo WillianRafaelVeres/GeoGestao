@@ -812,8 +812,24 @@
     background: #fef2f2;
 }
 .pmodal-section--exigencia .pmodal-section-title { color: #b91c1c; }
+.pmodal-section--exigencia .pmodal-check-item { align-items: flex-start; }
 .pmodal-progress-fill--danger { background: linear-gradient(90deg, #f87171, #dc2626); }
 .pmodal-exig-note { display: block; margin-top: 8px; font-size: 10.5px; color: #991b1b; }
+.pmodal-check-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.pmodal-check-copy small { color: #6b7280; font-size: 10.5px; line-height: 1.35; }
+.pmodal-exig-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 12px;
+    border: 1px dashed #fca5a5;
+    border-radius: 6px;
+    background: #fff;
+    color: #475569;
+    font-size: 12px;
+}
+.pmodal-exig-empty strong { color: #111827; }
 
 /* Controle de orgao externo */
 .pmodal-external-control {
@@ -1155,6 +1171,11 @@ function toggleExigItem(cb, itemId, projectId) {
             if (counter) counter.textContent = `${data.done}/${data.total}`;
             const bar = document.getElementById(`exig-progress-${projectId}`);
             if (bar) bar.style.width = (data.total ? Math.round(data.done * 100 / data.total) : 0) + '%';
+            const returnLock = document.getElementById(`exig-return-lock-${projectId}`);
+            const returnForm = document.getElementById(`exig-return-form-${projectId}`);
+            const checklistComplete = data.total > 0 && data.done === data.total;
+            if (returnLock) returnLock.style.display = checklistComplete ? 'none' : '';
+            if (returnForm) returnForm.style.display = checklistComplete ? '' : 'none';
         })
         .catch(() => {
             cb.checked = !cb.checked;
@@ -1987,7 +2008,10 @@ function initProjectActionForms(root) {
                     const trigger = document.querySelector(
                         `[data-exigencia-ai][data-exigencia-id="${responsePayload.auto_analyze_exigencia_id}"]`
                     );
-                    trigger?.click();
+                    if (trigger) {
+                        trigger.dataset.exigenciaAutoApply = '1';
+                        trigger.click();
+                    }
                 }
             } catch (error) {
                 showMatrixActionFeedback(error.message || 'Alteracao salva. Atualize a pagina para conferir os dados.', 'warning');
