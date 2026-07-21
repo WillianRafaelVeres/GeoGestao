@@ -1890,14 +1890,6 @@ function appendExigenciaAiItem(elements, item, readOnly) {
     titleInput.value = item.titulo || "";
     titleInput.readOnly = readOnly;
 
-    const summaryInput = document.createElement("textarea");
-    summaryInput.className = "form-control form-control-sm";
-    summaryInput.maxLength = 1200;
-    summaryInput.rows = 1;
-    summaryInput.placeholder = "Contexto que ajuda a equipe a executar o item";
-    summaryInput.value = item.resumo || "";
-    summaryInput.readOnly = readOnly;
-
     const removeButton = document.createElement("button");
     removeButton.className = "btn btn-outline-danger btn-sm exigencia-ai-item-remove";
     removeButton.type = "button";
@@ -1911,7 +1903,6 @@ function appendExigenciaAiItem(elements, item, readOnly) {
         makeExigenciaAiField("Numero", "exigencia-ai-item-code", codeInput),
         makeExigenciaAiField("Item do checklist", "exigencia-ai-item-title", titleInput),
         removeButton,
-        makeExigenciaAiField("Detalhe", "exigencia-ai-item-summary", summaryInput),
     );
     if (item.pagina || item.trecho_origem) {
         const source = document.createElement("small");
@@ -1933,7 +1924,7 @@ function collectExigenciaAiItems(elements) {
     return Array.from(elements.items.querySelectorAll(".exigencia-ai-item")).map((row) => ({
         codigo: row.querySelector(".exigencia-ai-item-code input")?.value.trim() || "",
         titulo: row.querySelector(".exigencia-ai-item-title textarea")?.value.trim() || "",
-        resumo: row.querySelector(".exigencia-ai-item-summary textarea")?.value.trim() || "",
+        resumo: "",
         pagina: Number(row.dataset.page || 0),
         trecho_origem: row.dataset.source || "",
     })).filter((item) => item.titulo);

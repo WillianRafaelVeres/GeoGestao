@@ -30,6 +30,7 @@ class ExigenciaAiTests(unittest.TestCase):
 
         self.assertEqual([item["codigo"] for item in items], ["2.1", "2.2"])
         self.assertEqual(items[0]["titulo"], "Anuencia do confrontante 1")
+        self.assertEqual(items[0]["resumo"], "")
 
     def test_extracts_text_from_pdf_and_uses_vision_for_scan(self):
         digital = fitz.open()

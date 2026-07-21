@@ -1914,14 +1914,9 @@ a:hover { color: #1d4ed8; }
     font-weight: 600;
 }
 
-.exigencia-ai-item-title textarea,
-.exigencia-ai-item-summary textarea {
+.exigencia-ai-item-title textarea {
     min-height: 42px;
     resize: vertical;
-}
-
-.exigencia-ai-item-summary {
-    grid-column: 2 / 3;
 }
 
 .exigencia-ai-item-source {
@@ -1980,7 +1975,6 @@ a:hover { color: #1d4ed8; }
 
     .exigencia-ai-item-code { grid-column: 1 / 2; }
     .exigencia-ai-item-title { grid-column: 1 / 2; }
-    .exigencia-ai-item-summary { grid-column: 1 / 3; }
     .exigencia-ai-item-source { grid-column: 1 / 3; }
     .exigencia-ai-item-remove { grid-column: 2 / 3; grid-row: 1; }
     .exigencia-ai-footer { align-items: stretch; }
