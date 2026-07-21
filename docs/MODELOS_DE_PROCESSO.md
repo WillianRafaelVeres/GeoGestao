@@ -64,6 +64,7 @@ Esses itens serao tratados em fases futuras.
 | `USUCAPIAO` | Usucapiao | Regularizacao juridica/cartorial | sim | sim | advogado/forum/cartorio conforme modalidade | Regulariza posse por usucapiao. |
 | `GEORREFERENCIAMENTO_TECNICO` | Georreferenciamento Tecnico | Tecnico/topografico | sim | opcional/conforme contratacao | SIGEF/INCRA quando aplicavel | Levantamento e georreferenciamento do imovel rural. |
 | `CERTIFICACAO_SIGEF` | Certificacao SIGEF | INCRA/SIGEF | opcional/conforme qualidade dos dados | nao por padrao | SIGEF/INCRA | Certificacao do imovel rural no SIGEF. |
+| `AVERBACAO_CERTIFICACAO` | Averbacao da Certificacao | Regularizacao cartorial | nao por padrao | sim | cartorio de registro de imoveis | Averba na matricula uma certificacao SIGEF ja emitida. |
 | `CAR` | Cadastro Ambiental Rural - CAR | Ambiental | opcional/conforme caso | nao | SICAR/orgao ambiental | Cadastro, analise ou ajuste ambiental do imovel rural. |
 | `ATUALIZACAO_CCIR` | Atualizacao de CCIR | INCRA/SNCR | nao por padrao | nao | SNCR/INCRA | Atualizacao ou emissao de CCIR e dados do cadastro rural. |
 | `MEDICAO` | Medicao / Levantamento | Tecnico/topografico | sim | nao por padrao | nao por padrao | Medicao, levantamento ou conferencia de area. |
@@ -83,6 +84,7 @@ Exemplos:
 - `Georreferenciamento` -> `GEORREFERENCIAMENTO_TECNICO`
 - `CAR` -> `CAR`
 - `SIGEF` -> `CERTIFICACAO_SIGEF`
+- `Averbacao da Certificacao` -> `AVERBACAO_CERTIFICACAO`
 - `CCIR` -> `ATUALIZACAO_CCIR`
 - `Medicao` -> `MEDICAO`
 
@@ -215,6 +217,7 @@ Exemplo:
 - `RETIFICACAO_AREA_RURAL` + `DOCUMENTOS` inclui solicitar matricula, documentos pessoais, conjuge quando aplicavel, procuracao quando houver e documentos rurais quando fizer sentido.
 - `CAR` + `ESCRITORIO` inclui preencher/ajustar SICAR, delimitar APP, Reserva Legal e uso do solo.
 - `ATUALIZACAO_CCIR` + `ESCRITORIO` inclui atualizar SNCR/INCRA, conferir dados, emitir taxa/guia quando aplicavel e emitir CCIR quando possivel.
+- `AVERBACAO_CERTIFICACAO` parte de uma certificacao SIGEF ja emitida e segue por analise documental, requerimento, conferencia, assinaturas e protocolo no cartorio.
 - `MEDICAO` nao possui checklist de cartorio por padrao.
 
 ### Checklist real do projeto

@@ -1953,9 +1953,11 @@ def seed_document_requirements(db):
             )
 
 
-def seed_process_types(db):
+def seed_process_types(db, process_type_keys=None):
     now = app_now_iso()
     for item in PROCESS_TYPES:
+        if process_type_keys is not None and item["key"] not in process_type_keys:
+            continue
         existing = first_row(db, "SELECT id FROM tipos_processo WHERE chave = %s", (item["key"],))
         values = (
             item["key"],
@@ -1992,9 +1994,11 @@ def seed_process_types(db):
             )
 
 
-def seed_process_stage_templates(db):
+def seed_process_stage_templates(db, process_type_keys=None):
     now = app_now_iso()
     for process_type_key, stage_templates in PROCESS_STAGE_TEMPLATES.items():
+        if process_type_keys is not None and process_type_key not in process_type_keys:
+            continue
         for template in stage_templates:
             existing = first_row(
                 db,
@@ -2048,9 +2052,11 @@ def seed_process_stage_templates(db):
                 )
 
 
-def seed_process_checklist_templates(db):
+def seed_process_checklist_templates(db, process_type_keys=None):
     now = app_now_iso()
     for process_type_key, checklist_templates in PROCESS_CHECKLIST_TEMPLATES.items():
+        if process_type_keys is not None and process_type_key not in process_type_keys:
+            continue
         for template in checklist_templates:
             existing = first_row(
                 db,

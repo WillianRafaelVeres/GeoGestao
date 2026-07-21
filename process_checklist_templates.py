@@ -636,6 +636,76 @@ CERTIFICACAO_SIGEF = {
     ],
 }
 
+AVERBACAO_CERTIFICACAO = {
+    "ORCAMENTO": [
+        item("Registrar solicitacao"),
+        item("Confirmar que a certificacao SIGEF ja foi emitida", criticality=CRITICALITY_HIGH),
+        item("Identificar matricula e cartorio competente"),
+        item("Elaborar orcamento", role=ROLE_FINANCE),
+        item("Registrar aceite"),
+    ],
+    "DOCUMENTOS": [
+        item("Solicitar matricula atualizada"),
+        item("Solicitar certificado SIGEF", criticality=CRITICALITY_HIGH),
+        item("Solicitar planta e memorial certificados", criticality=CRITICALITY_HIGH),
+        item("Solicitar documentos dos proprietarios"),
+        cond("Solicitar procuracao", "Quando houver procurador ou representante."),
+        cond("Solicitar CCIR, ITR ou CAR", "Quando exigido pelo cartorio."),
+        item("Conferir documentos recebidos"),
+    ],
+    "ANALISE": [
+        item("Validar certificacao no SIGEF", criticality=CRITICALITY_CRITICAL),
+        item("Conferir correspondencia entre certificacao e matricula", criticality=CRITICALITY_HIGH),
+        item("Conferir titularidade e qualificacao dos proprietarios", criticality=CRITICALITY_HIGH),
+        item("Conferir area, perimetro e codigo da parcela"),
+        item("Verificar exigencias do cartorio competente"),
+        item("Definir documentos e assinaturas necessarios"),
+    ],
+    "PREPARACAO": [
+        item("Organizar pasta do processo"),
+        item("Confirmar cartorio e CNS"),
+        item("Separar modelos exigidos pelo cartorio"),
+        item("Montar lista final de documentos"),
+    ],
+    "ESCRITORIO": [
+        item("Elaborar requerimento de averbacao", role=ROLE_DOCUMENTATION, criticality=CRITICALITY_HIGH),
+        item("Organizar certificado SIGEF, planta e memorial"),
+        item("Preparar documentos obrigatorios do cartorio"),
+        cond("Preparar declaracoes complementares", "Quando exigidas pelo cartorio."),
+        cond("Emitir guia ou custas para protocolo", "Quando aplicavel.", role=ROLE_FINANCE),
+    ],
+    "CONFERENCIA": [
+        item("Conferir requerimento de averbacao", criticality=CRITICALITY_CRITICAL),
+        item("Conferir matricula, titularidade e qualificacao"),
+        item("Conferir codigo da certificacao SIGEF"),
+        item("Conferir planta e memorial certificados"),
+        item("Conferir checklist documental do cartorio"),
+    ],
+    "ASSINATURAS": [
+        item("Coletar assinatura dos proprietarios ou representantes", role=ROLE_DOCUMENTATION),
+        cond("Reconhecer firma", "Quando exigido pelo cartorio.", role=ROLE_DOCUMENTATION),
+        item("Conferir documentos assinados", role=ROLE_DOCUMENTATION),
+    ],
+    "ORGAO_EXTERNO": [
+        item("Protocolar averbacao no cartorio", role=ROLE_REGISTRY, criticality=CRITICALITY_HIGH),
+        item("Registrar numero e data do protocolo", role=ROLE_REGISTRY),
+        item("Acompanhar qualificacao registral", role=ROLE_REGISTRY),
+        item("Retirar matricula com averbacao concluida", role=ROLE_REGISTRY),
+    ],
+    "PENDENCIAS": [
+        item("Registrar exigencia do cartorio", role=ROLE_REGISTRY),
+        item("Corrigir documentos ou requerimento"),
+        item("Conferir atendimento da exigencia"),
+        item("Reprotocolar documentos", role=ROLE_REGISTRY),
+    ],
+    "ENTREGA": [
+        item("Entregar matricula atualizada ao cliente", role=ROLE_CLIENT),
+        item("Entregar comprovantes do protocolo"),
+        item("Arquivar documentos finais"),
+        item("Marcar projeto como finalizado"),
+    ],
+}
+
 CAR = {
     "ORCAMENTO": [
         item("Registrar solicitacao"),
@@ -897,6 +967,7 @@ PROCESS_CHECKLIST_SOURCE = {
     "USUCAPIAO": USUCAPIAO,
     "GEORREFERENCIAMENTO_TECNICO": GEORREFERENCIAMENTO_TECNICO,
     "CERTIFICACAO_SIGEF": CERTIFICACAO_SIGEF,
+    "AVERBACAO_CERTIFICACAO": AVERBACAO_CERTIFICACAO,
     "CAR": CAR,
     "ATUALIZACAO_CCIR": ATUALIZACAO_CCIR,
     "MEDICAO": MEDICAO,
