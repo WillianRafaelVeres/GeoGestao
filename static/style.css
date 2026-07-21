@@ -1957,6 +1957,22 @@ a:hover { color: #1d4ed8; }
     background: #f1f5f9;
 }
 
+.pmodal-manual-exigencia {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 10px;
+}
+
+.pmodal-manual-exigencia summary {
+    color: #475569;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.pmodal-manual-exigencia[open] summary {
+    color: #1d4ed8;
+}
+
 @media (max-width: 700px) {
     .exigencia-ai-item {
         grid-template-columns: minmax(0, 1fr) 36px;

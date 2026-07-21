@@ -537,7 +537,7 @@
                                                     <option value="{{ usuario.id }}" {% if exigencia.responsavel_id == usuario.id %}selected{% endif %}>{{ usuario.nome }}</option>
                                                 {% endfor %}
                                             </select>
-                                            <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ exigencia.prazo_resposta or '' }}" required />
+                                            <input class="form-control form-control-sm" type="date" name="prazo_resposta" value="{{ exigencia.prazo_resposta or '' }}" />
                                             <select class="form-select form-select-sm" name="status">
                                                 {% for key, info in status_meta.items() %}
                                                     <option value="{{ key }}" {% if status_key == key %}selected{% endif %}>{{ info.label }}</option>

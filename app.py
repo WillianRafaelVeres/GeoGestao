@@ -9424,6 +9424,7 @@ def project_action(project_id):
         return redirect(url_for("projects"))
 
     action = request.form.get("action")
+    quick_payload = {}
     if action == "delete_project":
         if not can_admin():
             flash("Somente administrador pode excluir projetos.", "danger")
@@ -10190,21 +10191,22 @@ def project_action(project_id):
         )
         itens_exigidos = [linha.strip() for linha in request.form.get("itens", "").splitlines() if linha.strip()]
         description = request.form.get("descricao", "").strip()
+        has_manual_content = bool(description or itens_exigidos)
         if not description and itens_exigidos:
             description = itens_exigidos[0] if len(itens_exigidos) == 1 else f"{itens_exigidos[0]} (+{len(itens_exigidos) - 1} itens)"
         prazo_resposta = request.form.get("prazo_resposta") or None
         attachment, attachment_error = read_exigencia_attachment(request.files.get("nota_exigencia"))
+        if not description and attachment and not attachment_error:
+            description = "Nota de exigencia anexada"
         duplicate_attachment = (
             find_duplicate_exigencia_attachment(project_id, attachment["hash"])
             if attachment and not attachment_error
             else None
         )
-        if not description:
-            flash("Informe o que o orgao exigiu (um item por linha).", "danger")
-        elif not prazo_resposta:
-            flash("Informe o prazo de resposta da exigencia.", "danger")
-        elif attachment_error:
+        if attachment_error:
             flash(attachment_error, "danger")
+        elif not description:
+            flash("Anexe a nota ou informe pelo menos um item da exigencia.", "danger")
         elif duplicate_attachment:
             duplicate_name = duplicate_attachment["anexo_nome"] or f"Nota V{duplicate_attachment['anexo_versao'] or 1}"
             flash(f"Esta mesma nota ja foi anexada como {duplicate_name}. A exigencia repetida nao foi criada.", "info")
@@ -10248,10 +10250,19 @@ def project_action(project_id):
                     flash(f"Esta mesma nota ja foi anexada como {duplicate_name}. A exigencia repetida nao foi criada.", "info")
                     return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
                 if upload_error:
+                    if not has_manual_content:
+                        execute_db(
+                            "DELETE FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s",
+                            (exigencia_id, project_id),
+                        )
+                        flash(f"Nao foi possivel anexar a nota: {upload_error}", "danger")
+                        return redirect(request.form.get("next") or url_for("project_detail", project_id=project_id))
                     attachment_notice = f" A exigencia foi registrada, mas a nota nao foi anexada: {upload_error}"
                     attachment_tone = "warning"
                 else:
                     attachment_notice = f" {uploaded['name']} foi salva em {uploaded['folder']}."
+                    if not has_manual_content:
+                        quick_payload["auto_analyze_exigencia_id"] = exigencia_id
                     record_event(
                         project_id,
                         "nota_exigencia_anexada",
@@ -10347,92 +10358,93 @@ def project_action(project_id):
                 status = "concluido"
             elif data_pronto_retirada and status not in ("concluido", "cancelado"):
                 status = "pronto para retirada"
-        if tipo_registro == "exigencia" and not prazo_resposta:
-            flash("Informe o prazo de resposta da exigencia.", "danger")
-        else:
-            exigencia_row = query_db("SELECT * FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s", (exigencia_id, project_id), one=True)
-            if exigencia_row and tipo_registro == "protocolo":
-                prazo_resposta = prazo_resposta or exigencia_row["prazo_resposta"] or external_protocol_check_date(exigencia_row["data_protocolo"])
+        exigencia_row = query_db(
+            "SELECT * FROM exigencias_cartorio WHERE id = %s AND projeto_id = %s",
+            (exigencia_id, project_id),
+            one=True,
+        )
+        if exigencia_row and tipo_registro == "protocolo":
+            prazo_resposta = prazo_resposta or exigencia_row["prazo_resposta"] or external_protocol_check_date(exigencia_row["data_protocolo"])
+        execute_db(
+            """
+            UPDATE exigencias_cartorio
+            SET status = %s, responsavel_id = %s, prazo_resposta = %s,
+                data_pronto_retirada = %s, data_retirada = %s, atualizado_em = %s
+            WHERE id = %s AND projeto_id = %s
+            """,
+            (
+                status,
+                responsavel_id,
+                prazo_resposta,
+                data_pronto_retirada,
+                data_retirada,
+                app_now_iso(),
+                exigencia_id,
+                project_id,
+            ),
+        )
+        record_event(project_id, "exigencia_atualizada", f"Exigencia #{exigencia_id} atualizada.")
+        if exigencia_row and tipo_registro == "protocolo" and status == "pronto para retirada":
+            ensure_protocol_withdrawal_task(
+                project_id,
+                exigencia_row["etapa_id"],
+                exigencia_row["id"],
+                exigencia_row["tipo_orgao"] or "CARTORIO",
+                responsavel_id,
+                data_pronto_retirada,
+            )
+            record_event(project_id, "protocolo_pronto_retirada", f"Protocolo #{exigencia_id} pronto para retirada.")
+        if exigencia_row and status in ("concluido", "cancelado"):
             execute_db(
                 """
-                UPDATE exigencias_cartorio
-                SET status = %s, responsavel_id = %s, prazo_resposta = %s,
-                    data_pronto_retirada = %s, data_retirada = %s, atualizado_em = %s
-                WHERE id = %s AND projeto_id = %s
+                UPDATE pendencias
+                SET status = 'resolvida', data_resolucao = COALESCE(data_resolucao, %s), atualizado_em = %s
+                WHERE projeto_id = %s
+                  AND descricao = %s
+                  AND (%s IS NULL OR etapa_id = %s)
+                  AND lower(COALESCE(status, '')) NOT IN ('resolvida', 'cancelada')
                 """,
                 (
-                    status,
-                    responsavel_id,
-                    prazo_resposta,
-                    data_pronto_retirada,
-                    data_retirada,
+                    app_today().isoformat(),
                     app_now_iso(),
-                    exigencia_id,
                     project_id,
+                    exigencia_row["descricao"],
+                    exigencia_row["etapa_id"],
+                    exigencia_row["etapa_id"],
                 ),
             )
-            record_event(project_id, "exigencia_atualizada", f"Exigencia #{exigencia_id} atualizada.")
-            if exigencia_row and tipo_registro == "protocolo" and status == "pronto para retirada":
-                ensure_protocol_withdrawal_task(
-                    project_id,
-                    exigencia_row["etapa_id"],
-                    exigencia_row["id"],
-                    exigencia_row["tipo_orgao"] or "CARTORIO",
-                    responsavel_id,
-                    data_pronto_retirada,
-                )
-                record_event(project_id, "protocolo_pronto_retirada", f"Protocolo #{exigencia_id} pronto para retirada.")
-            if exigencia_row and status in ("concluido", "cancelado"):
-                execute_db(
-                    """
-                    UPDATE pendencias
-                    SET status = 'resolvida', data_resolucao = COALESCE(data_resolucao, %s), atualizado_em = %s
-                    WHERE projeto_id = %s
-                      AND descricao = %s
-                      AND (%s IS NULL OR etapa_id = %s)
-                      AND lower(COALESCE(status, '')) NOT IN ('resolvida', 'cancelada')
-                    """,
-                    (
-                        app_today().isoformat(),
-                        app_now_iso(),
-                        project_id,
-                        exigencia_row["descricao"],
-                        exigencia_row["etapa_id"],
-                        exigencia_row["etapa_id"],
-                    ),
-                )
-            if exigencia_row and tipo_registro == "protocolo" and status == "concluido":
-                complete_protocol_withdrawal_tasks(project_id, exigencia_row["id"])
-            next_stage = None
-            if data_retirada and exigencia_row:
-                next_stage = maybe_advance_external_stage_after_withdrawal(
+        if exigencia_row and tipo_registro == "protocolo" and status == "concluido":
+            complete_protocol_withdrawal_tasks(project_id, exigencia_row["id"])
+        next_stage = None
+        if data_retirada and exigencia_row:
+            next_stage = maybe_advance_external_stage_after_withdrawal(
+                project_id,
+                exigencia_row["tipo_orgao"] or "CARTORIO",
+                request.form.get("responsavel_id") or project["responsavel_geral_id"],
+            )
+        if not next_stage and exigencia_row and tipo_registro == "exigencia" and status in ("concluido", "cancelado"):
+            # Exigencia resolvida: se nao houver mais nenhuma exigencia aberta no projeto,
+            # ele sai da coluna Exigencias e volta para o orgao externo (aguardando a
+            # retirada do protocolo, se ainda houver um em aberto).
+            remaining_open = scalar(
+                get_db(),
+                """
+                SELECT COUNT(*) FROM exigencias_cartorio
+                WHERE projeto_id = %s AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
+                  AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+                """,
+                (project_id,),
+            )
+            if not remaining_open:
+                next_stage = move_project_back_to_external_stage_after_pending_resolved(
                     project_id,
                     exigencia_row["tipo_orgao"] or "CARTORIO",
                     request.form.get("responsavel_id") or project["responsavel_geral_id"],
                 )
-            if not next_stage and exigencia_row and tipo_registro == "exigencia" and status in ("concluido", "cancelado"):
-                # Exigencia resolvida: se nao houver mais nenhuma exigencia aberta no projeto,
-                # ele sai da coluna Exigencias e volta para o orgao externo (aguardando a
-                # retirada do protocolo, se ainda houver um em aberto).
-                remaining_open = scalar(
-                    get_db(),
-                    """
-                    SELECT COUNT(*) FROM exigencias_cartorio
-                    WHERE projeto_id = %s AND COALESCE(tipo_registro, 'exigencia') = 'exigencia'
-                      AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
-                    """,
-                    (project_id,),
-                )
-                if not remaining_open:
-                    next_stage = move_project_back_to_external_stage_after_pending_resolved(
-                        project_id,
-                        exigencia_row["tipo_orgao"] or "CARTORIO",
-                        request.form.get("responsavel_id") or project["responsavel_geral_id"],
-                    )
-            if next_stage:
-                flash(f"Registro atualizado. Projeto avancou para {next_stage['etapa_nome']}.", "success")
-            else:
-                flash("Registro atualizado.", "success")
+        if next_stage:
+            flash(f"Registro atualizado. Projeto avancou para {next_stage['etapa_nome']}.", "success")
+        else:
+            flash("Registro atualizado.", "success")
 
     elif action == "add_time":
         minutes = int(request.form.get("duracao_minutos") or 0)
@@ -10488,6 +10500,7 @@ def project_action(project_id):
             "tone": tone,
             "messages": normalized_messages,
         }
+        payload.update(quick_payload)
         return (jsonify(payload), 400) if tone == "danger" else jsonify(payload)
     return redirect(next_url)
 

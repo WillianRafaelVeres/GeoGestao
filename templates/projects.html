@@ -1930,6 +1930,7 @@ function initProjectActionForms(root) {
 
             let responseDocument = null;
             let responseFeedback = null;
+            let responsePayload = null;
             try {
                 const formData = new FormData(form);
                 if (event.submitter?.name && !formData.has(event.submitter.name)) {
@@ -1952,6 +1953,7 @@ function initProjectActionForms(root) {
                 const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
                 if (contentType.includes('application/json')) {
                     const data = await response.json().catch(() => ({}));
+                    responsePayload = data;
                     if (!response.ok || !data.ok) {
                         throw new Error(data.error || data.message || 'Nao foi possivel salvar a alteracao.');
                     }
@@ -1981,10 +1983,48 @@ function initProjectActionForms(root) {
                     matrixDocument: responseDocument || undefined,
                     reopenModal: true,
                 });
+                if (responsePayload?.auto_analyze_exigencia_id) {
+                    const trigger = document.querySelector(
+                        `[data-exigencia-ai][data-exigencia-id="${responsePayload.auto_analyze_exigencia_id}"]`
+                    );
+                    trigger?.click();
+                }
             } catch (error) {
                 showMatrixActionFeedback(error.message || 'Alteracao salva. Atualize a pagina para conferir os dados.', 'warning');
             }
         });
+    });
+}
+
+function initExigenciaCreateForms(root) {
+    root.querySelectorAll('[data-exigencia-create]').forEach((form) => {
+        if (form.dataset.exigenciaReady === '1') return;
+        form.dataset.exigenciaReady = '1';
+        const fileInput = form.querySelector('[data-exigencia-file]');
+        const itemsInput = form.querySelector('[data-exigencia-items]');
+        const validation = form.querySelector('[data-exigencia-validation]');
+        const submitButton = form.querySelector('[data-exigencia-submit]');
+
+        const sync = () => {
+            const hasFile = Boolean(fileInput?.files?.length);
+            const hasItems = Boolean(itemsInput?.value.trim());
+            if (validation) validation.hidden = hasFile || hasItems;
+            if (submitButton) {
+                submitButton.textContent = hasFile ? 'Registrar e analisar' : 'Registrar exigencia';
+            }
+        };
+        fileInput?.addEventListener('change', sync);
+        itemsInput?.addEventListener('input', sync);
+        form.addEventListener('submit', (event) => {
+            const hasFile = Boolean(fileInput?.files?.length);
+            const hasItems = Boolean(itemsInput?.value.trim());
+            if (hasFile || hasItems) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (validation) validation.hidden = false;
+            fileInput?.focus();
+        });
+        sync();
     });
 }
 
@@ -2016,6 +2056,7 @@ function setProjectModalTriggerLoading(trigger, loading) {
 
 function initializeProjectModalFragment(root) {
     initExternalProtocolControls(root);
+    initExigenciaCreateForms(root);
     initProjectActionForms(root);
 
     root.querySelectorAll('[data-copy]').forEach((button) => {

@@ -464,7 +464,8 @@
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 {% if ns_prot_open.rows %}
-                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" enctype="multipart/form-data">
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" enctype="multipart/form-data"
+                      data-exigencia-create>
                     <input type="hidden" name="action" value="add_exigencia">
                     <input type="hidden" name="next" value="{{ modal_next }}">
                     <div class="stage-modal-body">
@@ -479,23 +480,29 @@
                             </select>
                         </div>
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">O que o orgao exigiu <span class="stage-modal-optional">(um item por linha)</span></label>
-                            <textarea class="form-control form-control-sm" name="itens" rows="4" required
-                                placeholder="Ex.:&#10;Corrigir memorial descritivo&#10;Reconhecer firma do confrontante"></textarea>
-                        </div>
-                        <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Nota de exigencia <span class="stage-modal-optional">(opcional)</span></label>
+                            <label class="stage-modal-field-label">Nota de exigencia</label>
                             <input class="form-control form-control-sm" type="file" name="nota_exigencia"
-                                   accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx">
-                            <small class="stage-modal-optional">O sistema evita arquivos repetidos e organiza as novas notas como V2, V3 e seguintes no Dropbox.</small>
+                                   accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx" data-exigencia-file>
+                            <small class="stage-modal-optional">Anexe o arquivo e o sistema preparara o checklist para sua revisao.</small>
+                        </div>
+                        <details class="pmodal-manual-exigencia">
+                            <summary>Ou preencher os itens manualmente</summary>
+                            <div class="stage-modal-field mt-2">
+                                <label class="stage-modal-field-label">O que o orgao exigiu <span class="stage-modal-optional">(um item por linha)</span></label>
+                                <textarea class="form-control form-control-sm" name="itens" rows="4" data-exigencia-items
+                                    placeholder="Ex.:&#10;Corrigir memorial descritivo&#10;Reconhecer firma do confrontante"></textarea>
+                            </div>
+                        </details>
+                        <div class="alert alert-danger py-2 px-3 mb-0" data-exigencia-validation hidden>
+                            Anexe a nota ou preencha pelo menos um item manualmente.
                         </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
                             <div class="stage-modal-field">
-                                <label class="stage-modal-field-label">Prazo de resposta</label>
-                                <input type="date" class="form-control form-control-sm" name="prazo_resposta" required>
+                                <label class="stage-modal-field-label">Prazo de resposta <span class="stage-modal-optional">(opcional)</span></label>
+                                <input type="date" class="form-control form-control-sm" name="prazo_resposta">
                             </div>
                             <div class="stage-modal-field">
-                                <label class="stage-modal-field-label">Responsavel</label>
+                                <label class="stage-modal-field-label">Responsavel <span class="stage-modal-optional">(opcional)</span></label>
                                 <select class="form-select form-select-sm" name="responsavel_id">
                                     <option value="">Sem responsavel</option>
                                     {% for u in usuarios %}<option value="{{ u.id }}">{{ u.nome }}</option>{% endfor %}
@@ -505,7 +512,7 @@
                     </div>
                     <div class="stage-modal-footer">
                         <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending">Registrar exigencia</button>
+                        <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending" data-exigencia-submit>Registrar e analisar</button>
                     </div>
                 </form>
                 {% else %}
@@ -566,7 +573,7 @@
                     <input type="hidden" name="exigencia_id" value="{{ exg.id }}">
                     <input type="hidden" name="tipo_registro" value="exigencia">
                     <input type="hidden" name="status" value="concluido">
-                    <input type="hidden" name="prazo_resposta" value="{{ exg.prazo_resposta or today_iso }}">
+                    <input type="hidden" name="prazo_resposta" value="{{ exg.prazo_resposta or '' }}">
                     <input type="hidden" name="responsavel_id" value="{{ exg.responsavel_id or '' }}">
                     <input type="hidden" name="next" value="{{ modal_next }}">
                 </form>

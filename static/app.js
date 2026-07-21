@@ -1709,7 +1709,9 @@ function initExigenciaAi() {
         state.projectId = trigger.dataset.projectId;
         state.exigenciaId = trigger.dataset.exigenciaId;
         state.endpoint = `/api/project/${state.projectId}/exigencia/${state.exigenciaId}/ai-analysis`;
-        state.returnModal = trigger.closest(".modal.show");
+        const visibleProjectModal = document.getElementById(`project-modal-${state.projectId}`);
+        state.returnModal = trigger.closest(".modal.show")
+            || (visibleProjectModal?.classList.contains("show") ? visibleProjectModal : null);
         state.reopenParent = Boolean(state.returnModal);
         state.applied = false;
         elements.noteName.textContent = trigger.dataset.noteName || "Nota de exigencia";
