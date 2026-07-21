@@ -548,7 +548,7 @@
                 <div class="stage-modal-header stage-modal-header--advance">
                     <div>
                         <div class="stage-modal-label">Prefeitura</div>
-                        <div class="stage-modal-title">{{ project.prefeitura_nome or project.nome }}</div>
+                        <div class="stage-modal-title">{{ project.prefeitura_nome or project.cidade or project.nome }}</div>
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
@@ -578,7 +578,7 @@
                         <div class="pmodal-external-empty">Nenhum item cadastrado para esta prefeitura ainda.</div>
                         {% endif %}
                     {% else %}
-                        <div class="pmodal-external-empty">Nenhuma prefeitura vinculada a este projeto. Selecione uma em Detalhes completos.</div>
+                        <div class="pmodal-external-empty">Este projeto ainda nao tem a cidade do terreno preenchida. Informe a cidade em Detalhes completos e a prefeitura aparece sozinha.</div>
                     {% endif %}
                 </div>
                 <div class="stage-modal-footer">
@@ -587,7 +587,7 @@
                     {% endif %}
                     {% if can_manage() %}
                     <a class="stage-modal-cancel" href="{{ url_for('prefeituras_checklist', prefeitura_id=project.prefeitura_id) if project.prefeitura_id else url_for('prefeituras') }}" target="_blank" rel="noopener">
-                        {{ 'Editar lista' if project.prefeitura_id else 'Cadastrar prefeitura' }}
+                        {{ 'Editar lista' if project.prefeitura_id else 'Ver prefeituras' }}
                     </a>
                     {% endif %}
                     <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Fechar</button>

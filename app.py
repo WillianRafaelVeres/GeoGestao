@@ -5451,6 +5451,16 @@ def sync_prefeituras_from_projects(db):
     return changed
 
 
+def ensure_prefeituras_vinculadas():
+    """Nenhum projeto com cidade pode ficar sem prefeitura. Chamado nas telas que
+    mostram a prefeitura do projeto, para o vinculo nunca faltar."""
+    if not sync_prefeituras_from_projects(get_db()):
+        return False
+    invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
+    invalidate_runtime_caches()
+    return True
+
+
 def backfill_project_prefeituras(db):
     """Alem de vincular os projetos sem prefeitura, realinha os que apontam para
     um cadastro manual antigo de outro municipio. So na migracao, por ser uma
@@ -6549,6 +6559,8 @@ def dashboard():
 @login_required
 def projects():
     refresh_due_statuses()
+    # A matriz tambem abre o modal Prefeitura de cada projeto.
+    ensure_prefeituras_vinculadas()
 
     today_iso = app_today().isoformat()
     in_7 = (app_today() + timedelta(days=7)).isoformat()
@@ -8293,6 +8305,8 @@ def load_project_detail_bundle(project_id, is_admin):
 @login_required
 def project_detail(project_id):
     refresh_due_statuses()
+    # Antes de montar o bundle: o modal Prefeitura le project.prefeitura_nome.
+    ensure_prefeituras_vinculadas()
     is_admin = bool(can_admin())
     detail_data = get_cached_lookup(
         ("route_project_bundle", int(project_id), is_admin),
@@ -12079,8 +12093,7 @@ def prefeituras():
         return redirect(url_for("prefeituras"))
 
     # Garante que toda cidade de projeto tenha sua prefeitura antes de listar.
-    if sync_prefeituras_from_projects(get_db()):
-        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
+    ensure_prefeituras_vinculadas()
 
     # Lista apenas as prefeituras das cidades onde ha projeto (as que trabalhamos).
     rows = query_db(
@@ -12104,8 +12117,7 @@ def prefeituras_checklist():
         return redirect(url_for("prefeituras"))
 
     # A prefeitura e a cidade do terreno: so aparecem as cidades que tem projeto.
-    if sync_prefeituras_from_projects(get_db()):
-        invalidate_lookup_entries("prefeitura_options", "matrix_static_options")
+    ensure_prefeituras_vinculadas()
     prefeitura_options = query_db(
         """
         SELECT pr.id,
