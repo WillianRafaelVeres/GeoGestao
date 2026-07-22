@@ -1138,6 +1138,8 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_projeto_custos_projeto ON projeto_custos (projeto_id, data_custo DESC, id DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_projeto_custos_registro_uid ON projeto_custos (registro_uid)",
         "CREATE INDEX IF NOT EXISTS idx_prefeitura_requisitos_lookup ON prefeitura_requisitos (prefeitura_id, active, order_index, id)",
+        "CREATE INDEX IF NOT EXISTS idx_prefeitura_solicitacoes_lookup ON prefeitura_solicitacoes (prefeitura_id, active, process_type_key, order_index, id)",
+        "CREATE INDEX IF NOT EXISTS idx_prefeitura_solicitacao_docs_lookup ON prefeitura_solicitacao_documentos (solicitacao_id, active, order_index, id)",
         "CREATE INDEX IF NOT EXISTS idx_projetos_prefeitura_id ON projetos (prefeitura_id)",
     ]
     cur = db.cursor()
@@ -1671,6 +1673,31 @@ def init_db():
             FOREIGN KEY(prefeitura_id) REFERENCES prefeituras(id)
         );
 
+        CREATE TABLE IF NOT EXISTS prefeitura_solicitacoes (
+            id SERIAL PRIMARY KEY,
+            prefeitura_id INTEGER NOT NULL,
+            process_type_key TEXT,
+            titulo TEXT NOT NULL,
+            orientacoes TEXT,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY(prefeitura_id) REFERENCES prefeituras(id),
+            FOREIGN KEY(process_type_key) REFERENCES tipos_processo(chave)
+        );
+
+        CREATE TABLE IF NOT EXISTS prefeitura_solicitacao_documentos (
+            id SERIAL PRIMARY KEY,
+            solicitacao_id INTEGER NOT NULL,
+            titulo TEXT NOT NULL,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY(solicitacao_id) REFERENCES prefeitura_solicitacoes(id)
+        );
+
         CREATE TABLE IF NOT EXISTS eventos_historico (
             id SERIAL PRIMARY KEY,
             projeto_id INTEGER,
@@ -1874,6 +1901,10 @@ def init_db():
     add_column_if_missing(db, "usuarios", "cargo", "TEXT")
     ensure_table_rls(db, "projeto_proprietarios")
     ensure_backend_rls_policy(db, "projeto_proprietarios")
+    ensure_table_rls(db, "prefeitura_solicitacoes")
+    ensure_backend_rls_policy(db, "prefeitura_solicitacoes")
+    ensure_table_rls(db, "prefeitura_solicitacao_documentos")
+    ensure_backend_rls_policy(db, "prefeitura_solicitacao_documentos")
     add_column_if_missing(db, "projetos", "proprietario", "TEXT")
     add_column_if_missing(db, "projetos", "etapa_atual_id", "INTEGER")
     add_column_if_missing(db, "projetos", "observacoes", "TEXT")
@@ -1994,6 +2025,7 @@ def init_db():
     normalize_stage_models(db)
     sync_existing_project_workflows(db)
     backfill_project_prefeituras(db)
+    migrate_legacy_prefeitura_requirements(db)
     db.execute(
         """
         INSERT INTO projeto_proprietarios (projeto_id, cliente_id, principal, ordem, criado_em)
@@ -6018,6 +6050,154 @@ def backfill_project_prefeituras(db):
             )
 
 
+def parse_prefeitura_document_lines(raw_value):
+    documents = []
+    seen = set()
+    for line in re.split(r"[\r\n]+", raw_value or ""):
+        title = re.sub(r"\s+", " ", (line or "").strip())
+        if not title:
+            continue
+        key = normalize_text(title)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        documents.append(title)
+    return documents
+
+
+def migrate_legacy_prefeitura_requirements(db):
+    """Preserva a lista antiga de prefeitura criando uma solicitacao geral.
+
+    Os cadastros antigos tinham apenas itens soltos em prefeitura_requisitos.
+    Se uma prefeitura ainda nao tiver solicitacoes novas, agrupamos esses itens
+    numa solicitacao "Lista geral" para nao perder referencia nenhuma.
+    """
+    legacy_prefeituras = db.execute(
+        """
+        SELECT DISTINCT pr.prefeitura_id
+        FROM prefeitura_requisitos pr
+        WHERE pr.active = 1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM prefeitura_solicitacoes ps
+              WHERE ps.prefeitura_id = pr.prefeitura_id
+                AND ps.active = 1
+          )
+        ORDER BY pr.prefeitura_id
+        """
+    ).fetchall()
+    if not legacy_prefeituras:
+        return 0
+    migrated = 0
+    now = app_now_iso()
+    for row in legacy_prefeituras:
+        docs = db.execute(
+            """
+            SELECT titulo
+            FROM prefeitura_requisitos
+            WHERE prefeitura_id = %s AND active = 1
+            ORDER BY order_index, id
+            """,
+            (row["prefeitura_id"],),
+        ).fetchall()
+        document_titles = [item["titulo"] for item in docs if (item["titulo"] or "").strip()]
+        if not document_titles:
+            continue
+        created = db.execute(
+            """
+            INSERT INTO prefeitura_solicitacoes
+                (prefeitura_id, process_type_key, titulo, orientacoes, order_index, active, created_at, updated_at)
+            VALUES (%s, NULL, %s, %s, 1, 1, %s, %s)
+            RETURNING id
+            """,
+            (
+                row["prefeitura_id"],
+                "Lista geral",
+                "Migrada automaticamente da configuracao antiga da prefeitura.",
+                now,
+                now,
+            ),
+        ).fetchone()
+        if not created:
+            continue
+        execute_values_db(
+            db,
+            """
+            INSERT INTO prefeitura_solicitacao_documentos
+                (solicitacao_id, titulo, order_index, active, created_at, updated_at)
+            VALUES %s
+            """,
+            [
+                (created["id"], title.strip(), index, 1, now, now)
+                for index, title in enumerate(document_titles, 1)
+            ],
+            page_size=200,
+        )
+        db.execute(
+            """
+            UPDATE prefeitura_requisitos
+            SET active = 0, updated_at = %s
+            WHERE prefeitura_id = %s AND active = 1
+            """,
+            (now, row["prefeitura_id"]),
+        )
+        migrated += 1
+    return migrated
+
+
+def load_prefeitura_solicitacoes(db, prefeitura_id, process_type_key=None, fallback_to_all=False):
+    if not prefeitura_id:
+        return []
+
+    def fetch_rows(limit_to_process):
+        params = [prefeitura_id]
+        process_filter = ""
+        order_prefix = ""
+        if limit_to_process and process_type_key:
+            params.extend([process_type_key, process_type_key])
+            process_filter = "AND (ps.process_type_key IS NULL OR ps.process_type_key = %s)"
+            order_prefix = """
+                CASE
+                    WHEN ps.process_type_key = %s THEN 0
+                    WHEN ps.process_type_key IS NULL OR ps.process_type_key = '' THEN 1
+                    ELSE 2
+                END,
+            """
+        return db.execute(
+            f"""
+            SELECT
+                ps.id,
+                ps.prefeitura_id,
+                ps.process_type_key,
+                ps.titulo,
+                ps.orientacoes,
+                ps.order_index,
+                tp.nome AS process_type_name,
+                COALESCE((
+                    SELECT jsonb_agg(to_jsonb(doc) ORDER BY doc.order_index, doc.id)
+                    FROM prefeitura_solicitacao_documentos doc
+                    WHERE doc.solicitacao_id = ps.id
+                      AND doc.active = 1
+                ), '[]'::jsonb) AS documentos
+            FROM prefeitura_solicitacoes ps
+            LEFT JOIN tipos_processo tp ON tp.chave = ps.process_type_key
+            WHERE ps.prefeitura_id = %s
+              AND ps.active = 1
+              {process_filter}
+            ORDER BY
+                {order_prefix}
+                ps.order_index,
+                ps.id
+            """,
+            tuple(params),
+        ).fetchall()
+
+    rows = fetch_rows(limit_to_process=True)
+    if rows or not fallback_to_all or not process_type_key:
+        return rows
+    return fetch_rows(limit_to_process=False)
+
+
 def get_matrix_summary_counts(today_iso, in_7):
     """Mantém os totais globais quando um filtro não retorna nenhum projeto."""
     return get_cached_lookup(
@@ -7640,11 +7820,6 @@ def load_project_matrix_modal_context(project_id):
                   AND COALESCE(exi.tipo_registro, 'exigencia') = 'exigencia'
                   AND lower(COALESCE(exi.status, '')) NOT IN ('concluido', 'cancelado')
             ), '[]'::jsonb) AS exigencia_item_records,
-            COALESCE((
-                SELECT jsonb_agg(to_jsonb(pr) ORDER BY pr.order_index, pr.id)
-                FROM prefeitura_requisitos pr
-                WHERE pr.prefeitura_id = p.prefeitura_id AND pr.active = 1
-            ), '[]'::jsonb) AS prefeitura_requisitos,
             (
                 SELECT to_jsonb(next_stage)
                 FROM (
@@ -7682,6 +7857,12 @@ def load_project_matrix_modal_context(project_id):
         return None
 
     project = row["project"]
+    prefeitura_solicitacoes = load_prefeitura_solicitacoes(
+        get_db(),
+        project.get("prefeitura_id"),
+        project.get("tipo_servico"),
+        fallback_to_all=True,
+    )
     project["active_stage"] = row["active_stage"]
     matrix_options = get_matrix_static_options()
     etapas_projeto = build_matrix_rows_from_active_stages(
@@ -7747,9 +7928,9 @@ def load_project_matrix_modal_context(project_id):
             if row["exigencia_item_records"]
             else {}
         ),
-        "prefeitura_requisitos_by_project": (
-            {project_id: row["prefeitura_requisitos"] or []}
-            if row["prefeitura_requisitos"]
+        "prefeitura_solicitacoes_by_project": (
+            {project_id: prefeitura_solicitacoes}
+            if prefeitura_solicitacoes
             else {}
         ),
         "next_stage_by_project": {project_id: next_stage} if next_stage else {},
@@ -7780,7 +7961,7 @@ def project_modal_fragment(project_id):
             external_controls_by_project=context["external_controls_by_project"],
             exigencias_by_project=context["exigencias_by_project"],
             exigencia_itens_by_project=context["exigencia_itens_by_project"],
-            prefeitura_requisitos_by_project=context["prefeitura_requisitos_by_project"],
+            prefeitura_solicitacoes_by_project=context["prefeitura_solicitacoes_by_project"],
             next_stage_by_project=context["next_stage_by_project"],
             previous_stages_by_project=context["previous_stages_by_project"],
             forward_options_by_project=context["forward_options_by_project"],
@@ -13592,12 +13773,11 @@ def prefeituras():
 @app.route("/prefeituras/checklist", methods=["GET", "POST"])
 @login_required
 def prefeituras_checklist():
-    """Gestao da lista do que cada prefeitura exige (etapa Assinaturas)."""
+    """Gestao das solicitacoes da prefeitura e seus documentos exigidos."""
     if not can_manage():
         flash("Permissao negada.", "danger")
         return redirect(url_for("prefeituras"))
 
-    # A prefeitura e a cidade do terreno: so aparecem as cidades que tem projeto.
     ensure_prefeituras_vinculadas()
     prefeitura_options = query_db(
         """
@@ -13610,24 +13790,30 @@ def prefeituras_checklist():
         ORDER BY 2
         """
     )
+    process_type_options = get_process_type_options()
+    valid_process_keys = {row["chave"] for row in process_type_options}
     raw_prefeitura = (request.values.get("prefeitura_id") or "").strip()
     selected_prefeitura_id = int(raw_prefeitura) if raw_prefeitura.isdigit() else None
     if not selected_prefeitura_id and prefeitura_options:
         selected_prefeitura_id = prefeitura_options[0]["id"]
+    raw_edit_id = (request.values.get("edit_id") or "").strip()
+    selected_edit_id = int(raw_edit_id) if raw_edit_id.isdigit() else None
 
-    def manager_redirect():
+    def manager_redirect(edit_id=None):
         args = {"prefeitura_id": selected_prefeitura_id} if selected_prefeitura_id else {}
+        if edit_id:
+            args["edit_id"] = edit_id
         return redirect(url_for("prefeituras_checklist", **args))
 
-    def scope_items(db, prefeitura_id):
-        return db.execute(
-            """
-            SELECT * FROM prefeitura_requisitos
-            WHERE prefeitura_id = %s AND active = 1
-            ORDER BY order_index, id
-            """,
-            (prefeitura_id,),
-        ).fetchall()
+    def normalize_process_key(raw_value):
+        raw_value = (raw_value or "").strip()
+        return raw_value if raw_value in valid_process_keys else None
+
+    def load_solicitacao(db, solicitacao_id):
+        if not solicitacao_id:
+            return None
+        rows = load_prefeitura_solicitacoes(db, selected_prefeitura_id)
+        return next((row for row in rows if row["id"] == solicitacao_id), None)
 
     if request.method == "POST":
         if not selected_prefeitura_id:
@@ -13637,62 +13823,136 @@ def prefeituras_checklist():
         db = get_db()
         now = app_now_iso()
 
-        if action == "add":
+        if action in ("add_solicitacao", "update_solicitacao"):
+            solicitacao_id = None
+            current = None
+            if action == "update_solicitacao":
+                raw_solicitacao_id = (request.form.get("solicitacao_id") or "").strip()
+                solicitacao_id = int(raw_solicitacao_id) if raw_solicitacao_id.isdigit() else None
+                current = load_solicitacao(db, solicitacao_id)
+                if not current:
+                    flash("Solicitacao nao encontrada.", "danger")
+                    return manager_redirect()
+
             titulo = (request.form.get("titulo") or "").strip()
-            observacoes = (request.form.get("observacoes") or "").strip()
+            orientacoes = (request.form.get("orientacoes") or "").strip()
+            process_type_key = normalize_process_key(request.form.get("process_type_key"))
+            documentos = parse_prefeitura_document_lines(request.form.get("documentos"))
             if not titulo:
-                flash("Informe o que a prefeitura exige.", "danger")
-                return manager_redirect()
-            duplicate = first_row(
-                db,
-                """
-                SELECT id FROM prefeitura_requisitos
-                WHERE prefeitura_id = %s AND lower(titulo) = lower(%s) AND active = 1
-                """,
-                (selected_prefeitura_id, titulo),
-            )
+                flash("Informe o tipo de solicitacao.", "danger")
+                return manager_redirect(solicitacao_id)
+            if not documentos:
+                flash("Informe pelo menos um documento exigido.", "danger")
+                return manager_redirect(solicitacao_id)
+            duplicate_sql = """
+                SELECT id
+                FROM prefeitura_solicitacoes
+                WHERE prefeitura_id = %s
+                  AND COALESCE(process_type_key, '') = COALESCE(%s, '')
+                  AND lower(titulo) = lower(%s)
+                  AND active = 1
+            """
+            duplicate_params = [selected_prefeitura_id, process_type_key, titulo]
+            if current:
+                duplicate_sql += " AND id <> %s"
+                duplicate_params.append(current["id"])
+            duplicate = first_row(db, duplicate_sql, tuple(duplicate_params))
             if duplicate:
-                flash("Ja existe um item com esse nome nesta lista.", "warning")
-                return manager_redirect()
-            next_order = scalar(
+                flash("Ja existe uma solicitacao com esse nome para esta prefeitura.", "warning")
+                return manager_redirect(solicitacao_id)
+
+            if current:
+                db.execute(
+                    """
+                    UPDATE prefeitura_solicitacoes
+                    SET process_type_key = %s,
+                        titulo = %s,
+                        orientacoes = %s,
+                        updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (process_type_key, titulo, orientacoes, now, current["id"]),
+                )
+                db.execute(
+                    """
+                    UPDATE prefeitura_solicitacao_documentos
+                    SET active = 0, updated_at = %s
+                    WHERE solicitacao_id = %s AND active = 1
+                    """,
+                    (now, current["id"]),
+                )
+                target_id = current["id"]
+            else:
+                next_order = scalar(
+                    db,
+                    """
+                    SELECT COALESCE(MAX(order_index), 0) + 1
+                    FROM prefeitura_solicitacoes
+                    WHERE prefeitura_id = %s AND active = 1
+                    """,
+                    (selected_prefeitura_id,),
+                )
+                created = db.execute(
+                    """
+                    INSERT INTO prefeitura_solicitacoes
+                        (prefeitura_id, process_type_key, titulo, orientacoes, order_index, active, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, 1, %s, %s)
+                    RETURNING id
+                    """,
+                    (selected_prefeitura_id, process_type_key, titulo, orientacoes, next_order, now, now),
+                ).fetchone()
+                target_id = created["id"] if created else None
+
+            if not target_id:
+                flash("Nao foi possivel salvar a solicitacao.", "danger")
+                return manager_redirect(solicitacao_id)
+
+            execute_values_db(
                 db,
-                "SELECT COALESCE(MAX(order_index), 0) + 1 FROM prefeitura_requisitos WHERE prefeitura_id = %s AND active = 1",
-                (selected_prefeitura_id,),
-            )
-            db.execute(
                 """
-                INSERT INTO prefeitura_requisitos
-                    (prefeitura_id, titulo, observacoes, order_index, active, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, 1, %s, %s)
+                INSERT INTO prefeitura_solicitacao_documentos
+                    (solicitacao_id, titulo, order_index, active, created_at, updated_at)
+                VALUES %s
                 """,
-                (selected_prefeitura_id, titulo, observacoes, next_order, now, now),
+                [
+                    (target_id, documento, index, 1, now, now)
+                    for index, documento in enumerate(documentos, 1)
+                ],
+                page_size=500,
             )
             db.commit()
-            flash("Item adicionado.", "success")
+            flash("Solicitacao salva.", "success")
             return manager_redirect()
 
-        if action == "remove":
-            raw_item_id = (request.form.get("item_id") or "").strip()
-            item = first_row(
+        if action == "remove_solicitacao":
+            raw_solicitacao_id = (request.form.get("solicitacao_id") or "").strip()
+            solicitacao = load_solicitacao(
                 db,
-                "SELECT id FROM prefeitura_requisitos WHERE id = %s AND prefeitura_id = %s AND active = 1",
-                (raw_item_id, selected_prefeitura_id),
-            ) if raw_item_id.isdigit() else None
-            if not item:
-                flash("Item nao encontrado.", "danger")
+                int(raw_solicitacao_id) if raw_solicitacao_id.isdigit() else None,
+            )
+            if not solicitacao:
+                flash("Solicitacao nao encontrada.", "danger")
                 return manager_redirect()
             db.execute(
-                "UPDATE prefeitura_requisitos SET active = 0, updated_at = %s WHERE id = %s",
-                (now, item["id"]),
+                "UPDATE prefeitura_solicitacoes SET active = 0, updated_at = %s WHERE id = %s",
+                (now, solicitacao["id"]),
+            )
+            db.execute(
+                """
+                UPDATE prefeitura_solicitacao_documentos
+                SET active = 0, updated_at = %s
+                WHERE solicitacao_id = %s AND active = 1
+                """,
+                (now, solicitacao["id"]),
             )
             db.commit()
-            flash("Item removido.", "success")
+            flash("Solicitacao removida.", "success")
             return manager_redirect()
 
         if action in ("move_up", "move_down"):
-            items = scope_items(db, selected_prefeitura_id)
+            items = load_prefeitura_solicitacoes(db, selected_prefeitura_id)
             index = next(
-                (i for i, item in enumerate(items) if str(item["id"]) == request.form.get("item_id")),
+                (i for i, item in enumerate(items) if str(item["id"]) == request.form.get("solicitacao_id")),
                 None,
             )
             if index is None:
@@ -13705,7 +13965,7 @@ def prefeituras_checklist():
             execute_values_db(
                 db,
                 """
-                UPDATE prefeitura_requisitos AS target
+                UPDATE prefeitura_solicitacoes AS target
                 SET order_index = source.order_index, updated_at = source.updated_at
                 FROM (VALUES %s) AS source(id, order_index, updated_at)
                 WHERE target.id = source.id
@@ -13725,14 +13985,25 @@ def prefeituras_checklist():
         if selected_prefeitura_id
         else None
     )
-    items = scope_items(db, selected_prefeitura_id) if selected_prefeitura_id else []
+    solicitacoes = load_prefeitura_solicitacoes(db, selected_prefeitura_id) if selected_prefeitura_id else []
+    editing_solicitacao = load_solicitacao(db, selected_edit_id) if selected_edit_id else None
+    editing_documentos = ""
+    if editing_solicitacao:
+        editing_documentos = "\n".join(
+            (documento.get("titulo") or "").strip()
+            for documento in (editing_solicitacao.get("documentos") or [])
+            if (documento.get("titulo") or "").strip()
+        )
 
     return render_template(
         "prefeituras_checklist.html",
         prefeitura_options=prefeitura_options,
+        process_type_options=process_type_options,
         selected_prefeitura_id=selected_prefeitura_id,
         selected_prefeitura=selected_prefeitura,
-        items=items,
+        solicitacoes=solicitacoes,
+        editing_solicitacao=editing_solicitacao,
+        editing_documentos=editing_documentos,
     )
 
 

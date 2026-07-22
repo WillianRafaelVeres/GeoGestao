@@ -644,7 +644,7 @@
     {% endif %}
 
     {# ===== MODAL PREFEITURA (referencia: o que a prefeitura exige + link para solicitar) ===== #}
-    {% set prefeitura_requisitos = prefeitura_requisitos_by_project.get(project.id, []) %}
+    {% set prefeitura_solicitacoes = prefeitura_solicitacoes_by_project.get(project.id, []) %}
     <div class="modal fade" id="modal-prefeitura-{{ project.id }}" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content stage-modal">
@@ -665,20 +665,33 @@
                             {%- if project.prefeitura_email %} · {{ project.prefeitura_email }}{% endif -%}
                         </div>
                         {% endif %}
-                        {% if prefeitura_requisitos %}
+                        {% if prefeitura_solicitacoes %}
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">O que esta prefeitura exige</label>
+                            <label class="stage-modal-field-label">Solicitacoes e documentos exigidos</label>
                             <div class="pmodal-notes">
-                                {% for requisito in prefeitura_requisitos %}
+                                {% for solicitacao in prefeitura_solicitacoes %}
                                 <div class="pmodal-note">
-                                    <div class="pmodal-note-text">{{ requisito.titulo }}</div>
-                                    {% if requisito.observacoes %}<div class="pmodal-note-meta">{{ requisito.observacoes }}</div>{% endif %}
+                                    <div class="pmodal-note-text">{{ solicitacao.titulo }}</div>
+                                    <div class="pmodal-note-meta">
+                                        {{ solicitacao.process_type_name or 'Todos os processos' }}
+                                        {% if solicitacao.documentos %} · {{ solicitacao.documentos|length }} documento{{ '' if solicitacao.documentos|length == 1 else 's' }}{% endif %}
+                                    </div>
+                                    {% if solicitacao.orientacoes %}
+                                        <div class="pmodal-note-meta">{{ solicitacao.orientacoes }}</div>
+                                    {% endif %}
+                                    {% if solicitacao.documentos %}
+                                        <ul class="mb-0 ps-3" style="margin-top:8px;">
+                                            {% for documento in solicitacao.documentos %}
+                                                <li>{{ documento.titulo }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                    {% endif %}
                                 </div>
                                 {% endfor %}
                             </div>
                         </div>
                         {% else %}
-                        <div class="pmodal-external-empty">Nenhum item cadastrado para esta prefeitura ainda.</div>
+                        <div class="pmodal-external-empty">Nenhuma solicitacao cadastrada para esta prefeitura ainda.</div>
                         {% endif %}
                     {% else %}
                         <div class="pmodal-external-empty">Este projeto ainda nao tem a cidade do terreno preenchida. Informe a cidade em Detalhes completos e a prefeitura aparece sozinha.</div>
