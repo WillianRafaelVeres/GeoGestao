@@ -34,6 +34,7 @@
     {% set external_can_skip = active_external_type and active_status != 'nao aplicavel' and not external_has_protocols %}
     {% set external_stage_blocked = active_external_type and active_status != 'nao aplicavel' and external_has_protocols and not external_all_withdrawn %}
     {% set project_pendings = pending_by_project.get(project.id, []) %}
+    {% set project_external_requests = external_requests_by_project.get(project.id, []) %}
     {% set is_exigencia_stage = active_stage_key == 'PENDENCIAS' %}
     {% set exig_records = exigencias_by_project.get(project.id, []) %}
     {% set exig_items = exigencia_itens_by_project.get(project.id, []) %}
@@ -336,6 +337,36 @@
 
                         {# Coluna direita: pendências + movimentações + pasta #}
                         <div class="pmodal-col">
+
+                            {% if project_external_requests %}
+                            <div class="pmodal-section">
+                                <div class="pmodal-section-head">
+                                    <span class="pmodal-section-title">Solicitacoes abertas</span>
+                                    <span class="pmodal-section-count">{{ project_external_requests|length }}</span>
+                                </div>
+                                <div class="pmodal-pending-list">
+                                    {% for external_request in project_external_requests %}
+                                    <div class="pmodal-pending-item">
+                                        <div class="pmodal-pending-info">
+                                            <div class="pmodal-pending-desc">{{ external_request.titulo }}</div>
+                                            <div class="pmodal-pending-meta">
+                                                {{ external_orgao_labels.get(external_request.tipo_orgao, 'Orgao externo') }} - {{ format_date(external_request.criado_em) or '-' }}
+                                            </div>
+                                            {% if external_request.descricao %}
+                                            <div class="pmodal-note-meta" style="margin-top:6px;">{{ external_request.descricao }}</div>
+                                            {% endif %}
+                                        </div>
+                                        <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" style="flex-shrink:0;">
+                                            <input type="hidden" name="action" value="resolve_external_request">
+                                            <input type="hidden" name="solicitacao_id" value="{{ external_request.id }}">
+                                            <input type="hidden" name="next" value="{{ modal_next }}">
+                                            <button class="pmodal-btn-resolve" type="submit" title="Concluir solicitacao">Concluir</button>
+                                        </form>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
 
                             {% if project_pendings and not is_exigencia_stage %}
                             <div class="pmodal-section">
@@ -645,6 +676,7 @@
 
     {# ===== MODAL PREFEITURA (referencia: o que a prefeitura exige + link para solicitar) ===== #}
     {% set prefeitura_solicitacoes = prefeitura_solicitacoes_by_project.get(project.id, []) %}
+    {% set selected_prefeitura_solicitacao = prefeitura_solicitacoes[0] if prefeitura_solicitacoes else none %}
     <div class="modal fade" id="modal-prefeitura-{{ project.id }}" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content stage-modal">
@@ -655,7 +687,10 @@
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="stage-modal-body">
+                <form method="post" action="{{ url_for('project_action', project_id=project.id) }}">
+                    <input type="hidden" name="action" value="add_external_request">
+                    <input type="hidden" name="next" value="{{ modal_next }}">
+                    <div class="stage-modal-body">
                     {% if project.prefeitura_nome %}
                         {% if project.prefeitura_contato or project.prefeitura_telefone or project.prefeitura_email or project.prefeitura_whatsapp %}
                         <div class="pmodal-external-empty" style="margin-bottom:10px;">
@@ -666,11 +701,25 @@
                         </div>
                         {% endif %}
                         {% if prefeitura_solicitacoes %}
+                        {% if prefeitura_solicitacoes|length > 1 %}
                         <div class="stage-modal-field">
-                            <label class="stage-modal-field-label">Solicitacoes e documentos exigidos</label>
+                            <label class="stage-modal-field-label">Tipo de solicitacao</label>
+                            <select class="form-select form-select-sm" name="solicitacao_modelo_id" onchange="updatePrefeituraSolicitacao({{ project.id }}, this.value)">
+                                {% for solicitacao in prefeitura_solicitacoes %}
+                                <option value="{{ solicitacao.id }}" {% if selected_prefeitura_solicitacao and solicitacao.id == selected_prefeitura_solicitacao.id %}selected{% endif %}>
+                                    {{ solicitacao.titulo }}{% if solicitacao.process_type_name %} - {{ solicitacao.process_type_name }}{% endif %}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        {% else %}
+                        <input type="hidden" name="solicitacao_modelo_id" value="{{ selected_prefeitura_solicitacao.id if selected_prefeitura_solicitacao else '' }}">
+                        {% endif %}
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Solicitacao e documentos exigidos</label>
                             <div class="pmodal-notes">
                                 {% for solicitacao in prefeitura_solicitacoes %}
-                                <div class="pmodal-note">
+                                <div class="pmodal-note" data-prefeitura-solicitacao-panel="{{ project.id }}" data-solicitacao-id="{{ solicitacao.id }}" {% if selected_prefeitura_solicitacao and solicitacao.id != selected_prefeitura_solicitacao.id %}hidden{% endif %}>
                                     <div class="pmodal-note-text">{{ solicitacao.titulo }}</div>
                                     <div class="pmodal-note-meta">
                                         {{ solicitacao.process_type_name or 'Todos os processos' }}
@@ -690,6 +739,11 @@
                                 {% endfor %}
                             </div>
                         </div>
+                        <div class="stage-modal-field">
+                            <label class="stage-modal-field-label">Descricao</label>
+                            <textarea class="form-control form-control-sm" name="descricao" rows="3" required placeholder="Ex.: pedido aberto no portal da prefeitura para este projeto."></textarea>
+                            <small class="stage-modal-optional">Este registro nao vira pendencia. Ele so indica que a solicitacao ja foi aberta.</small>
+                        </div>
                         {% else %}
                         <div class="pmodal-external-empty">Nenhuma solicitacao cadastrada para esta prefeitura ainda.</div>
                         {% endif %}
@@ -701,6 +755,9 @@
                     {% if project.prefeitura_nome and project.prefeitura_link %}
                     <a class="stage-modal-confirm stage-modal-confirm--advance" href="{{ project.prefeitura_link }}" target="_blank" rel="noopener">Solicitar online ↗</a>
                     {% endif %}
+                    {% if project.prefeitura_nome and prefeitura_solicitacoes %}
+                    <button type="submit" class="stage-modal-confirm stage-modal-confirm--pending">Registrar solicitacao</button>
+                    {% endif %}
                     {% if can_manage() %}
                     <a class="stage-modal-cancel" href="{{ url_for('prefeituras_checklist', prefeitura_id=project.prefeitura_id) if project.prefeitura_id else url_for('prefeituras') }}" target="_blank" rel="noopener">
                         {{ 'Editar lista' if project.prefeitura_id else 'Ver prefeituras' }}
@@ -708,6 +765,7 @@
                     {% endif %}
                     <button type="button" class="stage-modal-cancel" data-bs-dismiss="modal">Fechar</button>
                 </div>
+                </form>
             </div>
         </div>
     </div>

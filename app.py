@@ -1140,6 +1140,7 @@ def ensure_performance_indexes(db):
         "CREATE INDEX IF NOT EXISTS idx_prefeitura_requisitos_lookup ON prefeitura_requisitos (prefeitura_id, active, order_index, id)",
         "CREATE INDEX IF NOT EXISTS idx_prefeitura_solicitacoes_lookup ON prefeitura_solicitacoes (prefeitura_id, active, process_type_key, order_index, id)",
         "CREATE INDEX IF NOT EXISTS idx_prefeitura_solicitacao_docs_lookup ON prefeitura_solicitacao_documentos (solicitacao_id, active, order_index, id)",
+        "CREATE INDEX IF NOT EXISTS idx_solicitacoes_externas_projeto_status ON solicitacoes_externas (projeto_id, status, criado_em DESC, id DESC)",
         "CREATE INDEX IF NOT EXISTS idx_projetos_prefeitura_id ON projetos (prefeitura_id)",
     ]
     cur = db.cursor()
@@ -1698,6 +1699,29 @@ def init_db():
             FOREIGN KEY(solicitacao_id) REFERENCES prefeitura_solicitacoes(id)
         );
 
+        CREATE TABLE IF NOT EXISTS solicitacoes_externas (
+            id SERIAL PRIMARY KEY,
+            projeto_id INTEGER NOT NULL,
+            etapa_id INTEGER,
+            prefeitura_id INTEGER,
+            solicitacao_modelo_id INTEGER,
+            tipo_orgao TEXT NOT NULL DEFAULT 'PREFEITURA',
+            titulo TEXT NOT NULL,
+            descricao TEXT,
+            status TEXT NOT NULL DEFAULT 'aberta',
+            criado_por INTEGER,
+            concluido_por INTEGER,
+            criado_em TEXT NOT NULL,
+            atualizado_em TEXT NOT NULL,
+            concluido_em TEXT,
+            FOREIGN KEY(projeto_id) REFERENCES projetos(id) ON DELETE CASCADE,
+            FOREIGN KEY(etapa_id) REFERENCES projeto_etapas(id) ON DELETE SET NULL,
+            FOREIGN KEY(prefeitura_id) REFERENCES prefeituras(id) ON DELETE SET NULL,
+            FOREIGN KEY(solicitacao_modelo_id) REFERENCES prefeitura_solicitacoes(id) ON DELETE SET NULL,
+            FOREIGN KEY(criado_por) REFERENCES usuarios(id) ON DELETE SET NULL,
+            FOREIGN KEY(concluido_por) REFERENCES usuarios(id) ON DELETE SET NULL
+        );
+
         CREATE TABLE IF NOT EXISTS eventos_historico (
             id SERIAL PRIMARY KEY,
             projeto_id INTEGER,
@@ -1905,6 +1929,8 @@ def init_db():
     ensure_backend_rls_policy(db, "prefeitura_solicitacoes")
     ensure_table_rls(db, "prefeitura_solicitacao_documentos")
     ensure_backend_rls_policy(db, "prefeitura_solicitacao_documentos")
+    ensure_table_rls(db, "solicitacoes_externas")
+    ensure_backend_rls_policy(db, "solicitacoes_externas")
     add_column_if_missing(db, "projetos", "proprietario", "TEXT")
     add_column_if_missing(db, "projetos", "etapa_atual_id", "INTEGER")
     add_column_if_missing(db, "projetos", "observacoes", "TEXT")
@@ -6198,6 +6224,16 @@ def load_prefeitura_solicitacoes(db, prefeitura_id, process_type_key=None, fallb
     return fetch_rows(limit_to_process=False)
 
 
+def resolve_prefeitura_solicitacao_choice(solicitacoes, selected_id):
+    if not solicitacoes:
+        return None
+    if selected_id is not None:
+        for solicitacao in solicitacoes:
+            if solicitacao["id"] == selected_id:
+                return solicitacao
+    return solicitacoes[0]
+
+
 def get_matrix_summary_counts(today_iso, in_7):
     """Mantém os totais globais quando um filtro não retorna nenhum projeto."""
     return get_cached_lookup(
@@ -7783,6 +7819,15 @@ def load_project_matrix_modal_context(project_id):
             ), '[]'::jsonb) AS pendings,
             COALESCE((
                 SELECT jsonb_agg(
+                    to_jsonb(req)
+                    ORDER BY COALESCE(req.criado_em, ''), req.id
+                )
+                FROM solicitacoes_externas req
+                WHERE req.projeto_id = p.id
+                  AND lower(COALESCE(req.status, '')) = 'aberta'
+            ), '[]'::jsonb) AS external_requests,
+            COALESCE((
+                SELECT jsonb_agg(
                     to_jsonb(ev) || jsonb_build_object('usuario_nome', un.nome)
                     ORDER BY ev.criado_em DESC, ev.id DESC
                 )
@@ -7870,6 +7915,7 @@ def load_project_matrix_modal_context(project_id):
     ).get(project_id, [])
     active_stage_id = project.get("etapa_atual_id")
     pendings = row["pendings"] or []
+    external_requests = row["external_requests"] or []
     notes = row["notes"] or []
     external_records = row["external_records"] or []
     next_stage = row["next_stage"]
@@ -7912,6 +7958,7 @@ def load_project_matrix_modal_context(project_id):
         "etapas_projeto": etapas_projeto,
         "matrix_checklists": {active_stage_id: row["matrix_checklist"] or []},
         "pending_by_project": {project_id: pendings} if pendings else {},
+        "external_requests_by_project": {project_id: external_requests} if external_requests else {},
         "notes_by_project": {project_id: notes} if notes else {},
         "external_controls_by_project": (
             {project_id: {EXTERNAL_PROTOCOL_SCOPE: external_records}}
@@ -7957,6 +8004,7 @@ def project_modal_fragment(project_id):
             etapas_projeto=context["etapas_projeto"],
             matrix_checklists=context["matrix_checklists"],
             pending_by_project=context["pending_by_project"],
+            external_requests_by_project=context["external_requests_by_project"],
             notes_by_project=context["notes_by_project"],
             external_controls_by_project=context["external_controls_by_project"],
             exigencias_by_project=context["exigencias_by_project"],
@@ -10312,6 +10360,92 @@ def project_action(project_id):
             )
             cur.close()
             flash("Pendencia registrada.", "success")
+
+    elif action == "add_external_request":
+        solicitacoes = load_prefeitura_solicitacoes(
+            get_db(),
+            project.get("prefeitura_id"),
+            project.get("tipo_servico"),
+            fallback_to_all=True,
+        )
+        raw_model_id = (request.form.get("solicitacao_modelo_id") or "").strip()
+        selected_model_id = int(raw_model_id) if raw_model_id.isdigit() else None
+        selected = resolve_prefeitura_solicitacao_choice(solicitacoes, selected_model_id)
+        descricao = request.form.get("descricao", "").strip()
+        if not selected:
+            flash("Cadastre primeiro o tipo de solicitacao desta prefeitura.", "danger")
+        elif not descricao:
+            flash("Descreva a solicitacao aberta para a equipe entender o pedido.", "danger")
+        else:
+            duplicate = query_db(
+                """
+                SELECT id
+                FROM solicitacoes_externas
+                WHERE projeto_id = %s
+                  AND lower(COALESCE(status, '')) = 'aberta'
+                  AND tipo_orgao = 'PREFEITURA'
+                  AND lower(titulo) = lower(%s)
+                  AND lower(COALESCE(descricao, '')) = lower(%s)
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (project_id, selected["titulo"], descricao),
+                one=True,
+            )
+            if duplicate:
+                flash("Esta solicitacao ja esta aberta neste projeto.", "info")
+            else:
+                now = app_now_iso()
+                execute_db(
+                    """
+                    INSERT INTO solicitacoes_externas
+                        (projeto_id, etapa_id, prefeitura_id, solicitacao_modelo_id, tipo_orgao, titulo, descricao, status, criado_por, criado_em, atualizado_em)
+                    VALUES (%s, %s, %s, %s, 'PREFEITURA', %s, %s, 'aberta', %s, %s, %s)
+                    """,
+                    (
+                        project_id,
+                        project.get("etapa_atual_id"),
+                        project.get("prefeitura_id"),
+                        selected["id"],
+                        selected["titulo"],
+                        descricao,
+                        g.user["id"],
+                        now,
+                        now,
+                    ),
+                )
+                record_event(project_id, "solicitacao_externa_criada", f"Solicitacao aberta: {selected['titulo']}.")
+                flash("Solicitacao registrada fora das pendencias.", "success")
+
+    elif action == "resolve_external_request":
+        request_id = request.form.get("solicitacao_id")
+        external_request = query_db(
+            """
+            SELECT id, titulo
+            FROM solicitacoes_externas
+            WHERE id = %s AND projeto_id = %s
+              AND lower(COALESCE(status, '')) = 'aberta'
+            """,
+            (request_id, project_id),
+            one=True,
+        )
+        if not external_request:
+            flash("Solicitacao nao encontrada ou ja concluida.", "danger")
+        else:
+            now = app_now_iso()
+            execute_db(
+                """
+                UPDATE solicitacoes_externas
+                SET status = 'concluida',
+                    atualizado_em = %s,
+                    concluido_em = %s,
+                    concluido_por = %s
+                WHERE id = %s AND projeto_id = %s
+                """,
+                (now, now, g.user["id"], external_request["id"], project_id),
+            )
+            record_event(project_id, "solicitacao_externa_concluida", f"Solicitacao concluida: {external_request['titulo']}.")
+            flash("Solicitacao concluida.", "success")
 
     elif action == "resolve_pending":
         pending_id = request.form.get("pendencia_id")

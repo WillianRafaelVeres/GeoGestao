@@ -1315,6 +1315,12 @@ function addNote(projectId) {
 }
 
 /* ── PROXIMO PASSO: etiqueta livre do projeto ───────── */
+function updatePrefeituraSolicitacao(projectId, selectedId) {
+    document.querySelectorAll(`[data-prefeitura-solicitacao-panel="${projectId}"]`).forEach((panel) => {
+        panel.hidden = String(panel.dataset.solicitacaoId) !== String(selectedId || '');
+    });
+}
+
 function handleNextStepKey(event) {
     if (event.key === 'Enter') {
         event.preventDefault();
