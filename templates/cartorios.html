@@ -15,21 +15,13 @@
         <div class="panel-header"><h2>Cadastros</h2></div>
         <div class="table-responsive">
             <table class="table compact-table">
-                <thead><tr><th>Nome</th><th>CNS</th><th>Cidade/UF</th><th>Contato</th><th>Oficial</th><th>Projetos</th><th>Acoes</th></tr></thead>
+                <thead><tr><th>Nome do cartorio / orgao</th><th class="text-end">Acoes</th></tr></thead>
                 <tbody>
                     {% for item in cartorios %}
                         <tr>
-                            <td><strong>{{ item.nome }}</strong><small>{{ item.observacoes or '' }}</small></td>
-                            <td>{{ item.cns or '-' }}</td>
-                            <td>{{ item.cidade or '-' }} / {{ item.uf or '-' }}</td>
+                            <td><strong>{{ item.nome }}</strong></td>
                             <td>
-                                <strong>{{ item.contato or item.telefone or '-' }}</strong>
-                                <small>{{ item.email or item.whatsapp or '' }}</small>
-                            </td>
-                            <td>{{ item.oficial or '-' }}</td>
-                            <td>{{ item.projetos }}</td>
-                            <td>
-                                <div class="d-flex gap-1">
+                                <div class="d-flex gap-1 justify-content-end flex-wrap">
                                     <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modal-cartorio-{{ item.id }}">Editar</button>
                                     <a class="btn btn-outline-primary btn-sm" href="{{ url_for('cartorios_checklist', cartorio_id=item.id) }}" title="Documentacao obrigatoria deste cartorio">Checklist</a>
                                     <form method="post" onsubmit="return confirm('Excluir este cartório? Esta ação não poderá ser desfeita.');">
@@ -41,7 +33,7 @@
                             </td>
                         </tr>
                     {% else %}
-                        <tr><td colspan="7">Nenhum cadastro encontrado.</td></tr>
+                        <tr><td colspan="2">Nenhum cadastro encontrado.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
