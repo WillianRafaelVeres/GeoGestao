@@ -700,16 +700,16 @@
 .pmodal-pending-meta { font-size: 10.5px; color: #9ca3af; margin-top: 1px; }
 
 .pmodal-pending-list--compact {
-    gap: 7px;
-    max-height: 238px;
+    gap: 6px;
+    max-height: 210px;
     overflow-y: auto;
     padding-right: 2px;
 }
 
 .pmodal-pending-item--compact {
-    align-items: flex-start;
-    gap: 8px;
-    padding: 8px 10px;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
 }
 
 .pmodal-pending-info {
@@ -717,25 +717,37 @@
     flex: 1 1 auto;
 }
 
+.pmodal-pending-inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
 .pmodal-pending-desc--compact {
+    flex: 0 1 auto;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.pmodal-pending-meta--compact {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+.pmodal-pending-inline-sep {
+    flex: 0 0 auto;
+    color: #94a3b8;
+    font-size: 11px;
 }
 
 .pmodal-pending-note {
     font-size: 11px;
     color: #64748b;
-    margin-top: 4px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.pmodal-pending-note--inline {
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .pmodal-btn-resolve {
@@ -755,7 +767,6 @@
 .pmodal-btn-resolve--compact {
     width: 28px;
     height: 28px;
-    margin-top: 2px;
     display: inline-flex;
     align-items: center;
     justify-content: center;

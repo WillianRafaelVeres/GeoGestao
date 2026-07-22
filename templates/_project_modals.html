@@ -348,13 +348,13 @@
                                     {% for external_request in project_external_requests %}
                                     <div class="pmodal-pending-item pmodal-pending-item--compact">
                                         <div class="pmodal-pending-info">
-                                            <div class="pmodal-pending-desc pmodal-pending-desc--compact" title="{{ external_request.titulo }}">{{ external_request.titulo }}</div>
-                                            <div class="pmodal-pending-meta pmodal-pending-meta--compact">
-                                                {{ external_orgao_labels.get(external_request.tipo_orgao, 'Orgao externo') }} - {{ format_date(external_request.criado_em) or '-' }}
+                                            <div class="pmodal-pending-inline" title="{{ external_request.titulo }}{% if external_request.descricao %} - {{ external_request.descricao }}{% endif %}">
+                                                <span class="pmodal-pending-desc pmodal-pending-desc--compact">{{ external_request.titulo }}</span>
+                                                {% if external_request.descricao %}
+                                                <span class="pmodal-pending-inline-sep">-</span>
+                                                <span class="pmodal-pending-note pmodal-pending-note--inline">{{ external_request.descricao }}</span>
+                                                {% endif %}
                                             </div>
-                                            {% if external_request.descricao %}
-                                            <div class="pmodal-pending-note" title="{{ external_request.descricao }}">{{ external_request.descricao }}</div>
-                                            {% endif %}
                                         </div>
                                         <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" style="flex-shrink:0;">
                                             <input type="hidden" name="action" value="resolve_external_request">
