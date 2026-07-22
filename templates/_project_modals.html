@@ -344,23 +344,23 @@
                                     <span class="pmodal-section-title">Solicitacoes abertas</span>
                                     <span class="pmodal-section-count">{{ project_external_requests|length }}</span>
                                 </div>
-                                <div class="pmodal-pending-list">
+                                <div class="pmodal-pending-list pmodal-pending-list--compact">
                                     {% for external_request in project_external_requests %}
-                                    <div class="pmodal-pending-item">
+                                    <div class="pmodal-pending-item pmodal-pending-item--compact">
                                         <div class="pmodal-pending-info">
-                                            <div class="pmodal-pending-desc">{{ external_request.titulo }}</div>
-                                            <div class="pmodal-pending-meta">
+                                            <div class="pmodal-pending-desc pmodal-pending-desc--compact" title="{{ external_request.titulo }}">{{ external_request.titulo }}</div>
+                                            <div class="pmodal-pending-meta pmodal-pending-meta--compact">
                                                 {{ external_orgao_labels.get(external_request.tipo_orgao, 'Orgao externo') }} - {{ format_date(external_request.criado_em) or '-' }}
                                             </div>
                                             {% if external_request.descricao %}
-                                            <div class="pmodal-note-meta" style="margin-top:6px;">{{ external_request.descricao }}</div>
+                                            <div class="pmodal-pending-note" title="{{ external_request.descricao }}">{{ external_request.descricao }}</div>
                                             {% endif %}
                                         </div>
                                         <form method="post" action="{{ url_for('project_action', project_id=project.id) }}" style="flex-shrink:0;">
                                             <input type="hidden" name="action" value="resolve_external_request">
                                             <input type="hidden" name="solicitacao_id" value="{{ external_request.id }}">
                                             <input type="hidden" name="next" value="{{ modal_next }}">
-                                            <button class="pmodal-btn-resolve" type="submit" title="Concluir solicitacao">Concluir</button>
+                                            <button class="pmodal-btn-resolve pmodal-btn-resolve--compact" type="submit" title="Concluir solicitacao" aria-label="Concluir solicitacao">✓</button>
                                         </form>
                                     </div>
                                     {% endfor %}
