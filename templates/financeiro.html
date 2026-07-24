@@ -1,18 +1,39 @@
 {% extends 'base.html' %}
 {% block title %}Financeiro - GeoGestao{% endblock %}
 
-{% macro historico_botao(item) -%}
+{% macro historico_botao(item, target_id) -%}
     {% set total_registros = (item.qtd_pagamentos or 0) + (item.qtd_custos or 0) %}
     {% if total_registros %}
         <button class="btn btn-outline-secondary btn-sm" type="button"
-                data-bs-toggle="collapse" data-bs-target="#historico-{{ item.id }}">
+                data-bs-toggle="collapse" data-bs-target="#{{ target_id }}">
             Historico ({{ total_registros }})
         </button>
     {% endif %}
 {%- endmacro %}
 
-{% macro linha_projeto(item, mostrar_status=false) -%}
-    <tr>
+{% macro linha_projeto(item, mostrar_status=false, secao='abertos') -%}
+    {% set historico_id = 'historico-' ~ secao ~ '-' ~ item.id %}
+    {% set finance_search = [
+        item.nome or '',
+        item.codigo or '',
+        item.cliente_nome or '',
+        item.proprietarios_nomes or '',
+        item.etapa_nome or '',
+        item.caminho_pasta or ''
+    ]|join(' ') %}
+    <tr class="finance-project-row"
+        data-finance-item="project"
+        data-finance-id="{{ secao }}-{{ item.id }}"
+        data-finance-project="{{ item.id }}"
+        data-finance-panel="{{ secao }}"
+        data-finance-bucket="{{ 'concluidos' if mostrar_status else 'abertos' }}"
+        data-finance-stage="{{ item.etapa_nome or 'Sem etapa' }}"
+        data-finance-search="{{ finance_search }}"
+        data-finance-has-balance="{{ 1 if item.tem_cobranca and item.saldo > 0.005 else 0 }}"
+        data-finance-is-paid="{{ 1 if item.tem_cobranca and item.saldo <= 0.005 else 0 }}"
+        data-finance-has-contract="{{ 1 if item.tem_valor else 0 }}"
+        data-finance-has-costs="{{ 1 if item.qtd_custos else 0 }}"
+        data-finance-has-charge="{{ 1 if item.tem_cobranca else 0 }}">
         <td>
             <a href="{{ url_for('project_detail', project_id=item.id) }}"><strong>{{ item.nome }}</strong></a>
             <small>{{ item.codigo or '' }}{% if item.cliente_nome %} &middot; {{ item.cliente_nome }}{% endif %}</small>
@@ -76,11 +97,11 @@
                     data-bs-toggle="modal" data-bs-target="#modalPagamento"
                     data-pagamento-projeto="{{ item.id }}"
                     data-pagamento-nome="{{ item.nome }}">+ Pagamento</button>
-            {{ historico_botao(item) }}
+            {{ historico_botao(item, historico_id) }}
         </td>
     </tr>
     {% if item.qtd_pagamentos or item.qtd_custos %}
-    <tr class="collapse" id="historico-{{ item.id }}">
+    <tr class="collapse finance-project-history" id="{{ historico_id }}" data-finance-history-for="{{ secao }}-{{ item.id }}">
         <td colspan="9" style="background: var(--surface-2, #f8fafc);">
             <div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
                 <strong>Movimentacoes financeiras de {{ item.nome }}</strong>
@@ -205,8 +226,64 @@
     </div>
 </section>
 
+<section class="panel finance-filter-panel">
+    <div class="panel-header finance-filter-panel__header">
+        <div>
+            <h2>Localizar projetos</h2>
+            <span>Filtre sem recarregar a pagina para chegar mais rapido no projeto certo.</span>
+        </div>
+        <button class="btn btn-outline-secondary btn-sm" type="button" data-finance-clear>Limpar filtros</button>
+    </div>
+    <div class="finance-filter-grid">
+        <label class="finance-filter-field finance-filter-field--wide">
+            <span>Busca</span>
+            <input class="form-control"
+                   type="search"
+                   placeholder="Projeto, codigo, cliente, proprietario, pasta..."
+                   autocomplete="off"
+                   data-finance-filter="query">
+        </label>
+        <label class="finance-filter-field">
+            <span>Etapa</span>
+            <select class="form-select" data-finance-filter="stage">
+                <option value="">Todas</option>
+                {% for etapa in etapa_options %}
+                    <option value="{{ etapa }}">{{ etapa }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="finance-filter-field">
+            <span>Carteira</span>
+            <select class="form-select" data-finance-filter="bucket">
+                <option value="">Todas</option>
+                <option value="abertos">Projetos em aberto</option>
+                <option value="concluidos">Concluidos com saldo</option>
+            </select>
+        </label>
+        <label class="finance-filter-field">
+            <span>Cobranca</span>
+            <select class="form-select" data-finance-filter="charge">
+                <option value="">Todas</option>
+                <option value="saldo">Com saldo a receber</option>
+                <option value="quitado">Quitados</option>
+                <option value="sem_valor">Sem valor definido</option>
+                <option value="custos">Com custos lancados</option>
+                <option value="sem_cobranca">Sem cobranca</option>
+            </select>
+        </label>
+    </div>
+    <div class="finance-filter-feedback" aria-live="polite">
+        <strong data-finance-filter-summary>{{ total_financeiro_count }} projetos carregados</strong>
+        <small>Os resultados vao sendo refinados conforme voce digita ou troca os filtros.</small>
+    </div>
+</section>
+
+<div class="empty-state finance-filter-empty-state" data-finance-global-empty hidden>
+    Nenhum projeto encontrado com os filtros atuais.
+</div>
+
 {% if quase_prontos %}
-<section class="panel">
+<section class="panel" data-finance-panel="quase_prontos">
     <div class="panel-header">
         <h2>Proximos de terminar ({{ quase_pronto_pct }}%+ das etapas concluidas)</h2>
     </div>
@@ -215,15 +292,18 @@
             <thead><tr><th>Projeto</th><th>Etapa atual</th><th>Progresso</th><th>Contrato</th><th>Custos</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
             <tbody>
                 {% for item in quase_prontos %}
-                    {{ linha_projeto(item) }}
+                    {{ linha_projeto(item, secao='quase_prontos') }}
                 {% endfor %}
+                <tr data-finance-empty-row="quase_prontos" hidden>
+                    <td colspan="9" class="text-muted">Nenhum projeto encontrado nesta lista.</td>
+                </tr>
             </tbody>
         </table>
     </div>
 </section>
 {% endif %}
 
-<section class="panel">
+<section class="panel" data-finance-panel="abertos">
     <div class="panel-header">
         <h2>Projetos em aberto</h2>
         <span>{{ em_aberto|length }} projetos &middot; contratos de {{ format_currency(resumo.total_carteira) }} &middot; custos de {{ format_currency(resumo.custos_a_cobrar) }}</span>
@@ -234,8 +314,11 @@
             <thead><tr><th>Projeto</th><th>Etapa atual</th><th>Progresso</th><th>Contrato</th><th>Custos</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
             <tbody>
                 {% for item in em_aberto %}
-                    {{ linha_projeto(item) }}
+                    {{ linha_projeto(item, secao='abertos') }}
                 {% endfor %}
+                <tr data-finance-empty-row="abertos" hidden>
+                    <td colspan="9" class="text-muted">Nenhum projeto encontrado nesta lista.</td>
+                </tr>
             </tbody>
         </table>
     </div>
@@ -245,7 +328,7 @@
 </section>
 
 {% if concluidos_pendentes %}
-<section class="panel">
+<section class="panel" data-finance-panel="concluidos">
     <div class="panel-header">
         <h2>Concluidos com saldo a receber</h2>
         <span>{{ format_currency(resumo.a_receber_concluidos) }} pendentes</span>
@@ -255,8 +338,11 @@
             <thead><tr><th>Projeto</th><th>Status</th><th>Progresso</th><th>Contrato</th><th>Custos</th><th>Pago</th><th>Falta</th><th>Ultimo pgto</th><th>Acoes</th></tr></thead>
             <tbody>
                 {% for item in concluidos_pendentes %}
-                    {{ linha_projeto(item, mostrar_status=true) }}
+                    {{ linha_projeto(item, mostrar_status=true, secao='concluidos') }}
                 {% endfor %}
+                <tr data-finance-empty-row="concluidos" hidden>
+                    <td colspan="9" class="text-muted">Nenhum projeto encontrado nesta lista.</td>
+                </tr>
             </tbody>
         </table>
     </div>
@@ -279,7 +365,7 @@
                 <div class="row g-3">
                     <div class="col-md-7">
                         <label class="form-label">Descricao do custo</label>
-                        <input class="form-control" name="descricao" placeholder="Ex.: Matricula atualizada" autocomplete="off" required>
+                        <input class="form-control" id="custoDescricao" name="descricao" placeholder="Ex.: Matricula atualizada" autocomplete="off" required>
                     </div>
                     <div class="col-md-5">
                         <label class="form-label">Categoria</label>
@@ -303,8 +389,18 @@
                     </div>
                     <div class="col-12">
                         <label class="form-label">Comprovante <span class="text-muted">(opcional)</span></label>
-                        <input class="form-control" type="file" name="comprovante">
-                        <small class="form-text">Se anexado, e salvo automaticamente na pasta "Financeiro" dentro da pasta do projeto no Dropbox.</small>
+                        <div class="finance-dropzone" data-finance-dropzone tabindex="0" role="button" aria-controls="custoComprovanteInput">
+                            <input class="visually-hidden" id="custoComprovanteInput" type="file" name="comprovante" data-finance-file-input>
+                            <div class="finance-dropzone__copy">
+                                <strong>Arraste e solte o comprovante aqui</strong>
+                                <span>ou clique para escolher o arquivo do custo</span>
+                                <small>Ao salvar, ele vai para a pasta "Financeiro" no Dropbox e sera renomeado com o titulo do custo.</small>
+                            </div>
+                            <div class="finance-dropzone__file" data-finance-file-pill hidden>Nenhum arquivo selecionado</div>
+                        </div>
+                        <div class="finance-attachment-preview" data-finance-preview hidden>
+                            Sera salvo como <strong data-finance-preview-name></strong>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -372,21 +468,243 @@ function novoRegistroUid() {
         : Date.now() + "-" + Math.random().toString(16).slice(2);
 }
 
-document.querySelectorAll("[data-custo-projeto]").forEach((botao) => {
-    botao.addEventListener("click", () => {
-        document.getElementById("custoProjetoId").value = botao.dataset.custoProjeto;
-        document.getElementById("custoProjetoNome").textContent = botao.dataset.custoNome;
+function normalizeFinanceText(value) {
+    return (value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim();
+}
+
+function sanitizeFinanceAttachmentTitle(value) {
+    return (value || "")
+        .replace(/[\\/:*?"<>|]+/g, " ")
+        .replace(/\s+/g, " ")
+        .replace(/[. ]+$/g, "")
+        .trim();
+}
+
+const modalCusto = document.getElementById("modalCusto");
+const modalPagamento = document.getElementById("modalPagamento");
+const custoForm = modalCusto?.querySelector("form");
+const custoDescricaoInput = document.getElementById("custoDescricao");
+const custoFileInput = document.getElementById("custoComprovanteInput");
+const custoDropzone = modalCusto?.querySelector("[data-finance-dropzone]");
+const custoFilePill = modalCusto?.querySelector("[data-finance-file-pill]");
+const custoPreview = modalCusto?.querySelector("[data-finance-preview]");
+const custoPreviewName = modalCusto?.querySelector("[data-finance-preview-name]");
+
+function buildCustoAttachmentPreviewName() {
+    const arquivo = custoFileInput?.files?.[0];
+    if (!arquivo) {
+        return "";
+    }
+    const ponto = arquivo.name.lastIndexOf(".");
+    const extensao = ponto >= 0 ? arquivo.name.slice(ponto) : "";
+    const titulo = sanitizeFinanceAttachmentTitle(custoDescricaoInput?.value) || "Custo";
+    return `${titulo}${extensao}`;
+}
+
+function updateCustoAttachmentUi() {
+    const arquivo = custoFileInput?.files?.[0];
+    if (custoDropzone) {
+        custoDropzone.classList.toggle("has-file", Boolean(arquivo));
+    }
+    if (custoFilePill) {
+        custoFilePill.hidden = !arquivo;
+        custoFilePill.textContent = arquivo ? arquivo.name : "Nenhum arquivo selecionado";
+    }
+    if (custoPreview && custoPreviewName) {
+        const nomeFinal = buildCustoAttachmentPreviewName();
+        custoPreview.hidden = !nomeFinal;
+        custoPreviewName.textContent = nomeFinal;
+    }
+}
+
+function assignSingleFile(input, file) {
+    if (!input || !file || !window.DataTransfer) {
+        return false;
+    }
+    const transferencia = new DataTransfer();
+    transferencia.items.add(file);
+    input.files = transferencia.files;
+    return true;
+}
+
+if (modalCusto) {
+    modalCusto.addEventListener("show.bs.modal", (event) => {
+        custoForm?.reset();
+        updateCustoAttachmentUi();
+        const botao = event.relatedTarget;
+        document.getElementById("custoProjetoId").value = botao?.dataset.custoProjeto || "";
+        document.getElementById("custoProjetoNome").textContent = botao?.dataset.custoNome || "Projeto";
         document.getElementById("custoRegistroUid").value = novoRegistroUid();
     });
-});
 
-document.querySelectorAll("[data-pagamento-projeto]").forEach((botao) => {
-    botao.addEventListener("click", () => {
-        document.getElementById("pagamentoProjetoId").value = botao.dataset.pagamentoProjeto;
-        document.getElementById("pagamentoProjetoNome").textContent = botao.dataset.pagamentoNome;
+    modalCusto.addEventListener("hidden.bs.modal", () => {
+        custoForm?.reset();
+        updateCustoAttachmentUi();
+    });
+}
+
+if (modalPagamento) {
+    modalPagamento.addEventListener("show.bs.modal", (event) => {
+        const botao = event.relatedTarget;
+        document.getElementById("pagamentoProjetoId").value = botao?.dataset.pagamentoProjeto || "";
+        document.getElementById("pagamentoProjetoNome").textContent = botao?.dataset.pagamentoNome || "Projeto";
         document.getElementById("pagamentoRegistroUid").value = novoRegistroUid();
     });
+}
+
+if (custoFileInput) {
+    custoFileInput.addEventListener("change", updateCustoAttachmentUi);
+}
+
+if (custoDescricaoInput) {
+    custoDescricaoInput.addEventListener("input", updateCustoAttachmentUi);
+}
+
+if (custoDropzone && custoFileInput) {
+    custoDropzone.addEventListener("click", () => custoFileInput.click());
+    custoDropzone.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            custoFileInput.click();
+        }
+    });
+
+    ["dragenter", "dragover"].forEach((eventName) => {
+        custoDropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            custoDropzone.classList.add("is-dragover");
+        });
+    });
+
+    ["dragleave", "dragend", "drop"].forEach((eventName) => {
+        custoDropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            if (eventName !== "drop" || !custoDropzone.contains(event.relatedTarget)) {
+                custoDropzone.classList.remove("is-dragover");
+            }
+        });
+    });
+
+    custoDropzone.addEventListener("drop", (event) => {
+        const arquivo = event.dataTransfer?.files?.[0];
+        if (!arquivo) {
+            return;
+        }
+        if (!assignSingleFile(custoFileInput, arquivo)) {
+            return;
+        }
+        updateCustoAttachmentUi();
+    });
+}
+
+const financeFilterInputs = Array.from(document.querySelectorAll("[data-finance-filter]"));
+const financeProjectRows = Array.from(document.querySelectorAll("[data-finance-item='project']"));
+const financePanels = Array.from(document.querySelectorAll("[data-finance-panel]"));
+const financeSummary = document.querySelector("[data-finance-filter-summary]");
+const financeGlobalEmpty = document.querySelector("[data-finance-global-empty]");
+const financeClearButton = document.querySelector("[data-finance-clear]");
+const financeTotalProjects = new Set(financeProjectRows.map((row) => row.dataset.financeProject)).size;
+
+function matchesFinanceCharge(row, charge) {
+    if (!charge) {
+        return true;
+    }
+    if (charge === "saldo") {
+        return row.dataset.financeHasBalance === "1";
+    }
+    if (charge === "quitado") {
+        return row.dataset.financeIsPaid === "1";
+    }
+    if (charge === "sem_valor") {
+        return row.dataset.financeHasContract !== "1";
+    }
+    if (charge === "custos") {
+        return row.dataset.financeHasCosts === "1";
+    }
+    if (charge === "sem_cobranca") {
+        return row.dataset.financeHasCharge !== "1";
+    }
+    return true;
+}
+
+function applyFinanceFilters() {
+    if (!financeProjectRows.length) {
+        return;
+    }
+    const query = normalizeFinanceText(document.querySelector('[data-finance-filter="query"]')?.value);
+    const stage = normalizeFinanceText(document.querySelector('[data-finance-filter="stage"]')?.value);
+    const bucket = document.querySelector('[data-finance-filter="bucket"]')?.value || "";
+    const charge = document.querySelector('[data-finance-filter="charge"]')?.value || "";
+    const hasActiveFilter = Boolean(query || stage || bucket || charge);
+    const visibleProjects = new Set();
+    const sectionCounts = {};
+
+    financeProjectRows.forEach((row) => {
+        const rowQuery = normalizeFinanceText(row.dataset.financeSearch);
+        const rowStage = normalizeFinanceText(row.dataset.financeStage);
+        const visible =
+            (!query || rowQuery.includes(query)) &&
+            (!stage || rowStage === stage) &&
+            (!bucket || row.dataset.financeBucket === bucket) &&
+            matchesFinanceCharge(row, charge);
+
+        row.hidden = !visible;
+        if (visible) {
+            visibleProjects.add(row.dataset.financeProject);
+            sectionCounts[row.dataset.financePanel] = (sectionCounts[row.dataset.financePanel] || 0) + 1;
+        }
+
+        const historyRow = document.querySelector(`[data-finance-history-for="${row.dataset.financeId}"]`);
+        if (historyRow) {
+            historyRow.hidden = !visible;
+            if (!visible && historyRow.classList.contains("show") && window.bootstrap) {
+                bootstrap.Collapse.getOrCreateInstance(historyRow, { toggle: false }).hide();
+            }
+        }
+    });
+
+    financePanels.forEach((panel) => {
+        const section = panel.dataset.financePanel;
+        const visibleCount = sectionCounts[section] || 0;
+        const emptyRow = panel.querySelector(`[data-finance-empty-row="${section}"]`);
+        if (emptyRow) {
+            emptyRow.hidden = visibleCount > 0 || !hasActiveFilter;
+        }
+        if (section === "quase_prontos") {
+            panel.hidden = hasActiveFilter || visibleCount === 0;
+            return;
+        }
+        panel.hidden = hasActiveFilter && visibleCount === 0;
+    });
+
+    if (financeSummary) {
+        financeSummary.textContent = hasActiveFilter
+            ? `${visibleProjects.size} de ${financeTotalProjects} projetos visiveis`
+            : `${financeTotalProjects} projetos carregados`;
+    }
+
+    if (financeGlobalEmpty) {
+        financeGlobalEmpty.hidden = !hasActiveFilter || visibleProjects.size > 0;
+    }
+}
+
+financeFilterInputs.forEach((campo) => {
+    campo.addEventListener(campo.tagName === "SELECT" ? "change" : "input", applyFinanceFilters);
 });
+
+financeClearButton?.addEventListener("click", () => {
+    financeFilterInputs.forEach((campo) => {
+        campo.value = "";
+    });
+    applyFinanceFilters();
+    document.querySelector('[data-finance-filter="query"]')?.focus();
+});
+
+applyFinanceFilters();
 
 document.querySelectorAll("[data-modal-finance-form]").forEach((formulario) => {
     formulario.addEventListener("submit", () => {

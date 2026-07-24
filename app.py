@@ -8691,6 +8691,17 @@ def dropbox_upload_project_attachment(project_caminho_pasta, subpasta, filename,
     return metadata.get("path_display") or upload_path, None
 
 
+def build_finance_attachment_name(title, original_filename, fallback="Anexo"):
+    original_name = os.path.basename((original_filename or "").replace("\\", "/")).strip()
+    extension = os.path.splitext(original_name)[1]
+    cleaned_title = re.sub(r"\s+", " ", str(title or "").strip())
+    cleaned_title = re.sub(r'[\\/:*?"<>|]+', " ", cleaned_title)
+    cleaned_title = cleaned_title.rstrip(". ").strip(" _-")
+    cleaned_title = re.sub(r"\s+", " ", cleaned_title).strip()
+    safe_title = cleaned_title or fallback
+    return f"{safe_title}{extension}" if extension else safe_title
+
+
 def read_exigencia_attachment(upload):
     """Valida e le uma nota de exigencia recebida pelo formulario."""
     if not upload or not upload.filename:
@@ -14411,6 +14422,13 @@ def financeiro():
             quase_prontos.append(item)
             quase_prontos_saldo += saldo
     quase_prontos.sort(key=lambda item: (-item["pct"], -item["saldo"]))
+    etapa_options = sorted(
+        {
+            ((item.get("etapa_nome") or "").strip() or "Sem etapa")
+            for item in em_aberto + concluidos_pendentes
+        },
+        key=normalize_lookup,
+    )
 
     recebido = query_db(
         """
@@ -14471,6 +14489,8 @@ def financeiro():
         categorias_custo=CATEGORIAS_CUSTO,
         history_project_ids=history_project_ids,
         quase_pronto_pct=FINANCEIRO_QUASE_PRONTO_PCT,
+        etapa_options=etapa_options,
+        total_financeiro_count=len(em_aberto) + len(concluidos_pendentes),
         resumo={
             "total_a_receber": a_receber_ativos + a_receber_concluidos,
             "a_receber_ativos": a_receber_ativos,
@@ -14626,14 +14646,15 @@ def financeiro_registrar_custo():
     anexo_aviso = ""
     comprovante = request.files.get("comprovante")
     if comprovante and comprovante.filename:
-        anexo_nome = f"Custo - {comprovante.filename}"
+        anexo_nome = build_finance_attachment_name(descricao, comprovante.filename, fallback="Custo")
         dropbox_path, error = dropbox_upload_project_attachment(
             projeto["caminho_pasta"], "Financeiro", anexo_nome, comprovante.read()
         )
         if dropbox_path:
+            saved_name = os.path.basename(str(dropbox_path).replace("\\", "/")) or anexo_nome
             execute_db(
                 "UPDATE projeto_custos SET anexo_path = %s, anexo_nome = %s WHERE id = %s",
-                (dropbox_path, anexo_nome, cost_id),
+                (dropbox_path, saved_name, cost_id),
             )
         else:
             anexo_aviso = f" O comprovante nao pode ser anexado: {error}"
