@@ -693,8 +693,36 @@ function refreshVisibleProjectMainModal(projectId, html) {
     return true;
 }
 
+function captureProjectModalView(form, projectId) {
+    const modal = form.closest('.modal');
+    const scrollArea = modal?.querySelector(
+        '.pmodal-body, .exigencia-modal-content, .stage-modal-body, .modal-body'
+    );
+    return {
+        modalId: modal?.id || `project-modal-${projectId}`,
+        scrollTop: scrollArea?.scrollTop || 0,
+    };
+}
+
+function restoreProjectModalView(modal, view) {
+    if (!modal || !view) return;
+    const restore = () => {
+        const scrollArea = modal.querySelector(
+            '.pmodal-body, .exigencia-modal-content, .stage-modal-body, .modal-body'
+        );
+        if (scrollArea) scrollArea.scrollTop = view.scrollTop || 0;
+    };
+    if (modal.classList.contains('show')) {
+        window.requestAnimationFrame(restore);
+    } else {
+        modal.addEventListener('shown.bs.modal', restore, { once: true });
+    }
+}
+
 async function refreshProjectMatrixUi(projectId, options = {}) {
     const id = String(projectId);
+    const modalView = options.modalView || null;
+    const mainModalId = `project-modal-${id}`;
     projectModalCache.delete(id);
     const pagePromise = options.matrixDocument
         ? Promise.resolve(options.matrixDocument)
@@ -708,15 +736,25 @@ async function refreshProjectMatrixUi(projectId, options = {}) {
     const modalResult = await modalResultPromise;
     if (!modalResult.ok) throw modalResult.error;
     const modalHtml = modalResult.value;
-    if (modalHtml && options.reopenModal !== false && refreshVisibleProjectMainModal(id, modalHtml)) {
+    if (
+        modalHtml
+        && options.reopenModal !== false
+        && (!modalView || modalView.modalId === mainModalId)
+        && refreshVisibleProjectMainModal(id, modalHtml)
+    ) {
         projectModalCache.set(id, { html: modalHtml, expiresAt: Date.now() + PROJECT_MODAL_CACHE_MS });
+        restoreProjectModalView(document.getElementById(mainModalId), modalView);
         return;
     }
     await hideVisibleProjectModals(id);
     if (!modalHtml) return;
-    const modal = installProjectModal(id, modalHtml);
+    const mainModal = installProjectModal(id, modalHtml);
     projectModalCache.set(id, { html: modalHtml, expiresAt: Date.now() + PROJECT_MODAL_CACHE_MS });
-    if (options.reopenModal !== false) bootstrap.Modal.getOrCreateInstance(modal).show();
+    if (options.reopenModal !== false) {
+        const targetModal = (modalView?.modalId && document.getElementById(modalView.modalId)) || mainModal;
+        restoreProjectModalView(targetModal, modalView);
+        bootstrap.Modal.getOrCreateInstance(targetModal).show();
+    }
 }
 
 function initProjectActionForms(root) {
@@ -732,6 +770,7 @@ function initProjectActionForms(root) {
             if (!window.fetch || !window.DOMParser) return;
             event.preventDefault();
             if (form.dataset.submitting === '1') return;
+            const modalView = captureProjectModalView(form, projectId);
             form.dataset.submitting = '1';
             projectModalCache.delete(projectId);
 
@@ -796,6 +835,7 @@ function initProjectActionForms(root) {
                 await refreshProjectMatrixUi(projectId, {
                     matrixDocument: responseDocument || undefined,
                     reopenModal: true,
+                    modalView,
                 });
                 if (responsePayload?.auto_analyze_exigencia_id) {
                     const trigger = document.querySelector(

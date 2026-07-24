@@ -187,6 +187,7 @@ function initAutoGrowTextareas() {
 
 function initSingleSubmitForms() {
     document.querySelectorAll("form[data-single-submit]").forEach((form) => {
+        if (form.closest("[data-project-detail-tabs]")) return;
         form.addEventListener("submit", (event) => {
             if (event.defaultPrevented) return;
             if (form.dataset.submitting === "1") {
@@ -1963,3 +1964,179 @@ async function applyExigenciaAiChecklist(elements, state) {
         elements.apply.textContent = originalText;
     }
 }
+
+function showProjectDetailFeedback(message, tone = "success") {
+    if (!message) return;
+    let stack = document.querySelector("[data-project-detail-feedback]");
+    if (!stack) {
+        stack = document.createElement("div");
+        stack.className = "matrix-action-feedback-stack";
+        stack.dataset.projectDetailFeedback = "1";
+        document.body.appendChild(stack);
+    }
+    const alert = document.createElement("div");
+    alert.className = `alert alert-${tone === "danger" ? "danger" : tone} alert-dismissible fade show`;
+    alert.setAttribute("role", "status");
+    const text = document.createElement("span");
+    text.textContent = message;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "btn-close";
+    close.setAttribute("aria-label", "Fechar");
+    close.addEventListener("click", () => alert.remove());
+    alert.append(text, close);
+    stack.replaceChildren(alert);
+    window.setTimeout(() => alert.remove(), tone === "danger" ? 9000 : 6500);
+}
+
+function projectDetailFeedbackFromDocument(doc) {
+    const alert = doc?.querySelector(".alert");
+    if (!alert) return null;
+    let tone = "success";
+    if (alert.classList.contains("alert-danger")) tone = "danger";
+    else if (alert.classList.contains("alert-warning")) tone = "warning";
+    else if (alert.classList.contains("alert-info")) tone = "info";
+    return { message: alert.textContent.trim(), tone };
+}
+
+async function fetchFreshProjectDetailDocument() {
+    const response = await fetch(`${window.location.pathname}${window.location.search}`, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+    });
+    if (response.redirected && new URL(response.url, window.location.origin).pathname === "/login") {
+        window.location.assign(response.url);
+        throw new Error("Sessao expirada.");
+    }
+    if (!response.ok) throw new Error("A alteracao foi salva, mas nao foi possivel atualizar a tela.");
+    return new DOMParser().parseFromString(await response.text(), "text/html");
+}
+
+function refreshProjectDetailFromDocument(doc, paneId, scrollPosition) {
+    const currentPane = document.getElementById(paneId);
+    const freshPane = doc.getElementById(paneId);
+    if (!currentPane || !freshPane) {
+        throw new Error("A alteracao foi salva, mas a aba atual nao pode ser atualizada.");
+    }
+
+    freshPane.classList.add("show", "active");
+    currentPane.replaceWith(freshPane);
+
+    const currentHeading = document.querySelector(".page-heading");
+    const freshHeading = doc.querySelector(".page-heading");
+    if (currentHeading && freshHeading) {
+        const currentTitle = currentHeading.querySelector("h1");
+        const freshTitle = freshHeading.querySelector("h1");
+        const currentSubtitle = currentHeading.querySelector("p");
+        const freshSubtitle = freshHeading.querySelector("p");
+        if (currentTitle && freshTitle) currentTitle.textContent = freshTitle.textContent;
+        if (currentSubtitle && freshSubtitle) currentSubtitle.textContent = freshSubtitle.textContent;
+    }
+
+    const currentStrip = document.querySelector(".page-heading + .project-strip");
+    const freshStrip = doc.querySelector(".page-heading + .project-strip");
+    if (currentStrip && freshStrip) currentStrip.replaceChildren(...freshStrip.cloneNode(true).childNodes);
+
+    initProjectClientAutocompletes(freshPane);
+    initProjectOwnerManagers();
+    initProjectDetailAsyncForms(freshPane);
+    window.requestAnimationFrame(() => window.scrollTo({ top: scrollPosition, behavior: "auto" }));
+}
+
+function initProjectDetailAsyncForms(root = document) {
+    const scope = root.matches?.("[data-project-detail-tabs]")
+        ? root
+        : (root.querySelector?.("[data-project-detail-tabs]") || root);
+    const forms = scope.querySelectorAll?.("form") || [];
+
+    forms.forEach((form) => {
+        const actionUrl = form.getAttribute("action") || "";
+        const isProjectAction = /\/project\/\d+\/action(?:\?|$)/.test(actionUrl);
+        const isStageQuick = /\/stage\/\d+\/quick(?:\?|$)/.test(actionUrl);
+        const actionName = form.querySelector('[name="action"]')?.value || "";
+        if ((!isProjectAction && !isStageQuick) || actionName === "delete_project") return;
+        if (form.dataset.projectDetailAsyncReady === "1") return;
+        form.dataset.projectDetailAsyncReady = "1";
+
+        form.addEventListener("submit", async (event) => {
+            if (event.defaultPrevented || !window.fetch || !window.DOMParser) return;
+            event.preventDefault();
+            if (form.dataset.submitting === "1") return;
+
+            const pane = form.closest(".tab-pane");
+            if (!pane?.id) return;
+            const paneId = pane.id;
+            const scrollPosition = window.scrollY;
+            const submitter = event.submitter || form.querySelector('button[type="submit"]');
+            const originalText = submitter?.textContent || "";
+            form.dataset.submitting = "1";
+            if (submitter) {
+                submitter.disabled = true;
+                submitter.textContent = "Salvando...";
+            }
+
+            try {
+                const body = new FormData(form);
+                if (event.submitter?.name && !body.has(event.submitter.name)) {
+                    body.append(event.submitter.name, event.submitter.value);
+                }
+                const response = await fetch(actionUrl, {
+                    method: "POST",
+                    body,
+                    credentials: "same-origin",
+                    cache: "no-store",
+                    headers: {
+                        "Accept": "application/json, text/html;q=0.9",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                });
+                if (response.redirected && new URL(response.url, window.location.origin).pathname === "/login") {
+                    window.location.assign(response.url);
+                    return;
+                }
+
+                const contentType = (response.headers.get("Content-Type") || "").toLowerCase();
+                let freshDocument = null;
+                let feedback = null;
+                if (contentType.includes("application/json")) {
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || data.message || "Nao foi possivel salvar a alteracao.");
+                    }
+                    feedback = {
+                        message: data.message || "Alteracao salva.",
+                        tone: data.tone || "success",
+                    };
+                } else {
+                    if (!response.ok) throw new Error("Nao foi possivel salvar a alteracao.");
+                    freshDocument = new DOMParser().parseFromString(await response.text(), "text/html");
+                    feedback = projectDetailFeedbackFromDocument(freshDocument);
+                    if (feedback?.tone === "danger") throw new Error(feedback.message);
+                }
+
+                freshDocument = freshDocument || await fetchFreshProjectDetailDocument();
+                refreshProjectDetailFromDocument(freshDocument, paneId, scrollPosition);
+                showProjectDetailFeedback(
+                    feedback?.message || "Alteracao salva.",
+                    feedback?.tone || "success",
+                );
+            } catch (error) {
+                showProjectDetailFeedback(
+                    error.message || "Nao foi possivel salvar a alteracao.",
+                    "danger",
+                );
+            } finally {
+                delete form.dataset.submitting;
+                if (submitter?.isConnected) {
+                    submitter.disabled = false;
+                    submitter.textContent = originalText;
+                }
+            }
+        });
+    });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    initProjectDetailAsyncForms();
+});
