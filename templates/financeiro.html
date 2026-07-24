@@ -227,16 +227,9 @@
 </section>
 
 <section class="panel finance-filter-panel">
-    <div class="panel-header finance-filter-panel__header">
-        <div>
-            <h2>Localizar projetos</h2>
-            <span>Filtre sem recarregar a pagina para chegar mais rapido no projeto certo.</span>
-        </div>
-        <button class="btn btn-outline-secondary btn-sm" type="button" data-finance-clear>Limpar filtros</button>
-    </div>
-    <div class="finance-filter-grid">
-        <label class="finance-filter-field finance-filter-field--wide">
-            <span>Busca</span>
+    <div class="finance-filter-toolbar">
+        <strong class="finance-filter-toolbar__title">Localizar projetos</strong>
+        <label class="finance-filter-field finance-filter-field--search">
             <input class="form-control"
                    type="search"
                    placeholder="Projeto, codigo, cliente, proprietario, pasta..."
@@ -244,26 +237,23 @@
                    data-finance-filter="query">
         </label>
         <label class="finance-filter-field">
-            <span>Etapa</span>
-            <select class="form-select" data-finance-filter="stage">
-                <option value="">Todas</option>
+            <select class="form-select" data-finance-filter="stage" aria-label="Filtrar por etapa">
+                <option value="">Etapa: todas</option>
                 {% for etapa in etapa_options %}
                     <option value="{{ etapa }}">{{ etapa }}</option>
                 {% endfor %}
             </select>
         </label>
         <label class="finance-filter-field">
-            <span>Carteira</span>
-            <select class="form-select" data-finance-filter="bucket">
-                <option value="">Todas</option>
+            <select class="form-select" data-finance-filter="bucket" aria-label="Filtrar por carteira">
+                <option value="">Carteira: todas</option>
                 <option value="abertos">Projetos em aberto</option>
                 <option value="concluidos">Concluidos com saldo</option>
             </select>
         </label>
         <label class="finance-filter-field">
-            <span>Cobranca</span>
-            <select class="form-select" data-finance-filter="charge">
-                <option value="">Todas</option>
+            <select class="form-select" data-finance-filter="charge" aria-label="Filtrar por cobranca">
+                <option value="">Cobranca: todas</option>
                 <option value="saldo">Com saldo a receber</option>
                 <option value="quitado">Quitados</option>
                 <option value="sem_valor">Sem valor definido</option>
@@ -271,10 +261,8 @@
                 <option value="sem_cobranca">Sem cobranca</option>
             </select>
         </label>
-    </div>
-    <div class="finance-filter-feedback" aria-live="polite">
-        <strong data-finance-filter-summary>{{ total_financeiro_count }} projetos carregados</strong>
-        <small>Os resultados vao sendo refinados conforme voce digita ou troca os filtros.</small>
+        <span class="finance-filter-toolbar__summary" data-finance-filter-summary>{{ total_financeiro_count }} projetos carregados</span>
+        <button class="btn btn-outline-secondary btn-sm" type="button" data-finance-clear>Limpar filtros</button>
     </div>
 </section>
 
@@ -603,7 +591,7 @@ if (custoDropzone && custoFileInput) {
 
 const financeFilterInputs = Array.from(document.querySelectorAll("[data-finance-filter]"));
 const financeProjectRows = Array.from(document.querySelectorAll("[data-finance-item='project']"));
-const financePanels = Array.from(document.querySelectorAll("[data-finance-panel]"));
+const financePanels = Array.from(document.querySelectorAll("section[data-finance-panel]"));
 const financeSummary = document.querySelector("[data-finance-filter-summary]");
 const financeGlobalEmpty = document.querySelector("[data-finance-global-empty]");
 const financeClearButton = document.querySelector("[data-finance-clear]");
