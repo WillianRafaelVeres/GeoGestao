@@ -13111,9 +13111,8 @@ def empty_cliente_context():
 @login_required
 def my_missions():
     refresh_due_statuses()
-    missions = get_cached_lookup(
-        ("route_my_missions", int(g.user["id"])),
-        lambda: [dict(row) for row in query_db(
+    def load_missions():
+        missions = [dict(row) for row in query_db(
             """
         SELECT
             'stage'::text AS kind,
@@ -13179,7 +13178,90 @@ def my_missions():
         WHERE pd.responsavel_id = %s AND lower(COALESCE(pd.status, '')) NOT IN ('resolvida', 'cancelada')
             """,
             (g.user["id"], g.user["id"], g.user["id"]),
-        )],
+        )]
+
+        project_ids = sorted({int(mission["project_id"]) for mission in missions if mission.get("project_id")})
+        protocol_due_by_project = {}
+        requirement_due_by_project = {}
+
+        if project_ids:
+            placeholders = ",".join(["%s"] * len(project_ids))
+            external_rows = query_db(
+                f"""
+                SELECT
+                    id,
+                    projeto_id,
+                    protocolo_id,
+                    COALESCE(tipo_registro, 'exigencia') AS tipo_registro,
+                    prazo_resposta,
+                    data_protocolo,
+                    data_retirada,
+                    status
+                FROM exigencias_cartorio
+                WHERE projeto_id IN ({placeholders})
+                  AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
+                """,
+                project_ids,
+            )
+
+            protocol_due_index = {}
+            for row in external_rows:
+                record_kind = row["tipo_registro"] or "exigencia"
+                due = row["prazo_resposta"] or None
+                if record_kind == "protocolo" and not due and row["data_protocolo"]:
+                    due = external_protocol_check_date(row["data_protocolo"])
+                if not due:
+                    continue
+                project_id = int(row["projeto_id"])
+                if record_kind == "protocolo" and not row["data_retirada"]:
+                    current = protocol_due_by_project.get(project_id)
+                    protocol_due_by_project[project_id] = min(current, due) if current else due
+                    protocol_due_index[row.get("protocolo_id") or row.get("id")] = due
+                elif record_kind != "protocolo":
+                    current = requirement_due_by_project.get(project_id)
+                    requirement_due_by_project[project_id] = min(current, due) if current else due
+
+            for row in external_rows:
+                if (row["tipo_registro"] or "exigencia") == "protocolo":
+                    continue
+                if row["prazo_resposta"]:
+                    continue
+                linked_protocol_due = protocol_due_index.get(row.get("protocolo_id"))
+                if not linked_protocol_due:
+                    continue
+                project_id = int(row["projeto_id"])
+                current = requirement_due_by_project.get(project_id)
+                requirement_due_by_project[project_id] = min(current, linked_protocol_due) if current else linked_protocol_due
+
+        for mission in missions:
+            if mission.get("prazo"):
+                continue
+            project_id = int(mission["project_id"])
+            title_key = normalize_text(mission.get("title"))
+            stage_key_name = normalize_text(mission.get("stage"))
+            origin_key = normalize_text(mission.get("origin"))
+            protocol_due = protocol_due_by_project.get(project_id)
+            requirement_due = requirement_due_by_project.get(project_id)
+
+            if mission["kind"] == "stage":
+                if title_key == "exigencias":
+                    mission["prazo"] = requirement_due or protocol_due
+                elif title_key in ("orgaoexterno", "prefeitura") or stage_key_name.startswith("protocoladoem"):
+                    mission["prazo"] = protocol_due or requirement_due
+            elif mission["kind"] == "task":
+                if title_key.startswith("responderexigencia"):
+                    mission["prazo"] = requirement_due or protocol_due
+                elif title_key.startswith("retirarprotocolo"):
+                    mission["prazo"] = protocol_due or requirement_due
+            elif mission["kind"] == "pending":
+                if origin_key in ("cartorio", "orgaexterno", "orgaoexterno", "prefeitura") or "exigencia" in title_key:
+                    mission["prazo"] = requirement_due or protocol_due
+
+        return missions
+
+    missions = get_cached_lookup(
+        ("route_my_missions", int(g.user["id"])),
+        load_missions,
         ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
     )
 
