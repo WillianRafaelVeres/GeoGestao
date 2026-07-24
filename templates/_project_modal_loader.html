@@ -1,0 +1,1017 @@
+<script>
+function openSubModal(mainId, subId) {
+    const mainEl = document.getElementById(mainId);
+    const subEl = document.getElementById(subId);
+    if (!mainEl || !subEl || !window.bootstrap) return;
+    const main = bootstrap.Modal.getInstance(mainEl);
+    const sub = new bootstrap.Modal(subEl);
+    if (main) {
+        mainEl.addEventListener('hidden.bs.modal', function() { sub.show(); }, { once: true });
+        main.hide();
+    } else {
+        sub.show();
+    }
+}
+
+function toggleCheck(cb, itemId, stageId) {
+    invalidateProjectModalCacheFor(cb);
+    const row = document.getElementById(`check-row-${itemId}`);
+    const previousChecked = !cb.checked;
+    const counter = document.getElementById(`counter-${stageId}`);
+    const bar = document.getElementById(`progress-${stageId}`);
+    const previousCounter = counter?.textContent || '';
+    const previousBar = bar?.style.width || '';
+    row?.classList.toggle('is-done', cb.checked);
+    const match = previousCounter.match(/(\d+)\s*\/\s*(\d+)/);
+    if (match) {
+        const total = Number(match[2]);
+        const done = Math.max(0, Math.min(total, Number(match[1]) + (cb.checked ? 1 : -1)));
+        counter.textContent = `${done}/${total}`;
+        if (bar) bar.style.width = (total ? Math.round(done * 100 / total) : 0) + '%';
+    }
+    cb.disabled = true;
+    fetch(`/api/project-checklist/${itemId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concluido: cb.checked }),
+    })
+    .then((response) => readProjectJsonResponse(response, 'Falha ao salvar checklist.'))
+    .then((data) => {
+        cb.checked = data.concluido;
+        if (data.concluido) row?.classList.add('is-done');
+        else row?.classList.remove('is-done');
+        if (counter) counter.textContent = `${data.done}/${data.total}`;
+        if (bar) bar.style.width = data.progress + '%';
+        if (typeof data.required_pending !== 'undefined') {
+            const lock = document.getElementById(`advance-lock-${stageId}`);
+            const btn = document.getElementById(`advance-btn-${stageId}`);
+            if (lock && btn) {
+                lock.style.display = data.required_pending > 0 ? '' : 'none';
+                btn.style.display = data.required_pending > 0 ? 'none' : '';
+            }
+        }
+    })
+    .catch((error) => {
+        cb.checked = previousChecked;
+        row?.classList.toggle('is-done', previousChecked);
+        if (counter) counter.textContent = previousCounter;
+        if (bar) bar.style.width = previousBar;
+        showMatrixActionFeedback(error.message || 'Nao foi possivel salvar o checklist.', 'danger');
+    })
+    .finally(() => { cb.disabled = false; });
+}
+
+function toggleExigItem(cb, itemId, projectId) {
+    invalidateProjectModalCacheFor(cb);
+    const row = document.getElementById(`exig-item-${itemId}`);
+    row?.classList.toggle('is-done', cb.checked);
+    cb.disabled = true;
+    fetch(`/api/exigencia-item/${itemId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concluido: cb.checked }),
+    })
+        .then((resp) => resp.json())
+        .then((data) => {
+            if (!data.ok) throw new Error(data.error || 'Nao foi possivel salvar o item.');
+            const counter = document.getElementById(`exig-counter-${projectId}`);
+            if (counter) counter.textContent = `${data.done}/${data.total}`;
+            const bar = document.getElementById(`exig-progress-${projectId}`);
+            if (bar) bar.style.width = (data.total ? Math.round(data.done * 100 / data.total) : 0) + '%';
+            const returnLock = document.getElementById(`exig-return-lock-${projectId}`);
+            const returnForm = document.getElementById(`exig-return-form-${projectId}`);
+            const checklistComplete = data.total > 0 && data.done === data.total;
+            if (returnLock) returnLock.style.display = checklistComplete ? 'none' : '';
+            if (returnForm) returnForm.style.display = checklistComplete ? '' : 'none';
+        })
+        .catch(() => {
+            cb.checked = !cb.checked;
+            row?.classList.toggle('is-done', cb.checked);
+            showMatrixActionFeedback('Nao foi possivel salvar o item da exigencia.', 'danger');
+        })
+        .finally(() => { cb.disabled = false; });
+}
+
+function handleAddCheck(event, stageId) {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    const input = event.target;
+    const titulo = input.value.trim();
+    if (!titulo || input.dataset.submitting === '1') return;
+    input.dataset.submitting = '1';
+    input.setAttribute('aria-busy', 'true');
+    invalidateProjectModalCacheFor(input);
+
+    const list = document.getElementById(`checklist-${stageId}`);
+    const counter = document.getElementById(`counter-${stageId}`);
+    const bar = document.getElementById(`progress-${stageId}`);
+    const previousCounter = counter?.textContent || '';
+    const previousBar = bar?.style.width || '';
+    const counts = previousCounter.match(/(\d+)\s*\/\s*(\d+)/);
+    const optimisticDone = counts ? Number(counts[1]) : 0;
+    const optimisticTotal = counts ? Number(counts[2]) + 1 : 1;
+    const pendingRow = document.createElement('label');
+    pendingRow.className = 'pmodal-check-item is-saving';
+    pendingRow.style.opacity = '0.65';
+    const pendingCheckbox = document.createElement('input');
+    pendingCheckbox.type = 'checkbox';
+    pendingCheckbox.className = 'pmodal-check-box';
+    pendingCheckbox.disabled = true;
+    const pendingLabel = document.createElement('span');
+    pendingLabel.className = 'pmodal-check-label';
+    pendingLabel.textContent = titulo;
+    pendingRow.append(pendingCheckbox, pendingLabel);
+    list?.appendChild(pendingRow);
+    input.value = '';
+    if (counter) counter.textContent = `${optimisticDone}/${optimisticTotal}`;
+    if (bar) bar.style.width = `${Math.round(optimisticDone * 100 / optimisticTotal)}%`;
+
+    fetch('/api/project-checklist/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ titulo, stage_id: stageId }),
+        credentials: 'same-origin',
+        cache: 'no-store',
+    })
+    .then((response) => readProjectJsonResponse(response, 'Nao foi possivel adicionar o checklist.'))
+    .then((data) => {
+        pendingRow.classList.remove('is-saving');
+        pendingRow.style.opacity = '';
+        pendingRow.id = `check-row-${data.id}`;
+        pendingCheckbox.disabled = false;
+        pendingCheckbox.onchange = () => toggleCheck(pendingCheckbox, data.id, stageId);
+        pendingLabel.id = `check-label-${data.id}`;
+        pendingLabel.textContent = data.titulo;
+        if (counter) counter.textContent = `${data.done}/${data.total}`;
+        if (bar) bar.style.width = data.progress + '%';
+    })
+    .catch((error) => {
+        pendingRow.remove();
+        if (counter) counter.textContent = previousCounter;
+        if (bar) bar.style.width = previousBar;
+        if (!input.value.trim()) input.value = titulo;
+        showMatrixActionFeedback(error.message || 'Nao foi possivel adicionar o checklist.', 'danger');
+    })
+    .finally(() => {
+        input.dataset.submitting = '0';
+        input.removeAttribute('aria-busy');
+        input.focus();
+    });
+}
+
+function handleNoteKey(event, projectId) {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    addNote(projectId);
+}
+
+function addNote(projectId) {
+    const input = document.getElementById('note-input-' + projectId);
+    if (!input) return;
+    const texto = input.value.trim();
+    if (!texto) return;
+    projectModalCache.delete(String(projectId));
+    input.value = '';
+    const list = document.getElementById('notes-' + projectId);
+    const note = document.createElement('div');
+    note.className = 'pmodal-note is-saving';
+    const text = document.createElement('div');
+    text.className = 'pmodal-note-text';
+    text.textContent = texto;
+    const meta = document.createElement('div');
+    meta.className = 'pmodal-note-meta';
+    meta.textContent = 'Salvando...';
+    note.appendChild(text);
+    note.appendChild(meta);
+    list?.insertBefore(note, list.firstChild);
+    fetch('/api/project/' + projectId + '/note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texto }),
+        credentials: 'same-origin',
+        cache: 'no-store',
+    })
+    .then((response) => readProjectJsonResponse(response, 'Nao foi possivel salvar a anotacao.'))
+    .then((data) => {
+        note.classList.remove('is-saving');
+        const empty = document.getElementById('notes-empty-' + projectId);
+        if (empty) empty.remove();
+        meta.textContent = data.data + ' · ' + data.autor;
+    })
+    .catch((error) => {
+        note.remove();
+        if (!input.value.trim()) input.value = texto;
+        showMatrixActionFeedback(error.message || 'Nao foi possivel salvar a anotacao.', 'danger');
+    })
+    .finally(() => input.focus());
+}
+
+function updatePrefeituraSolicitacao(projectId, selectedId) {
+    document.querySelectorAll(`[data-prefeitura-solicitacao-panel="${projectId}"]`).forEach((panel) => {
+        panel.hidden = String(panel.dataset.solicitacaoId) !== String(selectedId || '');
+    });
+}
+
+function handleNextStepKey(event) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        event.target.blur();
+    }
+}
+
+function saveNextStep(projectId, input) {
+    const texto = input.value.trim();
+    if (texto === (input.defaultValue || '').trim()) return;
+    fetch('/api/project/' + projectId + '/next-step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texto }),
+        credentials: 'same-origin',
+        cache: 'no-store',
+    })
+    .then((response) => readProjectJsonResponse(response, 'Nao foi possivel salvar o proximo passo.'))
+    .then((data) => {
+        input.defaultValue = data.texto || '';
+        input.value = data.texto || '';
+        projectModalCache.delete(String(projectId));
+        const status = document.getElementById('next-step-status-' + projectId);
+        if (status) {
+            status.hidden = false;
+            window.clearTimeout(status._hideTimer);
+            status._hideTimer = window.setTimeout(() => { status.hidden = true; }, 2000);
+        }
+    })
+    .catch((error) => {
+        showMatrixActionFeedback(error.message || 'Nao foi possivel salvar o proximo passo.', 'danger');
+    });
+}
+
+function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, function(char) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char];
+    });
+}
+
+function showExternalFeedback(section, message, tone) {
+    const box = section.querySelector('[data-external-feedback]');
+    if (!box) return;
+    box.hidden = false;
+    box.textContent = message;
+    box.style.background = tone === 'error' ? '#fef2f2' : '#ecfdf5';
+    box.style.color = tone === 'error' ? '#991b1b' : '#166534';
+    box.style.borderColor = tone === 'error' ? '#fecaca' : '#bbf7d0';
+    window.clearTimeout(box._hideTimer);
+    box._hideTimer = window.setTimeout(() => { box.hidden = true; }, 3500);
+}
+
+async function readProjectJsonResponse(response, fallbackMessage) {
+    if (
+        response.redirected
+        && new URL(response.url, window.location.origin).pathname === '/login'
+    ) {
+        window.location.assign(response.url);
+        throw new Error('Sessao expirada.');
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+        throw new Error(data.error || fallbackMessage);
+    }
+    return data;
+}
+
+function updateExternalSummary(section, summary) {
+    if (!summary) return;
+    const state = section.querySelector('[data-external-state]');
+    const count = section.querySelector('[data-external-count]');
+    const checkDate = section.querySelector('[data-external-check-date]');
+    const withdrawal = section.querySelector('[data-external-withdrawal]');
+    if (state) {
+        state.textContent = summary.state || 'Aguardando protocolo';
+        state.classList.toggle('is-ok', Boolean(summary.state_ok));
+        state.classList.toggle('is-pending', !summary.state_ok);
+    }
+    if (count) count.textContent = summary.protocol_count || 0;
+    if (checkDate) checkDate.textContent = summary.check_date_label || '-';
+    if (withdrawal) withdrawal.textContent = summary.withdrawal_label || 'Pendente';
+    const skipButton = section.querySelector('[data-external-skip]');
+    if (skipButton) {
+        const hasProtocols = Number(summary.protocol_count || 0) > 0;
+        skipButton.disabled = hasProtocols || Boolean(summary.all_withdrawn);
+        skipButton.title = hasProtocols ? 'Exclua ou retire os protocolos antes de avancar sem protocolo' : '';
+    }
+    const skipPanel = section.querySelector('[data-external-skip-panel]');
+    if (skipPanel) {
+        const hasProtocols = Number(summary.protocol_count || 0) > 0;
+        skipPanel.hidden = hasProtocols || Boolean(summary.all_withdrawn);
+    }
+    const lock = section.closest('.pmodal-body')?.querySelector('[data-external-lock]');
+    if (lock) {
+        if (summary.all_withdrawn) {
+            lock.textContent = 'Protocolos retirados. Etapa liberada.';
+            lock.classList.add('is-success');
+        } else {
+            lock.textContent = 'Retire todos os protocolos para avancar';
+            lock.classList.remove('is-success');
+        }
+    }
+}
+
+function protocolStatusLabel(protocol) {
+    if (protocol.is_withdrawn) return 'Retirado';
+    if (protocol.is_ready) return 'Pronto';
+    return 'Protocolo';
+}
+
+function renderExternalProtocolRow(section, protocol) {
+    const optionsTemplate = section.querySelector('[data-protocol-responsible-options]');
+    const optionsHtml = optionsTemplate ? optionsTemplate.innerHTML : '<option value="">Responsavel pela retirada</option>';
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.className = 'pmodal-external-record' + (protocol.is_withdrawn ? ' is-withdrawn' : '');
+    form.dataset.externalProtocolRow = '1';
+    form.dataset.protocolId = protocol.id;
+    form.innerHTML = `
+        <div class="pmodal-external-info">
+            <span data-protocol-status-label>${escapeHtml(protocolStatusLabel(protocol))}</span>
+            <strong>${escapeHtml(protocol.descricao)}</strong>
+            <small>Orgao: ${escapeHtml(protocol.tipo_orgao_label || 'Orgao externo')}</small>
+            <small>Data de protocolo: ${escapeHtml(protocol.data_protocolo_label || '-')}</small>
+            <small>Numero: ${escapeHtml(protocol.numero_protocolo || '-')}</small>
+            <small>Verificar em: ${escapeHtml(protocol.prazo_resposta_label || '-')}</small>
+        </div>
+        <div class="pmodal-field-compact">
+            <span>Responsavel pela retirada</span>
+            <select class="form-select form-select-sm" name="responsavel_id" data-protocol-responsible>${optionsHtml}</select>
+        </div>
+        <button class="pmodal-btn-ghost" name="protocol_action" value="ready" type="button" data-protocol-action="ready">Pronto</button>
+        <button class="pmodal-btn-ghost pmodal-btn-ghost--success" name="protocol_action" value="withdrawn" type="button" data-protocol-action="withdrawn">Retirado</button>
+        <button class="pmodal-btn-ghost pmodal-btn-ghost--danger" type="button" data-protocol-action="delete">Excluir</button>
+    `;
+    const select = form.querySelector('[data-protocol-responsible]');
+    if (select && protocol.responsavel_id) select.value = protocol.responsavel_id;
+    form.querySelectorAll('[data-protocol-action="ready"], [data-protocol-action="withdrawn"]').forEach((btn) => {
+        btn.disabled = Boolean(protocol.is_withdrawn);
+    });
+    return form;
+}
+
+function replaceExternalProtocolRow(section, protocol) {
+    const records = section.querySelector('[data-external-records]');
+    if (!records) return;
+    const current = records.querySelector(`[data-external-protocol-row][data-protocol-id="${protocol.id}"]`);
+    const next = renderExternalProtocolRow(section, protocol);
+    if (current) current.replaceWith(next);
+    else records.appendChild(next);
+    const empty = records.querySelector('[data-external-empty]');
+    if (empty) empty.remove();
+}
+
+async function skipExternalStageFromModal(projectId, stageId, button) {
+    if (!confirm('Este projeto nao precisa de protocolo externo? Avancar para a proxima etapa?')) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Avancando...';
+    try {
+        const response = await fetch(`/api/project/${projectId}/external-stage/skip`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stage_id: stageId }),
+        });
+        const data = await readProjectJsonResponse(response, 'Nao foi possivel avancar a etapa.');
+        showMatrixActionFeedback(data.message || 'Etapa avancada.', 'success');
+        await refreshProjectMatrixUi(projectId, { reopenModal: true });
+    } catch (error) {
+        showMatrixActionFeedback(error.message || 'Nao foi possivel avancar a etapa.', 'danger');
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
+function initExternalProtocolControls(root = document) {
+    root.querySelectorAll('[data-external-protocol-add]').forEach((form) => {
+        if (form.dataset.externalProtocolReady === '1') return;
+        form.dataset.externalProtocolReady = '1';
+        form.addEventListener('submit', async (event) => {
+            if (!window.fetch) return;
+            event.preventDefault();
+            const section = form.closest('.pmodal-external-control');
+            if (!section) return;
+            projectModalCache.delete(String(section.dataset.projectId || ''));
+            const button = form.querySelector('button[type="submit"]');
+            const originalText = button ? button.textContent : '';
+            if (button) { button.disabled = true; button.textContent = 'Salvando...'; }
+            const payload = {
+                tipo_orgao: form.elements.tipo_orgao?.value,
+                cartorio_id: section.dataset.cartorioId || null,
+                data_protocolo: form.elements.data_protocolo?.value,
+                numero_protocolo: form.elements.numero_protocolo?.value,
+                descricao: form.elements.descricao?.value,
+            };
+            try {
+                const resp = await fetch(`/api/project/${section.dataset.projectId}/external-protocol`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await readProjectJsonResponse(resp, 'Nao foi possivel salvar o protocolo.');
+                replaceExternalProtocolRow(section, data.protocol);
+                updateExternalSummary(section, data.summary);
+                form.elements.numero_protocolo.value = '';
+                form.elements.descricao.value = '';
+                showExternalFeedback(section, 'Protocolo registrado. A verificacao foi calculada para 15 dias uteis.', 'success');
+                refreshProjectMatrixRow(section.dataset.projectId).catch(() => {
+                    showMatrixActionFeedback('Protocolo salvo. A tela sera atualizada na proxima abertura.', 'warning');
+                });
+            } catch (error) {
+                showExternalFeedback(section, error.message || 'Nao foi possivel salvar o protocolo.', 'error');
+            } finally {
+                if (button) { button.disabled = false; button.textContent = originalText; }
+            }
+        });
+    });
+
+    root.querySelectorAll('.pmodal-external-control').forEach((section) => {
+        if (section.dataset.externalControlReady === '1') return;
+        section.dataset.externalControlReady = '1';
+        section.addEventListener('click', async (event) => {
+            const skipButton = event.target.closest('[data-external-skip]');
+            if (skipButton) {
+                if (!confirm('Avancar sem registrar protocolo nesta etapa?')) return;
+                const originalText = skipButton.textContent;
+                skipButton.disabled = true;
+                skipButton.textContent = 'Avancando...';
+                try {
+                    const resp = await fetch(`/api/project/${section.dataset.projectId}/external-stage/skip`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ stage_id: skipButton.dataset.stageId }),
+                    });
+                    const data = await readProjectJsonResponse(resp, 'Nao foi possivel avancar a etapa.');
+                    showExternalFeedback(section, data.message || (data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa avancada.'), 'success');
+                    const lock = section.closest('.pmodal-body')?.querySelector('[data-external-lock]');
+                    if (lock) {
+                        lock.textContent = data.message || (data.next_stage ? `Etapa avancada para ${data.next_stage.nome}.` : 'Etapa avancada.');
+                        lock.classList.add('is-success');
+                    }
+                    showMatrixActionFeedback(data.message || 'Etapa avancada.', 'success');
+                    try {
+                        await refreshProjectMatrixUi(section.dataset.projectId, { reopenModal: true });
+                    } catch (refreshError) {
+                        showMatrixActionFeedback(refreshError.message || 'Etapa avancada. Atualize a pagina para conferir os dados.', 'warning');
+                    }
+                } catch (error) {
+                    showExternalFeedback(section, error.message || 'Nao foi possivel avancar a etapa.', 'error');
+                    skipButton.disabled = false;
+                    skipButton.textContent = originalText;
+                }
+                return;
+            }
+            const button = event.target.closest('[data-protocol-action]');
+            if (!button) return;
+            const row = button.closest('[data-external-protocol-row]');
+            if (!row) return;
+            const action = button.dataset.protocolAction;
+            projectModalCache.delete(String(section.dataset.projectId || ''));
+            if (action === 'delete' && !confirm('Excluir este protocolo?')) return;
+            const responsible = row.querySelector('[data-protocol-responsible]')?.value || '';
+            if (action === 'ready' && !responsible) {
+                showExternalFeedback(section, 'Escolha o responsavel pela retirada.', 'error');
+                return;
+            }
+            const originalText = button.textContent;
+            button.disabled = true;
+            button.textContent = action === 'delete' ? 'Excluindo...' : 'Salvando...';
+            try {
+                const resp = await fetch(`/api/project/${section.dataset.projectId}/external-protocol/${row.dataset.protocolId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, responsavel_id: responsible || null }),
+                });
+                const data = await readProjectJsonResponse(resp, 'Nao foi possivel atualizar o protocolo.');
+                if (data.deleted) {
+                    row.remove();
+                    const records = section.querySelector('[data-external-records]');
+                    if (records && !records.querySelector('[data-external-protocol-row]')) {
+                        const empty = document.createElement('div');
+                        empty.className = 'pmodal-external-empty';
+                        empty.dataset.externalEmpty = '1';
+                        empty.textContent = 'Nenhum protocolo registrado nesta etapa.';
+                        records.appendChild(empty);
+                    }
+                    showExternalFeedback(section, 'Protocolo excluido.', 'success');
+                } else {
+                    replaceExternalProtocolRow(section, data.protocol);
+                    showExternalFeedback(section, data.next_stage ? `Retirada registrada. Projeto avancou para ${data.next_stage.nome}.` : 'Protocolo atualizado.', 'success');
+                }
+                updateExternalSummary(section, data.summary);
+                if (data.next_stage) {
+                    showMatrixActionFeedback(`Retirada registrada. Projeto avancou para ${data.next_stage.nome}.`, 'success');
+                    try {
+                        await refreshProjectMatrixUi(section.dataset.projectId, { reopenModal: true });
+                    } catch (refreshError) {
+                        showMatrixActionFeedback(refreshError.message || 'Retirada salva. Atualize a pagina para conferir os dados.', 'warning');
+                    }
+                } else {
+                    refreshProjectMatrixRow(section.dataset.projectId).catch(() => {
+                        showMatrixActionFeedback('Protocolo atualizado. A tela sera atualizada na proxima abertura.', 'warning');
+                    });
+                }
+            } catch (error) {
+                showExternalFeedback(section, error.message || 'Nao foi possivel atualizar o protocolo.', 'error');
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        });
+    });
+}
+
+const projectModalCache = new Map();
+let projectModalRequest = null;
+const PROJECT_MODAL_CACHE_MS = 15000;
+
+function showMatrixActionFeedback(message, tone = 'success') {
+    if (!message) return;
+    let stack = document.querySelector('[data-matrix-action-feedback-stack]');
+    if (!stack) {
+        stack = document.createElement('div');
+        stack.className = 'matrix-action-feedback-stack';
+        stack.dataset.matrixActionFeedbackStack = '1';
+        document.body.appendChild(stack);
+    }
+    stack.querySelector('[data-matrix-action-feedback]')?.remove();
+    const alert = document.createElement('div');
+    alert.className = `alert alert-${tone} alert-dismissible fade show`;
+    alert.dataset.matrixActionFeedback = '1';
+    alert.setAttribute('role', 'alert');
+    alert.append(document.createTextNode(message));
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn-close';
+    close.dataset.bsDismiss = 'alert';
+    close.setAttribute('aria-label', 'Fechar');
+    alert.appendChild(close);
+    stack.appendChild(alert);
+    window.setTimeout(() => alert.isConnected && alert.remove(), 12000);
+}
+
+function matrixFeedbackFromDocument(doc) {
+    if (!doc) return null;
+    const source = doc.querySelector('.flash-stack .alert');
+    if (!source) return null;
+    const copy = source.cloneNode(true);
+    copy.querySelectorAll('button').forEach((button) => button.remove());
+    let tone = 'success';
+    if (source.classList.contains('alert-danger')) tone = 'danger';
+    else if (source.classList.contains('alert-warning')) tone = 'warning';
+    else if (source.classList.contains('alert-info')) tone = 'info';
+    return { message: copy.textContent.trim(), tone };
+}
+
+async function fetchProjectPageDocument(url = window.location.href) {
+    const response = await fetch(url, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    if (response.redirected && new URL(response.url, window.location.origin).pathname === '/login') {
+        window.location.assign(response.url);
+        throw new Error('Sessao expirada.');
+    }
+    if (!response.ok) throw new Error('Nao foi possivel atualizar a tela.');
+    return new DOMParser().parseFromString(await response.text(), 'text/html');
+}
+
+function syncProjectPageUi(projectId, doc) {
+    let synced = false;
+
+    const matrixSelector = `.matrix-project-row[data-project-id="${projectId}"]`;
+    const currentMatrixRow = document.querySelector(matrixSelector);
+    const freshMatrixRow = doc.querySelector(matrixSelector);
+    const freshSummary = doc.querySelector('.matrix-summary');
+    const currentSummary = document.querySelector('.matrix-summary');
+    if (freshSummary && currentSummary) currentSummary.innerHTML = freshSummary.innerHTML;
+
+    if (currentMatrixRow && freshMatrixRow) {
+        currentMatrixRow.className = freshMatrixRow.className;
+        currentMatrixRow.innerHTML = freshMatrixRow.innerHTML;
+        Array.from(currentMatrixRow.attributes)
+            .filter((attribute) => attribute.name.startsWith('data-'))
+            .forEach((attribute) => currentMatrixRow.removeAttribute(attribute.name));
+        Array.from(freshMatrixRow.attributes)
+            .filter((attribute) => attribute.name.startsWith('data-'))
+            .forEach((attribute) => currentMatrixRow.setAttribute(attribute.name, attribute.value));
+        initProjectLazyModals(currentMatrixRow);
+        synced = true;
+    } else if (currentMatrixRow && !freshMatrixRow) {
+        currentMatrixRow.remove();
+        synced = true;
+    }
+
+    const currentMissionList = document.querySelector('[data-mission-list]');
+    const freshMissionList = doc.querySelector('[data-mission-list]');
+    if (currentMissionList && freshMissionList) {
+        currentMissionList.innerHTML = freshMissionList.innerHTML;
+        if (typeof window.initMissionQuickActions === 'function') {
+            window.initMissionQuickActions();
+        }
+        initProjectLazyModals(currentMissionList);
+        if (typeof window.syncMissionEmptyState === 'function') {
+            window.syncMissionEmptyState(currentMissionList);
+        }
+        synced = true;
+    }
+
+    const table = document.querySelector('.ops-matrix');
+    const scrollInner = document.querySelector('.matrix-scrollbar-inner');
+    if (table && scrollInner) scrollInner.style.width = `${table.scrollWidth}px`;
+    if (synced) document.dispatchEvent(new CustomEvent('geogestao:project-ui-updated'));
+    return synced;
+}
+
+async function refreshProjectMatrixRow(projectId, pageDocument = null) {
+    const doc = pageDocument || await fetchProjectPageDocument();
+    return syncProjectPageUi(String(projectId), doc);
+}
+
+function freshProjectModalUrl(projectId) {
+    return document.querySelector(`[data-project-modal-url][data-project-id="${projectId}"]`)?.dataset.projectModalUrl || '';
+}
+
+async function fetchFreshProjectModal(projectId) {
+    const url = freshProjectModalUrl(projectId);
+    if (!url) return null;
+    const response = await fetch(url, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    if (response.redirected && new URL(response.url, window.location.origin).pathname === '/login') {
+        window.location.assign(response.url);
+        throw new Error('Sessao expirada.');
+    }
+    if (!response.ok) throw new Error('Acao salva, mas nao foi possivel atualizar o modal.');
+    return response.text();
+}
+
+function hideVisibleProjectModals(projectId) {
+    const fragment = document.querySelector(`[data-project-modal-fragment="${projectId}"]`);
+    if (!fragment) return Promise.resolve();
+    const visible = Array.from(fragment.querySelectorAll('.modal.show'));
+    if (!visible.length) return Promise.resolve();
+    return Promise.all(visible.map((modal) => new Promise((resolve) => {
+        const instance = bootstrap.Modal.getOrCreateInstance(modal);
+        const fallback = window.setTimeout(resolve, 400);
+        modal.addEventListener('hidden.bs.modal', () => {
+            window.clearTimeout(fallback);
+            resolve();
+        }, { once: true });
+        instance.hide();
+    })));
+}
+
+function refreshVisibleProjectMainModal(projectId, html) {
+    const fragment = document.querySelector(`[data-project-modal-fragment="${projectId}"]`);
+    const currentMain = fragment?.querySelector(`#project-modal-${projectId}.show`);
+    if (!fragment || !currentMain) return false;
+
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const freshFragment = parsed.querySelector(`[data-project-modal-fragment="${projectId}"]`);
+    const freshMain = freshFragment?.querySelector(`#project-modal-${projectId}`);
+    const currentContent = currentMain.querySelector('.modal-content');
+    const freshContent = freshMain?.querySelector('.modal-content');
+    if (!freshFragment || !freshMain || !currentContent || !freshContent) return false;
+
+    fragment.querySelectorAll(`.modal:not(#project-modal-${projectId})`).forEach((modal) => {
+        bootstrap.Modal.getInstance(modal)?.dispose();
+        modal.remove();
+    });
+    currentContent.replaceWith(freshContent);
+    freshFragment.querySelectorAll(`.modal:not(#project-modal-${projectId})`).forEach((modal) => {
+        fragment.appendChild(modal);
+    });
+    initializeProjectModalFragment(fragment);
+    return true;
+}
+
+async function refreshProjectMatrixUi(projectId, options = {}) {
+    const id = String(projectId);
+    projectModalCache.delete(id);
+    const pagePromise = options.matrixDocument
+        ? Promise.resolve(options.matrixDocument)
+        : fetchProjectPageDocument();
+    const modalResultPromise = fetchFreshProjectModal(id).then(
+        (value) => ({ ok: true, value }),
+        (error) => ({ ok: false, error }),
+    );
+    const doc = await pagePromise;
+    syncProjectPageUi(id, doc);
+    const modalResult = await modalResultPromise;
+    if (!modalResult.ok) throw modalResult.error;
+    const modalHtml = modalResult.value;
+    if (modalHtml && options.reopenModal !== false && refreshVisibleProjectMainModal(id, modalHtml)) {
+        projectModalCache.set(id, { html: modalHtml, expiresAt: Date.now() + PROJECT_MODAL_CACHE_MS });
+        return;
+    }
+    await hideVisibleProjectModals(id);
+    if (!modalHtml) return;
+    const modal = installProjectModal(id, modalHtml);
+    projectModalCache.set(id, { html: modalHtml, expiresAt: Date.now() + PROJECT_MODAL_CACHE_MS });
+    if (options.reopenModal !== false) bootstrap.Modal.getOrCreateInstance(modal).show();
+}
+
+function initProjectActionForms(root) {
+    const projectId = String(root.dataset.projectModalFragment || '');
+    if (!projectId) return;
+    root.querySelectorAll('form').forEach((form) => {
+        const actionUrl = form.getAttribute('action') || '';
+        if (!actionUrl.includes('/project/') || !actionUrl.endsWith('/action')) return;
+        if (form.matches('[data-external-protocol-add], [data-external-protocol-row], [data-no-async]')) return;
+        if (form.dataset.projectAsyncReady === '1') return;
+        form.dataset.projectAsyncReady = '1';
+        form.addEventListener('submit', async (event) => {
+            if (!window.fetch || !window.DOMParser) return;
+            event.preventDefault();
+            if (form.dataset.submitting === '1') return;
+            form.dataset.submitting = '1';
+            projectModalCache.delete(projectId);
+
+            const button = event.submitter || form.querySelector('button[type="submit"]');
+            const originalText = button?.textContent || '';
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'Salvando...';
+            }
+
+            let responseDocument = null;
+            let responseFeedback = null;
+            let responsePayload = null;
+            try {
+                const formData = new FormData(form);
+                if (event.submitter?.name && !formData.has(event.submitter.name)) {
+                    formData.append(event.submitter.name, event.submitter.value);
+                }
+                const response = await fetch(actionUrl, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json, text/html;q=0.9',
+                    },
+                });
+                if (response.redirected && new URL(response.url, window.location.origin).pathname === '/login') {
+                    window.location.assign(response.url);
+                    return;
+                }
+                const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+                if (contentType.includes('application/json')) {
+                    const data = await response.json().catch(() => ({}));
+                    responsePayload = data;
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || data.message || 'Nao foi possivel salvar a alteracao.');
+                    }
+                    responseFeedback = data.message
+                        ? { message: data.message, tone: data.tone || 'success' }
+                        : null;
+                } else {
+                    if (!response.ok) throw new Error('Nao foi possivel salvar a alteracao.');
+                    responseDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+                }
+            } catch (error) {
+                showMatrixActionFeedback(error.message || 'Nao foi possivel salvar a alteracao.', 'danger');
+                return;
+            } finally {
+                form.dataset.submitting = '0';
+                if (button?.isConnected) {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                }
+            }
+
+            const feedback = responseFeedback || matrixFeedbackFromDocument(responseDocument);
+            if (feedback) showMatrixActionFeedback(feedback.message, feedback.tone);
+            if (feedback?.tone === 'danger') return;
+            try {
+                await refreshProjectMatrixUi(projectId, {
+                    matrixDocument: responseDocument || undefined,
+                    reopenModal: true,
+                });
+                if (responsePayload?.auto_analyze_exigencia_id) {
+                    const trigger = document.querySelector(
+                        `[data-exigencia-ai][data-exigencia-id="${responsePayload.auto_analyze_exigencia_id}"]`
+                    );
+                    if (trigger) trigger.click();
+                }
+            } catch (error) {
+                showMatrixActionFeedback(error.message || 'Alteracao salva. Atualize a pagina para conferir os dados.', 'warning');
+            }
+        });
+    });
+}
+
+function initExigenciaCreateForms(root) {
+    root.querySelectorAll('[data-exigencia-create]').forEach((form) => {
+        if (form.dataset.exigenciaReady === '1') return;
+        form.dataset.exigenciaReady = '1';
+        const fileInput = form.querySelector('[data-exigencia-file]');
+        const itemsInput = form.querySelector('[data-exigencia-items]');
+        const validation = form.querySelector('[data-exigencia-validation]');
+        const submitButton = form.querySelector('[data-exigencia-submit]');
+        let validationAttempted = false;
+
+        const sync = () => {
+            const hasFile = Boolean(fileInput?.files?.length);
+            const hasItems = Boolean(itemsInput?.value.trim());
+            if (validation) validation.hidden = !validationAttempted || hasFile || hasItems;
+            if (submitButton) {
+                submitButton.textContent = hasFile ? 'Registrar e analisar' : 'Registrar exigencia';
+            }
+        };
+        fileInput?.addEventListener('change', sync);
+        itemsInput?.addEventListener('input', sync);
+        form.addEventListener('submit', (event) => {
+            const hasFile = Boolean(fileInput?.files?.length);
+            const hasItems = Boolean(itemsInput?.value.trim());
+            if (hasFile || hasItems) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            validationAttempted = true;
+            sync();
+            fileInput?.focus();
+        });
+        sync();
+    });
+}
+
+function invalidateProjectModalCacheFor(element) {
+    const fragment = element?.closest('[data-project-modal-fragment]');
+    if (fragment?.dataset.projectModalFragment) {
+        projectModalCache.delete(String(fragment.dataset.projectModalFragment));
+    }
+}
+
+function setProjectModalTriggerLoading(trigger, loading) {
+    if (!trigger) return;
+    if (loading) {
+        if (!trigger.dataset.projectModalOriginal) {
+            trigger.dataset.projectModalOriginal = trigger.innerHTML;
+        }
+        trigger.setAttribute('aria-busy', 'true');
+        trigger.classList.add('is-loading');
+        trigger.innerHTML = '<strong>Carregando...</strong>';
+    } else {
+        trigger.removeAttribute('aria-busy');
+        trigger.classList.remove('is-loading');
+        if (trigger.dataset.projectModalOriginal) {
+            trigger.innerHTML = trigger.dataset.projectModalOriginal;
+            delete trigger.dataset.projectModalOriginal;
+        }
+    }
+}
+
+function initializeProjectModalFragment(root) {
+    initExternalProtocolControls(root);
+    initExigenciaCreateForms(root);
+    initProjectActionForms(root);
+
+    root.querySelectorAll('[data-copy]').forEach((button) => {
+        if (button.dataset.copyReady === '1') return;
+        button.dataset.copyReady = '1';
+        button.addEventListener('click', async () => {
+            const originalText = button.textContent;
+            try {
+                await navigator.clipboard.writeText(button.dataset.copy || '');
+                button.textContent = 'Copiado';
+                window.setTimeout(() => { button.textContent = originalText; }, 1200);
+            } catch {
+                button.textContent = 'Copie manualmente';
+            }
+        });
+    });
+
+    root.querySelectorAll('[data-open-folder]').forEach((button) => {
+        if (button.dataset.openFolderReady === '1') return;
+        button.dataset.openFolderReady = '1';
+        button.addEventListener('click', async () => {
+            const path = button.dataset.openFolder;
+            if (!path) return;
+            const originalText = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Abrindo...';
+            try {
+                const response = await fetch('/api/open-folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path }),
+                });
+                const data = await response.json();
+                if (data.url) window.open(data.url, '_blank', 'noopener');
+                else if (data.error) alert(data.error);
+            } catch {
+                alert('Nao foi possivel abrir a pasta.');
+            } finally {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        });
+    });
+}
+
+function installProjectModal(projectId, html) {
+    const host = document.querySelector('[data-project-modal-host]');
+    if (!host) throw new Error('Area do projeto nao encontrada.');
+    host.querySelectorAll('.modal').forEach((modal) => {
+        bootstrap.Modal.getInstance(modal)?.dispose();
+    });
+    host.innerHTML = html;
+    const fragment = host.querySelector(`[data-project-modal-fragment="${projectId}"]`);
+    const modal = host.querySelector(`#project-modal-${projectId}`);
+    if (!fragment || !modal) throw new Error('Resposta do projeto invalida.');
+    initializeProjectModalFragment(fragment);
+    return modal;
+}
+
+async function fetchProjectModal(trigger, openAfterLoad) {
+    const projectId = String(trigger.dataset.projectId || '');
+    const url = trigger.dataset.projectModalUrl;
+    if (!projectId || !url) return;
+
+    const cached = projectModalCache.get(projectId);
+    if (cached && cached.expiresAt > Date.now()) {
+        if (openAfterLoad) {
+            const modal = installProjectModal(projectId, cached.html);
+            bootstrap.Modal.getOrCreateInstance(modal).show();
+        }
+        return;
+    }
+    if (cached) projectModalCache.delete(projectId);
+
+    if (projectModalRequest && projectModalRequest.projectId !== projectId) {
+        projectModalRequest.controller.abort();
+        projectModalRequest = null;
+    }
+
+    if (openAfterLoad) setProjectModalTriggerLoading(trigger, true);
+    try {
+        let html;
+        if (projectModalRequest?.projectId === projectId) {
+            html = await projectModalRequest.promise;
+        } else {
+            const controller = new AbortController();
+            const promise = fetch(url, {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: controller.signal,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            }).then(async (response) => {
+                if (response.redirected && new URL(response.url, window.location.origin).pathname.includes('/login')) {
+                    window.location.assign(response.url);
+                    throw new Error('Sessao expirada.');
+                }
+                if (!response.ok) throw new Error(response.status === 404 ? 'Projeto nao encontrado.' : 'Nao foi possivel abrir o projeto.');
+                return response.text();
+            });
+            projectModalRequest = { projectId, controller, promise };
+            html = await promise;
+        }
+        projectModalCache.set(projectId, { html, expiresAt: Date.now() + PROJECT_MODAL_CACHE_MS });
+        window.setTimeout(() => {
+            const entry = projectModalCache.get(projectId);
+            if (entry && entry.expiresAt <= Date.now()) projectModalCache.delete(projectId);
+        }, PROJECT_MODAL_CACHE_MS + 50);
+        if (openAfterLoad) {
+            const modal = installProjectModal(projectId, html);
+            bootstrap.Modal.getOrCreateInstance(modal).show();
+        }
+    } catch (error) {
+        if (error.name !== 'AbortError' && openAfterLoad) {
+            alert(error.message || 'Nao foi possivel abrir o projeto.');
+        }
+    } finally {
+        if (projectModalRequest?.projectId === projectId) projectModalRequest = null;
+        if (openAfterLoad) setProjectModalTriggerLoading(trigger, false);
+    }
+}
+
+function initProjectLazyModals(root = document) {
+    root.querySelectorAll('[data-project-modal-trigger]').forEach((trigger) => {
+        if (trigger.dataset.projectModalReady === '1') return;
+        trigger.dataset.projectModalReady = '1';
+        trigger.addEventListener('mouseenter', () => fetchProjectModal(trigger, false), { once: true });
+        trigger.addEventListener('focus', () => fetchProjectModal(trigger, false), { once: true });
+        trigger.addEventListener('click', (event) => {
+            event.preventDefault();
+            fetchProjectModal(trigger, true);
+        });
+    });
+}
+
+window.refreshProjectMatrixUi = refreshProjectMatrixUi;
+window.refreshProjectMatrixRow = refreshProjectMatrixRow;
+
+document.addEventListener('DOMContentLoaded', function() {
+    initExternalProtocolControls();
+    initProjectLazyModals();
+});
+</script>

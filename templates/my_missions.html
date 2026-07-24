@@ -34,10 +34,18 @@
             <tbody data-mission-list>
                 {% for mission in missions %}
                     {% set status_key = mission.status|lower %}
-                    <tr class="{{ 'table-danger' if is_overdue(mission.prazo, mission.status) or mission.status == 'atrasado' else '' }}" data-mission-row>
+                    <tr class="{{ 'table-danger' if is_overdue(mission.prazo, mission.status) or mission.status == 'atrasado' else '' }}" data-mission-row data-project-id="{{ mission.project_id }}">
                         <td>{{ 'Pendencia' if mission.kind == 'pending' else ('Etapa' if mission.kind == 'stage' else 'Tarefa') }}</td>
                         <td><strong>{{ mission.title }}</strong>{% if mission.origin %}<small>Origem: {{ mission.origin }}</small>{% endif %}</td>
-                        <td><a class="table-link" href="{{ url_for('project_detail', project_id=mission.project_id) }}">{{ mission.project }}</a></td>
+                        <td>
+                            <a class="table-link"
+                               href="{{ url_for('project_detail', project_id=mission.project_id) }}"
+                               data-project-modal-trigger
+                               data-project-id="{{ mission.project_id }}"
+                               data-project-modal-url="{{ url_for('project_modal_fragment', project_id=mission.project_id, next=request.full_path) }}">
+                                {{ mission.project }}
+                            </a>
+                        </td>
                         <td>{{ mission.stage }}</td>
                         <td class="{{ 'text-danger fw-semibold' if is_overdue(mission.prazo, mission.status) else '' }}">{{ format_date(mission.prazo) }}</td>
                         <td>{{ mission.priority or '-' }}</td>
@@ -70,4 +78,6 @@
         </table>
     </div>
 </section>
+<div data-project-modal-host></div>
+{% include '_project_modal_loader.html' %}
 {% endblock %}
