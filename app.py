@@ -7039,11 +7039,12 @@ def dashboard():
     today = app_today()
     in_7 = (today + timedelta(days=7)).isoformat()
     today_iso = today.isoformat()
+    user_id = g.user["id"] if g.user else 0
 
     # O banco e remoto. Todos os blocos do dashboard voltam em uma unica
     # viagem; os prazos tambem sao agregados uma vez por projeto.
     dashboard_data = get_cached_lookup(
-        ("route_dashboard", today_iso),
+        ("route_dashboard", user_id, today_iso),
         lambda: query_db(
             """
         WITH external_deadlines AS (
@@ -7188,6 +7189,33 @@ def dashboard():
             ORDER BY COALESCE(pd.prazo, '9999-12-31'), pd.id
             LIMIT 6
         ),
+        my_pending_scope AS (
+            SELECT
+                pd.id,
+                pd.descricao,
+                pd.prazo,
+                pd.status,
+                pd.origem,
+                p.id AS projeto_id,
+                p.nome AS projeto_nome,
+                COALESCE(pe.stage_name, em.nome) AS etapa_nome
+            FROM pendencias pd
+            JOIN projetos p ON p.id = pd.projeto_id
+            LEFT JOIN projeto_etapas pe ON pe.id = pd.etapa_id
+            LEFT JOIN etapas_modelo em ON em.id = pe.etapa_modelo_id
+            WHERE pd.responsavel_id = %s
+              AND lower(pd.status) NOT IN ('resolvida', 'cancelada')
+              AND COALESCE(p.arquivado, 0) = 0
+        ),
+        my_pending_rows AS (
+            SELECT *
+            FROM my_pending_scope
+            ORDER BY
+                CASE WHEN COALESCE(prazo, '') = '' THEN 1 ELSE 0 END,
+                COALESCE(prazo, '9999-12-31'),
+                id
+            LIMIT 8
+        ),
         protocolo_rows AS (
             SELECT e.id, e.tipo_orgao, e.numero_protocolo, e.forma_protocolo, e.status,
                    e.data_protocolo, e.prazo_resposta,
@@ -7241,6 +7269,14 @@ def dashboard():
                 WHERE tipo_registro = 'protocolo'
                   AND lower(COALESCE(status, '')) NOT IN ('concluido', 'cancelado')
             ) AS protocolos_count,
+            (
+                SELECT COUNT(*) FROM my_pending_scope
+            ) AS my_pending_count,
+            (
+                SELECT COUNT(*)
+                FROM my_pending_scope
+                WHERE COALESCE(prazo, '') != '' AND prazo < %s
+            ) AS my_pending_overdue,
             COALESCE((
                 SELECT jsonb_agg(
                     to_jsonb(pr) - 'deadline_rank' - 'sort_priority' - 'sort_created'
@@ -7264,11 +7300,21 @@ def dashboard():
                 FROM pendencia_rows pr
             ), '[]'::jsonb) AS pendencias,
             COALESCE((
+                SELECT jsonb_agg(
+                    to_jsonb(mp)
+                    ORDER BY
+                        CASE WHEN COALESCE(mp.prazo, '') = '' THEN 1 ELSE 0 END,
+                        COALESCE(mp.prazo, '9999-12-31'),
+                        mp.id
+                )
+                FROM my_pending_rows mp
+            ), '[]'::jsonb) AS my_pending,
+            COALESCE((
                 SELECT jsonb_agg(to_jsonb(pro) ORDER BY COALESCE(pro.prazo_resposta, '9999-12-31'), pro.id)
                 FROM protocolo_rows pro
             ), '[]'::jsonb) AS protocolos
             """,
-            (today_iso, today_iso, today_iso, today_iso, today_iso, in_7),
+            (today_iso, today_iso, today_iso, user_id, today_iso, today_iso, in_7, today_iso),
             one=True,
         ),
         ttl_seconds=ROUTE_CACHE_TTL_SECONDS,
@@ -7278,6 +7324,7 @@ def dashboard():
     total_bottlenecks = max([row["total"] for row in bottlenecks] or [1])
     exigencias = dashboard_data["exigencias"] or []
     pendencias = dashboard_data["pendencias"] or []
+    my_pending = dashboard_data["my_pending"] or []
     protocolos = dashboard_data["protocolos"] or []
     return render_template(
         "dashboard.html",
@@ -7293,6 +7340,9 @@ def dashboard():
         exigencias_count=dashboard_data["exigencias_count"],
         pendencias=pendencias,
         pendencias_count=dashboard_data["pendencias_count"],
+        my_pending=my_pending,
+        my_pending_count=dashboard_data["my_pending_count"],
+        my_pending_overdue=dashboard_data["my_pending_overdue"],
         protocolos=protocolos,
         protocolos_count=dashboard_data["protocolos_count"],
         external_orgao_labels=EXTERNAL_ORGAO_LABELS,

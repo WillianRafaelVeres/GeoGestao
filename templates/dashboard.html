@@ -1,301 +1,275 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="page-heading">
-    <div>
-        <h1>Dashboard</h1>
-        <p>Visao geral da operacao — prioridades, cartorio, pendencias e etapas.</p>
-    </div>
-    <div class="heading-actions">
-        <a class="btn btn-primary btn-sm" href="{{ url_for('project_create') }}">Novo projeto</a>
-        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('projects') }}">Abrir matriz</a>
-    </div>
-</div>
-
-{# ── KPIs compactos ── #}
-<section class="dash-kpi-row">
-    <a class="dash-kpi" href="{{ url_for('projects') }}">
-        <span class="dash-kpi-label">Projetos ativos</span>
-        <strong class="dash-kpi-value">{{ active_projects }}</strong>
-        <span class="dash-kpi-sub">de {{ total_projects }} cadastrados</span>
-    </a>
-    <a class="dash-kpi dash-kpi--danger" href="{{ url_for('cartorio_board') }}">
-        <span class="dash-kpi-label">Prazos vencidos</span>
-        <strong class="dash-kpi-value">{{ overdue }}</strong>
-        <span class="dash-kpi-sub">exigencias externas vencidas</span>
-    </a>
-    <a class="dash-kpi dash-kpi--warn" href="{{ url_for('cartorio_board') }}">
-        <span class="dash-kpi-label">Vencendo em 7 dias</span>
-        <strong class="dash-kpi-value">{{ due_soon_count }}</strong>
-        <span class="dash-kpi-sub">exigencias externas proximas</span>
-    </a>
-    <a class="dash-kpi dash-kpi--purple" href="{{ url_for('cartorio_board') }}">
-        <span class="dash-kpi-label">Aguardando externo</span>
-        <strong class="dash-kpi-value">{{ waiting_external }}</strong>
-        <span class="dash-kpi-sub">cliente, cartorio ou orgao</span>
-    </a>
-</section>
-
-{# ── 4 campos principais ── #}
-<div class="dash-grid">
-    {# 1. As 5 prioridades #}
-    <section class="panel dash-panel dash-panel--accent">
-        <div class="panel-header">
-            <h2>As 5 prioridades</h2>
-            <a href="{{ url_for('projects') }}">Reordenar</a>
+<section class="dashboard-shell">
+    <div class="dashboard-hero">
+        <div class="dashboard-hero-copy">
+            <span class="module-label">Operacao</span>
+            <h1>Painel operacional</h1>
+            <p>Resumo do que pede atencao agora, onde a carteira esta acumulando e o que esta sob sua responsabilidade.</p>
         </div>
-        {% if priority_projects %}
-        <ol class="dash-rank-list">
-            {% for p in priority_projects %}
-            <li>
-                <a class="dash-rank-row" href="{{ url_for('project_detail', project_id=p.id) }}">
-                    <span class="dash-rank-num">{{ loop.index }}</span>
-                    <span class="dash-rank-main">
-                        <strong>{{ p.nome }}</strong>
-                        <small>{{ p.etapa_nome or 'Sem etapa' }}{% if p.responsavel_nome %} · {{ p.responsavel_nome }}{% endif %}</small>
+        <div class="dashboard-hero-actions">
+            <a class="btn btn-primary btn-sm" href="{{ url_for('project_create') }}">Novo projeto</a>
+            <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('projects') }}">Abrir matriz</a>
+            <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('my_missions') }}">Minhas missoes</a>
+        </div>
+    </div>
+
+    <section class="dashboard-metrics">
+        <a class="dashboard-metric" href="{{ url_for('projects') }}">
+            <span class="dashboard-metric-label">Projetos ativos</span>
+            <strong class="dashboard-metric-value">{{ active_projects }}</strong>
+            <span class="dashboard-metric-meta">{{ total_projects }} cadastrados no total</span>
+        </a>
+        <a class="dashboard-metric dashboard-metric--danger" href="{{ url_for('cartorio_board') }}">
+            <span class="dashboard-metric-label">Prazos vencidos</span>
+            <strong class="dashboard-metric-value">{{ overdue }}</strong>
+            <span class="dashboard-metric-meta">exigencias e retornos fora do prazo</span>
+        </a>
+        <a class="dashboard-metric dashboard-metric--warning" href="{{ url_for('cartorio_board') }}">
+            <span class="dashboard-metric-label">Vencendo em 7 dias</span>
+            <strong class="dashboard-metric-value">{{ due_soon_count }}</strong>
+            <span class="dashboard-metric-meta">itens que vao pedir acompanhamento rapido</span>
+        </a>
+        <a class="dashboard-metric dashboard-metric--violet" href="{{ url_for('cartorio_board') }}">
+            <span class="dashboard-metric-label">Aguardando externo</span>
+            <strong class="dashboard-metric-value">{{ waiting_external }}</strong>
+            <span class="dashboard-metric-meta">projetos em cartorio, prefeitura ou outro orgao</span>
+        </a>
+        <a class="dashboard-metric dashboard-metric--teal" href="{{ url_for('my_missions') }}">
+            <span class="dashboard-metric-label">Minhas pendencias</span>
+            <strong class="dashboard-metric-value">{{ my_pending_count }}</strong>
+            <span class="dashboard-metric-meta">
+                {% if my_pending_overdue %}
+                    {{ my_pending_overdue }} atrasada{{ 's' if my_pending_overdue != 1 }}
+                {% else %}
+                    nenhuma atrasada no momento
+                {% endif %}
+            </span>
+        </a>
+    </section>
+
+    <section class="dashboard-grid">
+        <section class="panel dashboard-panel dashboard-panel--wide">
+            <div class="panel-header">
+                <div>
+                    <h2>Fila de prioridades</h2>
+                    <p>Os projetos que merecem atencao primeiro pela regra de prazo, prioridade e tempo parado.</p>
+                </div>
+                <a href="{{ url_for('projects') }}">Abrir matriz</a>
+            </div>
+            {% if priority_projects %}
+            <div class="dashboard-priority-list">
+                {% for p in priority_projects %}
+                <a class="dashboard-priority-row {{ 'is-overdue' if p.operational_deadline and p.operational_deadline < today_iso else '' }}"
+                   href="{{ url_for('project_detail', project_id=p.id) }}">
+                    <span class="dashboard-priority-index">{{ loop.index }}</span>
+                    <span class="dashboard-priority-main">
+                        <span class="dashboard-priority-titleline">
+                            <strong>{{ p.nome }}</strong>
+                            {% if p.codigo %}<span class="dashboard-inline-token">{{ p.codigo }}</span>{% endif %}
+                        </span>
+                        <span class="dashboard-priority-meta">
+                            <span>{{ p.cliente_nome or p.proprietarios_nomes or 'Sem cliente' }}</span>
+                            <span>{{ p.etapa_nome or 'Sem etapa' }}</span>
+                            <span>{{ p.responsavel_nome or 'Sem responsavel' }}</span>
+                        </span>
                     </span>
-                    {% if p.operational_deadline %}
-                    <span class="dash-rank-prazo {{ 'is-late' if p.operational_deadline < today_iso else '' }}" title="Prazo operacional mais proximo">{{ format_date(p.operational_deadline) }}</span>
-                    {% endif %}
+                    <span class="dashboard-priority-side">
+                        <span class="dashboard-date-chip {{ 'is-overdue' if p.operational_deadline and p.operational_deadline < today_iso else '' }}">
+                            {{ format_date(p.operational_deadline) if p.operational_deadline else 'Sem prazo' }}
+                        </span>
+                        <small>
+                            {% if p.stale_days %}
+                                {{ p.stale_days }} dia{{ 's' if p.stale_days != 1 }} sem atualizacao
+                            {% else %}
+                                atualizacao recente
+                            {% endif %}
+                        </small>
+                    </span>
                 </a>
-            </li>
-            {% endfor %}
-        </ol>
-        {% else %}
-        <div class="empty-state">Nenhum projeto ativo.</div>
-        {% endif %}
-    </section>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="dashboard-empty-state">Nenhum projeto ativo para priorizar agora.</div>
+            {% endif %}
+        </section>
 
-    {# 2. Quantos projetos em cada etapa #}
-    <section class="panel dash-panel">
-        <div class="panel-header">
-            <h2>Projetos por etapa</h2>
-            <a href="{{ url_for('reports') }}">Relatorios</a>
-        </div>
-        {% if bottlenecks %}
-        <div class="dash-bars">
-            {% for item in bottlenecks %}
-            <a class="dash-bar-row" href="{{ url_for('projects', etapa_id=item.etapa_id) }}">
-                <span class="dash-bar-name" title="{{ item.etapa_nome }}">{{ item.etapa_nome }}</span>
-                <span class="dash-bar-track">
-                    <span class="dash-bar-fill" style="width: {{ (item.total / total_bottlenecks * 100)|round(0, 'floor') }}%"></span>
-                </span>
-                <span class="dash-bar-count">{{ item.total }}</span>
-            </a>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="empty-state">Sem projetos em andamento.</div>
-        {% endif %}
-    </section>
-
-    {# 3. Exigencias do cartorio #}
-    <section class="panel dash-panel">
-        <div class="panel-header">
-            <h2>Exigencias do cartorio</h2>
-            <span class="dash-badge {{ 'dash-badge--alert' if exigencias_count else '' }}">{{ exigencias_count }}</span>
-        </div>
-        {% if exigencias %}
-        <div class="dash-alert-list">
-            {% for item in exigencias %}
-            <a class="dash-alert-row {{ 'is-overdue' if is_overdue(item.prazo_resposta, item.status) else '' }}"
-               href="{{ url_for('project_detail', project_id=item.projeto_id) }}#cartorio">
-                <div class="dash-alert-info">
-                    <strong>{{ item.cartorio_nome or 'Orgao externo' }}</strong>
-                    <span>{{ item.projeto_nome }}{% if item.responsavel_nome %} · {{ item.responsavel_nome }}{% endif %}</span>
+        <section class="panel dashboard-panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Minhas pendencias</h2>
+                    <p>Itens que estao diretamente na sua mesa hoje.</p>
                 </div>
-                {% if item.prazo_resposta %}<small>{{ format_date(item.prazo_resposta) }}</small>{% endif %}
-            </a>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="empty-state">Nenhuma exigencia em aberto.</div>
-        {% endif %}
-    </section>
-
-    {# 4. Protocolos abertos #}
-    <section class="panel dash-panel">
-        <div class="panel-header">
-            <h2>Protocolos abertos</h2>
-            <span class="dash-badge {{ 'dash-badge--alert' if protocolos_count else '' }}">{{ protocolos_count }}</span>
-        </div>
-        {% if protocolos %}
-        <div class="dash-alert-list">
-            {% for pr in protocolos %}
-            <a class="dash-alert-row {{ 'is-overdue' if pr.prazo_resposta and pr.prazo_resposta < today_iso else '' }}"
-               href="{{ url_for('project_detail', project_id=pr.projeto_id) }}#cartorio">
-                <div class="dash-alert-info">
-                    <strong>
-                        {{- external_orgao_labels.get(pr.tipo_orgao or 'CARTORIO', pr.tipo_orgao or 'Orgao externo') -}}
-                        {%- if pr.numero_protocolo %} · {{ pr.numero_protocolo }}{% endif -%}
-                    </strong>
-                    <span>
-                        {{- pr.projeto_nome -}}
-                        {%- if pr.forma_protocolo %} · {{ 'Fisico' if pr.forma_protocolo == 'fisico' else 'Digital' }}{% endif -%}
-                        {%- if pr.data_protocolo %} · protocolado em {{ format_date(pr.data_protocolo) }}{% endif -%}
+                <a href="{{ url_for('my_missions') }}">Abrir minhas missoes</a>
+            </div>
+            <div class="dashboard-mini-summary">
+                <div>
+                    <strong>{{ my_pending_count }}</strong>
+                    <span>abertas</span>
+                </div>
+                <div>
+                    <strong>{{ my_pending_overdue }}</strong>
+                    <span>atrasadas</span>
+                </div>
+            </div>
+            {% if my_pending %}
+            <div class="dashboard-list">
+                {% for item in my_pending %}
+                <a class="dashboard-list-row {{ 'is-overdue' if is_overdue(item.prazo, item.status) else '' }}"
+                   href="{{ url_for('project_detail', project_id=item.projeto_id) }}#pendencias">
+                    <span class="dashboard-list-main">
+                        <span class="dashboard-list-kicker">{{ item.etapa_nome or item.origem or 'Pendencia operacional' }}</span>
+                        <strong>{{ item.descricao }}</strong>
+                        <span class="dashboard-list-meta">{{ item.projeto_nome }}</span>
                     </span>
+                    <span class="dashboard-list-side">
+                        <span class="dashboard-date-chip {{ 'is-overdue' if is_overdue(item.prazo, item.status) else '' }}">
+                            {{ format_date(item.prazo) if item.prazo else 'Sem prazo' }}
+                        </span>
+                    </span>
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="dashboard-empty-state">Nenhuma pendencia esta atribuida a voce no momento.</div>
+            {% endif %}
+        </section>
+
+        <section class="panel dashboard-panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Fluxo por etapa</h2>
+                    <p>Onde a carteira esta concentrada e onde vale destravar o trabalho.</p>
                 </div>
-                {% if pr.prazo_resposta %}<small>{{ format_date(pr.prazo_resposta) }}</small>{% endif %}
-            </a>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="empty-state">Nenhum protocolo em aberto.</div>
-        {% endif %}
-    </section>
+                <a href="{{ url_for('reports') }}">Relatorios</a>
+            </div>
+            {% if bottlenecks %}
+            <div class="dashboard-stage-list">
+                {% for item in bottlenecks %}
+                <a class="dashboard-stage-row" href="{{ url_for('projects', etapa_id=item.etapa_id) }}">
+                    <span class="dashboard-stage-name" title="{{ item.etapa_nome }}">{{ item.etapa_nome }}</span>
+                    <span class="dashboard-stage-track">
+                        <span class="dashboard-stage-fill" style="width: {{ (item.total / total_bottlenecks * 100)|round(0, 'floor') }}%"></span>
+                    </span>
+                    <strong class="dashboard-stage-count">{{ item.total }}</strong>
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="dashboard-empty-state">Sem projetos em andamento para distribuir por etapa.</div>
+            {% endif %}
+        </section>
 
-    {# 5. Pendencias #}
-    <section class="panel dash-panel">
-        <div class="panel-header">
-            <h2>Pendencias</h2>
-            <span class="dash-badge {{ 'dash-badge--alert' if pendencias_count else '' }}">{{ pendencias_count }}</span>
-        </div>
-        {% if pendencias %}
-        <div class="dash-alert-list">
-            {% for pd in pendencias %}
-            <a class="dash-alert-row {{ 'is-overdue' if is_overdue(pd.prazo, pd.status) else '' }}"
-               href="{{ url_for('project_detail', project_id=pd.projeto_id) }}#pendencias">
-                <div class="dash-alert-info">
-                    <strong>{{ pd.descricao }}</strong>
-                    <span>{{ pd.projeto_nome }}{% if pd.responsavel_nome %} · {{ pd.responsavel_nome }}{% endif %}</span>
+        <section class="panel dashboard-panel dashboard-panel--wide">
+            <div class="panel-header">
+                <div>
+                    <h2>Radar externo</h2>
+                    <p>Exigencias e protocolos que pedem acompanhamento com orgaos externos.</p>
                 </div>
-                {% if pd.prazo %}<small>{{ format_date(pd.prazo) }}</small>{% endif %}
-            </a>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="empty-state">Nenhuma pendencia aberta.</div>
-        {% endif %}
+                <a href="{{ url_for('cartorio_board') }}">Cartorios e orgaos</a>
+            </div>
+            <div class="dashboard-dual-stack">
+                <div class="dashboard-stack-block">
+                    <div class="dashboard-stack-head">
+                        <strong>Exigencias abertas</strong>
+                        <span class="dashboard-count-badge {{ 'is-alert' if exigencias_count else '' }}">{{ exigencias_count }}</span>
+                    </div>
+                    {% if exigencias %}
+                    <div class="dashboard-list">
+                        {% for item in exigencias %}
+                        <a class="dashboard-list-row {{ 'is-overdue' if is_overdue(item.prazo_resposta, item.status) else '' }}"
+                           href="{{ url_for('project_detail', project_id=item.projeto_id) }}#cartorio">
+                            <span class="dashboard-list-main">
+                                <span class="dashboard-list-kicker">{{ item.cartorio_nome or 'Orgao externo' }}</span>
+                                <strong>{{ item.projeto_nome }}</strong>
+                                <span class="dashboard-list-meta">{{ item.responsavel_nome or 'Sem responsavel' }}</span>
+                            </span>
+                            <span class="dashboard-list-side">
+                                <span class="dashboard-date-chip {{ 'is-overdue' if is_overdue(item.prazo_resposta, item.status) else '' }}">
+                                    {{ format_date(item.prazo_resposta) if item.prazo_resposta else 'Sem prazo' }}
+                                </span>
+                            </span>
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="dashboard-empty-state">Nenhuma exigencia externa aberta.</div>
+                    {% endif %}
+                </div>
+
+                <div class="dashboard-stack-block">
+                    <div class="dashboard-stack-head">
+                        <strong>Protocolos em aberto</strong>
+                        <span class="dashboard-count-badge {{ 'is-alert' if protocolos_count else '' }}">{{ protocolos_count }}</span>
+                    </div>
+                    {% if protocolos %}
+                    <div class="dashboard-list">
+                        {% for pr in protocolos %}
+                        <a class="dashboard-list-row {{ 'is-overdue' if pr.prazo_resposta and pr.prazo_resposta < today_iso else '' }}"
+                           href="{{ url_for('project_detail', project_id=pr.projeto_id) }}#cartorio">
+                            <span class="dashboard-list-main">
+                                <span class="dashboard-list-kicker">
+                                    {{ external_orgao_labels.get(pr.tipo_orgao or 'CARTORIO', pr.tipo_orgao or 'Orgao externo') }}
+                                    {% if pr.numero_protocolo %}- {{ pr.numero_protocolo }}{% endif %}
+                                </span>
+                                <strong>{{ pr.projeto_nome }}</strong>
+                                <span class="dashboard-list-meta">
+                                    {% if pr.forma_protocolo %}
+                                        {{ 'Fisico' if pr.forma_protocolo == 'fisico' else 'Digital' }}
+                                    {% else %}
+                                        Em acompanhamento
+                                    {% endif %}
+                                    {% if pr.data_protocolo %}- protocolado em {{ format_date(pr.data_protocolo) }}{% endif %}
+                                </span>
+                            </span>
+                            <span class="dashboard-list-side">
+                                <span class="dashboard-date-chip {{ 'is-overdue' if pr.prazo_resposta and pr.prazo_resposta < today_iso else '' }}">
+                                    {{ format_date(pr.prazo_resposta) if pr.prazo_resposta else 'Sem prazo' }}
+                                </span>
+                            </span>
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="dashboard-empty-state">Nenhum protocolo externo em aberto.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+
+        <section class="panel dashboard-panel dashboard-panel--full">
+            <div class="panel-header">
+                <div>
+                    <h2>Pendencias da operacao</h2>
+                    <p>Fila geral aberta da equipe, com foco no que ainda esta sem resolver.</p>
+                </div>
+                <span class="dashboard-count-badge {{ 'is-alert' if pendencias_count else '' }}">{{ pendencias_count }}</span>
+            </div>
+            {% if pendencias %}
+            <div class="dashboard-list">
+                {% for pd in pendencias %}
+                <a class="dashboard-list-row {{ 'is-overdue' if is_overdue(pd.prazo, pd.status) else '' }}"
+                   href="{{ url_for('project_detail', project_id=pd.projeto_id) }}#pendencias">
+                    <span class="dashboard-list-main">
+                        <span class="dashboard-list-kicker">{{ pd.origem or 'Pendencia' }}</span>
+                        <strong>{{ pd.descricao }}</strong>
+                        <span class="dashboard-list-meta">
+                            {{ pd.projeto_nome }}
+                            {% if pd.responsavel_nome %}- {{ pd.responsavel_nome }}{% endif %}
+                        </span>
+                    </span>
+                    <span class="dashboard-list-side">
+                        <span class="dashboard-date-chip {{ 'is-overdue' if is_overdue(pd.prazo, pd.status) else '' }}">
+                            {{ format_date(pd.prazo) if pd.prazo else 'Sem prazo' }}
+                        </span>
+                    </span>
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="dashboard-empty-state">Nenhuma pendencia aberta na operacao.</div>
+            {% endif %}
+        </section>
     </section>
-</div>
-
-<style>
-/* ── KPIs ─────────────────────────────────────── */
-.dash-kpi-row {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
-    margin-bottom: 10px;
-}
-.dash-kpi {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 10px 13px;
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--blue);
-    border-radius: 5px;
-    background: #fff;
-    text-decoration: none;
-    color: var(--text);
-    transition: background .1s;
-}
-.dash-kpi:hover { background: var(--surface-2); color: var(--text); }
-.dash-kpi--danger { border-left-color: var(--red); }
-.dash-kpi--warn   { border-left-color: var(--amber); }
-.dash-kpi--purple { border-left-color: var(--purple); }
-.dash-kpi-label { font-size: 10.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-.dash-kpi-value { font-size: 26px; font-weight: 700; line-height: 1; letter-spacing: -.02em; }
-.dash-kpi--danger .dash-kpi-value { color: var(--red); }
-.dash-kpi--warn   .dash-kpi-value { color: var(--amber); }
-.dash-kpi--purple .dash-kpi-value { color: var(--purple); }
-.dash-kpi-sub { font-size: 11px; color: var(--muted); }
-
-/* ── Grade dos 4 campos ───────────────────────── */
-.dash-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    align-items: start;
-}
-.dash-panel { padding: 12px 14px; }
-.dash-panel--accent { border-top: 3px solid var(--blue); }
-
-/* ── Ranking das 5 prioridades ────────────────── */
-.dash-rank-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
-.dash-rank-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 9px;
-    border: 1px solid var(--border-light);
-    border-radius: 5px;
-    text-decoration: none;
-    color: var(--text);
-    transition: background .1s, border-color .1s;
-}
-.dash-rank-row:hover { background: var(--surface-2); border-color: var(--border); color: var(--text); }
-.dash-rank-num {
-    flex-shrink: 0;
-    width: 24px; height: 24px;
-    display: grid; place-items: center;
-    border-radius: 6px;
-    background: var(--blue);
-    color: #fff;
-    font-weight: 700;
-    font-size: 12px;
-}
-.dash-rank-list li:first-child .dash-rank-num { background: var(--amber); }
-.dash-rank-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.dash-rank-main strong { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dash-rank-main small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dash-rank-prazo { flex-shrink: 0; font-size: 11px; color: var(--muted); white-space: nowrap; }
-.dash-rank-prazo.is-late { color: var(--red); font-weight: 600; }
-
-/* ── Barras de projetos por etapa ─────────────── */
-.dash-bars { display: flex; flex-direction: column; gap: 6px; }
-.dash-bar-row {
-    display: grid;
-    grid-template-columns: 130px minmax(0, 1fr) 28px;
-    align-items: center;
-    gap: 10px;
-    padding: 2px 0;
-    text-decoration: none;
-    color: var(--text);
-    font-size: 12px;
-}
-.dash-bar-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); }
-.dash-bar-row:hover .dash-bar-name { color: var(--blue); }
-.dash-bar-track { height: 18px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
-.dash-bar-fill { display: block; height: 100%; min-width: 3px; background: linear-gradient(90deg, #3b82f6, #2563eb); border-radius: 4px; }
-.dash-bar-count { text-align: right; font-weight: 700; font-size: 13px; }
-
-/* ── Listas (cartorio / pendencias) ───────────── */
-.dash-alert-list { display: flex; flex-direction: column; gap: 4px; }
-.dash-alert-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    padding: 7px 9px;
-    border: 1px solid var(--border-light);
-    border-radius: 4px;
-    text-decoration: none;
-    color: var(--text);
-    transition: background .1s;
-}
-.dash-alert-row:hover { background: var(--surface-2); color: var(--text); }
-.dash-alert-row.is-overdue { border-color: #fca5a5; background: #fef2f2; }
-.dash-alert-row.is-overdue:hover { background: #fee2e2; }
-.dash-alert-info { min-width: 0; }
-.dash-alert-info strong { display: block; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dash-alert-info span { display: block; color: var(--muted); font-size: 11px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dash-alert-row small { flex-shrink: 0; color: var(--muted); font-size: 11px; }
-
-/* ── Badge de contagem ────────────────────────── */
-.dash-badge {
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 1px 10px;
-    font-size: 11.5px;
-    font-weight: 700;
-    color: var(--text-secondary);
-}
-.dash-badge--alert { background: #fef2f2; border-color: #fca5a5; color: var(--red); }
-
-@media (max-width: 1000px) {
-    .dash-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .dash-grid { grid-template-columns: 1fr; }
-}
-</style>
+</section>
 {% endblock %}
