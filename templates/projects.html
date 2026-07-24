@@ -7,7 +7,7 @@
             <h1>Matriz de projetos</h1>
         </div>
         <form class="global-search" method="get">
-            <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar projeto, cliente, processo, cartorio, cidade..." />
+            <input name="q" value="{{ filters.q or '' }}" placeholder="Buscar projeto, cliente, processo, cartorio, cidade ou protocolo..." />
             <button type="submit">Buscar</button>
         </form>
         <div class="matrix-actions">
@@ -46,7 +46,7 @@
         <div class="filter-panel-head">
             <div>
                 <strong>Filtros</strong>
-                <span>Refine a matriz por responsavel, prazo e status operacional.</span>
+                <span>Projeto, proprietario, matricula, protocolo, prazo e status.</span>
             </div>
             {% if active_filters|length > 0 %}
             <a class="filter-reset-link" href="{{ url_for('projects') }}">Limpar {{ active_filters|length }} filtro{{ 's' if active_filters|length > 1 }}</a>
@@ -55,7 +55,7 @@
         <div class="filter-row">
             <div class="filter-field filter-field-search">
                 <label class="filter-label">Pesquisar</label>
-                <input name="q" value="{{ filters.q or '' }}" placeholder="Projeto, proprietario, matricula..." class="filter-input {{ 'is-active' if filters.q }}" data-live-filter-input />
+                <input name="q" value="{{ filters.q or '' }}" placeholder="Projeto, proprietario, matricula ou numero do protocolo..." class="filter-input {{ 'is-active' if filters.q }}" data-live-filter-input />
             </div>
             <div class="filter-field">
                 <label class="filter-label">Responsavel</label>

@@ -7472,7 +7472,7 @@ def projects():
                 c.nome, c.nome_exibicao, pf.nome_completo, pf.cpf,
                 pj.razao_social, pj.nome_fantasia, pj.cnpj,
                 pr.nome_completo, pr.cpf,
-                ct.nome, ct.cidade, ct.uf,
+                ct.nome, ct.cidade, ct.uf, protocol_search.search_text,
                 p.tipo_servico, p.tipo_servico_legado, tp.nome, tp.categoria,
                 u.nome, ur.nome, pea.stage_name, pea_em.nome, pea.status,
                 owners.search_text
@@ -7524,6 +7524,16 @@ def projects():
             LEFT JOIN pessoas_juridicas opj ON opj.cliente_id = oc.id
             WHERE opp.projeto_id = p.id
         ) owners ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT string_agg(protocol_num, ' ' ORDER BY protocol_num) AS search_text
+            FROM (
+                SELECT DISTINCT NULLIF(trim(e.numero_protocolo), '') AS protocol_num
+                FROM exigencias_cartorio e
+                WHERE e.projeto_id = p.id
+                  AND COALESCE(e.tipo_registro, 'exigencia') = 'protocolo'
+                  AND COALESCE(NULLIF(trim(e.numero_protocolo), ''), '') != ''
+            ) protocol_numbers
+        ) protocol_search ON TRUE
         LEFT JOIN LATERAL (
             SELECT *
             FROM procuradores

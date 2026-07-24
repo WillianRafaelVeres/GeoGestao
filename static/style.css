@@ -1231,8 +1231,8 @@ a:hover { color: #1d4ed8; }
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: end;
-    gap: 12px;
-    padding: 12px;
+    gap: 10px;
+    padding: 10px 12px;
     border: 1px solid var(--border);
     border-bottom: 0;
     border-radius: 7px 7px 0 0;
@@ -1241,31 +1241,39 @@ a:hover { color: #1d4ed8; }
 
 .filter-bar form {
     display: grid;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
 }
 
 .filter-panel-head {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #eef2f6;
+    padding-bottom: 0;
+    border-bottom: 0;
+}
+
+.filter-panel-head > div {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    min-width: 0;
 }
 
 .filter-panel-head strong {
-    display: block;
+    display: inline;
     color: var(--text);
     font-size: 13px;
     font-weight: 700;
 }
 
 .filter-panel-head span {
-    display: block;
-    margin-top: 1px;
+    display: inline;
+    margin-top: 0;
     color: var(--muted);
-    font-size: 11.5px;
+    font-size: 11px;
 }
 
 .filter-reset-link {
@@ -1279,13 +1287,13 @@ a:hover { color: #1d4ed8; }
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     align-items: end;
-    gap: 8px;
+    gap: 7px;
 }
 
 .filter-field {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
 }
 .filter-field-search {
@@ -1293,7 +1301,7 @@ a:hover { color: #1d4ed8; }
 }
 
 .filter-label {
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 700;
     color: var(--muted);
     text-transform: uppercase;
@@ -1303,13 +1311,13 @@ a:hover { color: #1d4ed8; }
 
 .filter-select, .filter-input {
     width: 100%;
-    height: 34px;
+    height: 32px;
     border: 1px solid var(--border);
     border-radius: 5px;
     padding: 0 9px;
     background: #fff;
     color: var(--text);
-    font-size: 12.5px;
+    font-size: 12px;
     font-family: inherit;
     min-width: 0;
     transition: border-color 0.15s, box-shadow 0.15s;
@@ -1332,27 +1340,27 @@ a:hover { color: #1d4ed8; }
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
 }
 
 .filter-checks {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 5px;
 }
 
 .filter-check-item {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 30px;
-    padding: 0 10px;
+    min-height: 28px;
+    padding: 0 9px;
     border: 1px solid var(--border);
     border-radius: 999px;
     background: #fbfcfe;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 500;
     cursor: pointer;
     user-select: none;
@@ -1382,13 +1390,13 @@ a:hover { color: #1d4ed8; }
     align-items: center;
     justify-content: center;
     gap: 5px;
-    height: 32px;
-    padding: 0 14px;
+    height: 30px;
+    padding: 0 13px;
     border: 0;
     border-radius: 5px;
     background: #1e3a8a;
     color: #fff;
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 700;
     font-family: inherit;
     cursor: pointer;
@@ -1413,13 +1421,13 @@ a:hover { color: #1d4ed8; }
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: 32px;
+    height: 30px;
     padding: 0 10px;
     border: 1px solid var(--border);
     border-radius: 5px;
     background: #fff;
     color: var(--muted);
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 600;
     text-decoration: none;
     transition: background 0.1s;
