@@ -595,20 +595,32 @@ def build_flexoes_genero(sexo):
         return {
             "brasileiro": "brasileira",
             "casado": "casada",
+            "solteiro": "solteira",
+            "divorciado": "divorciada",
+            "viuvo": "viúva",
+            "separado_judicialmente": "separada judicialmente",
+            "uniaes_estavel": "em união estável",
             "portador": "portadora",
             "inscrito": "inscrita",
-            "proprietario": "proprietaria",
+            "proprietario": "proprietária",
             "filho_de": "filha de",
             "residente_domiciliado": "residente e domiciliada",
+            "representado": "representada",
         }
     return {
         "brasileiro": "brasileiro",
         "casado": "casado",
+        "solteiro": "solteiro",
+        "divorciado": "divorciado",
+        "viuvo": "viúvo",
+        "separado_judicialmente": "separado judicialmente",
+        "uniaes_estavel": "em união estável",
         "portador": "portador",
         "inscrito": "inscrito",
-        "proprietario": "proprietario",
+        "proprietario": "proprietário",
         "filho_de": "filho de",
         "residente_domiciliado": "residente e domiciliado",
+        "representado": "representado",
     }
 
 
@@ -736,21 +748,194 @@ def get_cadastro_completeness(cliente_context):
     }
 
 
-def build_texto_proprietario(cliente_context, imovel=None):
+def format_regime(regime_key):
+    if not regime_key:
+        return ""
+    mapping = {
+        "COMUNHAO_BENS": "comunhão de bens",
+        "COMUNHAO_PARCIAL": "comunhão parcial de bens",
+        "COMUNHAO_PARCIAL_APOS_6515": "comunhão parcial de bens (regime legal após Lei 6.515/77)",
+        "COMUNHAO_UNIVERSAL": "comunhão universal de bens",
+        "COMUNHAO_UNIVERSAL_ANTES_6515": "comunhão de bens (anterior à Lei 6.515/77)",
+        "SEPARACAO_TOTAL": "separação convencional/total de bens",
+        "SEPARACAO_OBRIGATORIA": "separação obrigatória/legal de bens",
+        "PARTICIPACAO_FINAL_AQUESTOS": "participação final nos aquestos",
+        "OUTRO_PACTO_ANTENUPCIAL": "outro regime convencionado em pacto antenupcial",
+    }
+    return mapping.get(regime_key, regime_key.lower().replace("_", " "))
+
+
+def format_endereco_string(address_obj):
+    if not address_obj or not isinstance(address_obj, dict):
+        return ""
+    logr = (address_obj.get("logradouro") or "").strip()
+    num = (address_obj.get("numero") or "").strip()
+    compl = (address_obj.get("complemento") or "").strip()
+    bairro = (address_obj.get("bairro") or "").strip()
+    cep = format_cep(address_obj.get("cep")) if address_obj.get("cep") else ""
+    cidade = (address_obj.get("cidade") or "").strip()
+    uf = (address_obj.get("uf") or "").strip()
+
+    parts = []
+    if logr:
+        logr_str = logr
+        if num:
+            logr_str += f", nº {num}"
+        if compl:
+            logr_str += f", {compl}"
+        parts.append(logr_str)
+    elif num:
+        parts.append(f"nº {num}")
+
+    if bairro:
+        parts.append(f"Bairro {bairro}")
+    if cep:
+        parts.append(f"CEP {cep}")
+    if cidade and uf:
+        parts.append(f"na cidade de {cidade} – {uf}")
+    elif cidade:
+        parts.append(f"na cidade de {cidade}")
+    elif uf:
+        parts.append(f"{uf}")
+
+    return ", ".join(parts)
+
+
+def build_qualificacao_completa(cliente_context):
     cliente = cliente_context.get("cliente") or {}
     pf = cliente_context.get("pessoa_fisica") or {}
     pj = cliente_context.get("pessoa_juridica") or {}
+    conjuge = cliente_context.get("conjuge") or {}
+    endereco = cliente_context.get("endereco") or {}
+    procurador = cliente_context.get("procurador") or {}
+
+    parts = []
+
     if cliente.get("tipo_cliente") == "PESSOA_JURIDICA":
-        return f"{pj.get('razao_social') or cliente.get('nome_exibicao') or ''}, inscrita no CNPJ sob n. {format_cnpj(pj.get('cnpj'))}"
-    flex = build_flexoes_genero(pf.get("sexo"))
-    return (
-        f"{pf.get('nome_completo') or cliente.get('nome_exibicao') or ''}, "
-        f"{pf.get('nacionalidade') or flex['brasileiro']}, "
-        f"{(pf.get('estado_civil') or '').lower().replace('_', ' ')}, "
-        f"{pf.get('profissao_ocupacao') or ''}, "
-        f"{flex['portador']} do RG {pf.get('rg') or ''}, "
-        f"{flex['inscrito']} no CPF sob n. {format_cpf(pf.get('cpf'))}"
-    ).strip()
+        razao = (pj.get("razao_social") or cliente.get("nome_exibicao") or cliente.get("nome") or "").strip().upper()
+        if razao:
+            parts.append(f"{razao}")
+        parts.append("pessoa jurídica de direito privado")
+        if pj.get("cnpj"):
+            parts.append(f"inscrita no CNPJ sob nº {format_cnpj(pj.get('cnpj'))}")
+        end_pj = format_endereco_string(pj)
+        if end_pj:
+            parts.append(f"com sede na {end_pj}")
+
+        if procurador.get("nome_completo"):
+            tipo_rep = "Procuradora" if procurador.get("sexo") == "FEMININO" else "Procurador"
+            if procurador.get("tipo_representacao") == "REPRESENTANTE":
+                tipo_rep = "Representante Legal"
+
+            proc_name = procurador.get("nome_completo").strip().upper()
+            flex_p = build_flexoes_genero(procurador.get("sexo"))
+            proc_subparts = [f"neste ato representada por seu {tipo_rep} {proc_name}"]
+
+            if procurador.get("nacionalidade"):
+                proc_subparts.append(procurador.get("nacionalidade").lower())
+            else:
+                proc_subparts.append(flex_p["brasileiro"])
+            if procurador.get("profissao_ocupacao"):
+                proc_subparts.append(procurador.get("profissao_ocupacao").lower())
+            if procurador.get("estado_civil"):
+                st = procurador.get("estado_civil").lower()
+                proc_subparts.append(flex_p.get(st, st.replace("_", " ")))
+            if procurador.get("rg"):
+                orgao = f" {procurador.get('orgao_expedidor_rg')}" if procurador.get("orgao_expedidor_rg") else ""
+                proc_subparts.append(f"{flex_p['portador']} da Cédula de Identidade RG nº {procurador.get('rg')}{orgao}")
+            if procurador.get("cpf"):
+                proc_subparts.append(f"{flex_p['inscrito']} no CPF sob nº {format_cpf(procurador.get('cpf'))}")
+            if procurador.get("nome_pai") or procurador.get("nome_mae"):
+                filiacao = []
+                if procurador.get("nome_pai"): filiacao.append(procurador.get("nome_pai"))
+                if procurador.get("nome_mae"): filiacao.append(procurador.get("nome_mae"))
+                proc_subparts.append(f"{flex_p['filho_de']} {' e '.join(filiacao)}")
+            if procurador.get("texto_adicional"):
+                proc_subparts.append(procurador.get("texto_adicional").strip())
+
+            end_proc = format_endereco_string(procurador)
+            if end_proc:
+                proc_subparts.append(f"{flex_p['residente_domiciliado']} na {end_proc}")
+
+            parts.append(", ".join(proc_subparts))
+    else:
+        nome_pf = (pf.get("nome_completo") or cliente.get("nome_exibicao") or cliente.get("nome") or "").strip().upper()
+        if nome_pf:
+            parts.append(f"{nome_pf}")
+
+        flex = build_flexoes_genero(pf.get("sexo"))
+
+        if pf.get("nacionalidade"):
+            parts.append(pf.get("nacionalidade").lower())
+        else:
+            parts.append(flex["brasileiro"])
+
+        if pf.get("profissao_ocupacao"):
+            parts.append(pf.get("profissao_ocupacao").lower())
+
+        est_civil = pf.get("estado_civil")
+        regime = pf.get("regime_casamento")
+        has_conjuge = bool(conjuge.get("nome_completo"))
+
+        if est_civil in ("CASADO", "UNIAO_ESTAVEL") and has_conjuge:
+            flex_c = build_flexoes_genero(conjuge.get("sexo"))
+            reg_str = f" pelo regime da {format_regime(regime)}" if regime else ""
+            conj_nome = conjuge.get("nome_completo").strip().upper()
+            conj_bits = [f"casado(a){reg_str} com {conj_nome}"]
+            conj_bits.append(conjuge.get("nacionalidade").lower() if conjuge.get("nacionalidade") else flex_c["brasileiro"])
+            if conjuge.get("profissao_ocupacao"):
+                conj_bits.append(conjuge.get("profissao_ocupacao").lower())
+            if conjuge.get("rg"):
+                orgao_c = f" {conjuge.get('orgao_expedidor_rg')}" if conjuge.get("orgao_expedidor_rg") else ""
+                conj_bits.append(f"{flex_c['portador']} do RG nº {conjuge.get('rg')}{orgao_c}")
+            if conjuge.get("cpf"):
+                conj_bits.append(f"{flex_c['inscrito']} no CPF sob nº {format_cpf(conjuge.get('cpf'))}")
+            parts.append(", ".join(conj_bits))
+        elif est_civil:
+            st = est_civil.lower()
+            parts.append(flex.get(st, st.replace("_", " ")))
+            if regime:
+                parts.append(f"pelo regime da {format_regime(regime)}")
+
+        if pf.get("nome_pai") or pf.get("nome_mae"):
+            filiacao = []
+            if pf.get("nome_pai"): filiacao.append(pf.get("nome_pai"))
+            if pf.get("nome_mae"): filiacao.append(pf.get("nome_mae"))
+            parts.append(f"{flex['filho_de']} {' e '.join(filiacao)}")
+
+        if pf.get("rg"):
+            orgao = f" {pf.get('orgao_expedidor_rg')}" if pf.get("orgao_expedidor_rg") else ""
+            parts.append(f"{flex['portador']} da Cédula de Identidade RG nº {pf.get('rg')}{orgao}")
+
+        if pf.get("cpf"):
+            parts.append(f"{flex['inscrito']} no CPF sob nº {format_cpf(pf.get('cpf'))}")
+
+        if (cliente.get("quem_assina") == "PROCURADOR" or cliente.get("tem_procurador")) and procurador.get("nome_completo"):
+            tipo_rep = "Procuradora" if procurador.get("sexo") == "FEMININO" else "Procurador"
+            if procurador.get("tipo_representacao") == "REPRESENTANTE":
+                tipo_rep = "Representante Legal"
+            proc_name = procurador.get("nome_completo").strip().upper()
+            flex_p = build_flexoes_genero(procurador.get("sexo"))
+            proc_subparts = [f"neste ato {flex['representado']} por seu {tipo_rep} {proc_name}"]
+            if procurador.get("rg"):
+                proc_subparts.append(f"RG nº {procurador.get('rg')}")
+            if procurador.get("cpf"):
+                proc_subparts.append(f"CPF sob nº {format_cpf(procurador.get('cpf'))}")
+            if procurador.get("texto_adicional"):
+                proc_subparts.append(procurador.get("texto_adicional").strip())
+            parts.append(", ".join(proc_subparts))
+
+        end_pf = format_endereco_string(endereco)
+        if end_pf:
+            pref = "ambos residentes e domiciliados na" if (est_civil in ("CASADO", "UNIAO_ESTAVEL") and has_conjuge) else f"{flex['residente_domiciliado']} na"
+            parts.append(f"{pref} {end_pf}")
+
+    res = ", ".join([p for p in parts if p and str(p).strip()]).strip()
+    return res + "." if res and not res.endswith(".") else res
+
+
+def build_texto_proprietario(cliente_context, imovel=None):
+    return build_qualificacao_completa(cliente_context)
 
 
 def build_texto_conjuge(cliente_context):
