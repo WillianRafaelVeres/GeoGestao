@@ -120,6 +120,24 @@ window.addEventListener("DOMContentLoaded", () => {
         });
     });
 
+    document.addEventListener("click", async (e) => {
+        const button = e.target.closest("[data-copy-target]");
+        if (!button) return;
+        const targetEl = document.querySelector(button.dataset.copyTarget);
+        if (!targetEl) return;
+        const textToCopy = targetEl.value || targetEl.innerText || targetEl.textContent || "";
+        try {
+            await navigator.clipboard.writeText(textToCopy);
+            const originalHtml = button.innerHTML;
+            button.innerHTML = "✓ Copiado!";
+            setTimeout(() => {
+                button.innerHTML = originalHtml;
+            }, 1500);
+        } catch {
+            button.textContent = "Copie manualmente";
+        }
+    });
+
     // Abre a pasta do projeto: Explorer quando o app roda local, senao Dropbox (web/desktop).
     document.querySelectorAll("[data-open-folder]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -802,7 +820,8 @@ function initClientLazyModals() {
             const clientId = trigger.dataset.clientId;
             const html = await loadHtml(trigger, true);
             const wrapper = installFragment(clientId, html);
-            const prefix = trigger.dataset.clientModalKind === "pending" ? "modal-pendencias-" : "modal-client-";
+            const kind = trigger.dataset.clientModalKind;
+            const prefix = kind === "pending" ? "modal-pendencias-" : (kind === "qualification" ? "modal-qualificacao-" : "modal-client-");
             const modalElement = wrapper.querySelector(`#${prefix}${clientId}`);
             if (!modalElement) throw new Error("Modal do cliente nao encontrado.");
             bootstrap.Modal.getOrCreateInstance(modalElement).show();

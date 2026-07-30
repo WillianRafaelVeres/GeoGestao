@@ -91,6 +91,9 @@
                             <button class="btn btn-outline-secondary btn-sm" type="button"
                                 data-client-modal-trigger data-client-id="{{ row.id }}" data-client-modal-kind="pending"
                                 data-client-modal-url="{{ url_for('client_modal_fragment', client_id=row.id) }}">Pendencias</button>
+                            <button class="btn btn-outline-secondary btn-sm" type="button"
+                                data-client-modal-trigger data-client-id="{{ row.id }}" data-client-modal-kind="qualification"
+                                data-client-modal-url="{{ url_for('client_modal_fragment', client_id=row.id) }}">Qualificação</button>
                             {% if can_admin() %}
                                 <form method="post" class="d-inline" onsubmit="return confirm('Excluir este cliente? Esta acao nao pode ser desfeita.');">
                                     <input type="hidden" name="action" value="delete_client">

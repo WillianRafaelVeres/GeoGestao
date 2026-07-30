@@ -46,6 +46,9 @@ from documental import (
     TIPOS_CLIENTE,
     UFS,
     build_documento_context,
+    build_texto_conjuge,
+    build_texto_procurador,
+    build_texto_proprietario,
     format_cep,
     format_cnpj,
     format_cpf,
@@ -12206,6 +12209,17 @@ def load_cliente_modal_context(cliente_id):
         "procuradores": procuradores,
     }
     context["cliente_pendencias"] = get_cliente_pendencias(context)
+    texto_prop = build_texto_proprietario(context)
+    texto_conj = build_texto_conjuge(context)
+    texto_proc = build_texto_procurador(context)
+    qual_parts = []
+    if texto_prop:
+        qual_parts.append(texto_prop)
+    if texto_conj:
+        qual_parts.append(f"casado(a) com {texto_conj}")
+    if texto_proc:
+        qual_parts.append(f"representado(a) por {texto_proc}")
+    context["texto_qualificacao"] = ", ".join(qual_parts) + "." if qual_parts else ""
     return context
 
 
