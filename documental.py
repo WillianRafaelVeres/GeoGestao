@@ -873,6 +873,19 @@ def build_qualificacao_completa(cliente_context):
         if pf.get("profissao_ocupacao"):
             parts.append(pf.get("profissao_ocupacao").lower())
 
+        if pf.get("nome_pai") or pf.get("nome_mae"):
+            filiacao = []
+            if pf.get("nome_pai"): filiacao.append(pf.get("nome_pai"))
+            if pf.get("nome_mae"): filiacao.append(pf.get("nome_mae"))
+            parts.append(f"{flex['filho_de']} {' e '.join(filiacao)}")
+
+        if pf.get("rg"):
+            orgao = f" {pf.get('orgao_expedidor_rg')}" if pf.get("orgao_expedidor_rg") else ""
+            parts.append(f"{flex['portador']} da Cédula de Identidade RG nº {pf.get('rg')}{orgao}")
+
+        if pf.get("cpf"):
+            parts.append(f"{flex['inscrito']} no CPF sob nº {format_cpf(pf.get('cpf'))}")
+
         est_civil = pf.get("estado_civil")
         regime = pf.get("regime_casamento")
         has_conjuge = bool(conjuge.get("nome_completo"))
@@ -880,8 +893,9 @@ def build_qualificacao_completa(cliente_context):
         if est_civil in ("CASADO", "UNIAO_ESTAVEL") and has_conjuge:
             flex_c = build_flexoes_genero(conjuge.get("sexo"))
             reg_str = f" pelo regime da {format_regime(regime)}" if regime else ""
+            termo_casado = flex["casado"] if est_civil == "CASADO" else "em união estável"
             conj_nome = conjuge.get("nome_completo").strip().upper()
-            conj_bits = [f"casado(a){reg_str} com {conj_nome}"]
+            conj_bits = [f"{termo_casado}{reg_str} com {conj_nome}"]
             conj_bits.append(conjuge.get("nacionalidade").lower() if conjuge.get("nacionalidade") else flex_c["brasileiro"])
             if conjuge.get("profissao_ocupacao"):
                 conj_bits.append(conjuge.get("profissao_ocupacao").lower())
@@ -896,19 +910,6 @@ def build_qualificacao_completa(cliente_context):
             parts.append(flex.get(st, st.replace("_", " ")))
             if regime:
                 parts.append(f"pelo regime da {format_regime(regime)}")
-
-        if pf.get("nome_pai") or pf.get("nome_mae"):
-            filiacao = []
-            if pf.get("nome_pai"): filiacao.append(pf.get("nome_pai"))
-            if pf.get("nome_mae"): filiacao.append(pf.get("nome_mae"))
-            parts.append(f"{flex['filho_de']} {' e '.join(filiacao)}")
-
-        if pf.get("rg"):
-            orgao = f" {pf.get('orgao_expedidor_rg')}" if pf.get("orgao_expedidor_rg") else ""
-            parts.append(f"{flex['portador']} da Cédula de Identidade RG nº {pf.get('rg')}{orgao}")
-
-        if pf.get("cpf"):
-            parts.append(f"{flex['inscrito']} no CPF sob nº {format_cpf(pf.get('cpf'))}")
 
         if (cliente.get("quem_assina") == "PROCURADOR" or cliente.get("tem_procurador")) and procurador.get("nome_completo"):
             tipo_rep = "Procuradora" if procurador.get("sexo") == "FEMININO" else "Procurador"
