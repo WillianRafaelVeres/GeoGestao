@@ -8733,20 +8733,55 @@ def dropbox_ensure_folder(dropbox_path):
     return False, error
 
 
-def dropbox_upload_project_attachment(project_caminho_pasta, subpasta, filename, file_bytes):
-    """Envia um anexo para {pasta do projeto}/{subpasta} no Dropbox.
+def dropbox_financeiro_destination(project_caminho_pasta, tipo):
+    """Escolhe a pasta do comprovante financeiro para o modelo novo e para estruturas antigas.
 
-    Retorna (dropbox_path, None) em caso de sucesso, ou (None, mensagem_de_erro).
+    Modelo novo: pasta `01_FIN` na raiz do projeto, com subpastas `ENT` (entrada,
+    comprovante de pagamento recebido) e `SAI` (saida, comprovante de custo pago).
+    Modelo antigo: pasta `Financeiro` na raiz, criada se ainda nao existir.
     """
+    project_path = dropbox_path_from_raw(project_caminho_pasta)
+    if not project_path:
+        return None, None, "Este projeto nao tem uma pasta do Dropbox cadastrada."
+    entries, error = _dropbox_folder_entries(project_path)
+    if entries is None:
+        return None, None, f"Nao foi possivel verificar a estrutura da pasta do projeto: {error}"
+
+    folders = [entry for entry in entries if entry.get(".tag") == "folder"]
+    finance_folder = next(
+        (entry.get("name") for entry in folders if normalize_text(entry.get("name")) == "01fin"),
+        None,
+    )
+    if finance_folder:
+        finance_path = f"{project_path}/{finance_folder}"
+        sub_entries, error = _dropbox_folder_entries(finance_path)
+        if sub_entries is None:
+            return None, None, f"Nao foi possivel verificar a pasta '{finance_folder}': {error}"
+        sub_folders = [entry for entry in sub_entries if entry.get(".tag") == "folder"]
+        target_key = "ent" if tipo == "entrada" else "sai"
+        default_name = "ENT" if tipo == "entrada" else "SAI"
+        sub_name = next(
+            (entry.get("name") for entry in sub_folders if normalize_text(entry.get("name")) == target_key),
+            default_name,
+        )
+        relative_folder = f"{finance_folder}/{sub_name}"
+    else:
+        relative_folder = "Financeiro"
+
+    destination = f"{project_path}/{relative_folder}"
+    ok, error = dropbox_ensure_folder(destination)
+    if not ok:
+        return None, None, f"Nao foi possivel preparar a pasta '{relative_folder}' no Dropbox: {error}"
+    return destination, relative_folder, None
+
+
+def dropbox_upload_finance_attachment(project_caminho_pasta, tipo, filename, file_bytes):
+    """Envia um comprovante financeiro (pagamento='entrada' ou custo='saida') para a pasta correta."""
     if not dropbox_enabled():
         return None, "Integracao com o Dropbox nao esta configurada."
-    project_dropbox_path = dropbox_path_from_raw(project_caminho_pasta)
-    if not project_dropbox_path:
-        return None, "Este projeto nao tem uma pasta do Dropbox cadastrada (caminho da pasta)."
-    folder_path = f"{project_dropbox_path}/{subpasta}"
-    ok, error = dropbox_ensure_folder(folder_path)
-    if not ok:
-        return None, f"Nao foi possivel preparar a pasta '{subpasta}' no Dropbox: {error}"
+    folder_path, _relative_folder, error = dropbox_financeiro_destination(project_caminho_pasta, tipo)
+    if not folder_path:
+        return None, error
     safe_name = re.sub(r'[\\/:*?"<>|]+', "_", filename).strip() or "anexo"
     upload_path = f"{folder_path}/{safe_name}"
     metadata, error = _dropbox_upload(upload_path, file_bytes)
@@ -14703,8 +14738,8 @@ def financeiro_registrar_pagamento():
     comprovante = request.files.get("comprovante")
     if comprovante and comprovante.filename:
         anexo_nome = f"Pagamento - {comprovante.filename}"
-        dropbox_path, error = dropbox_upload_project_attachment(
-            projeto["caminho_pasta"], "Financeiro", anexo_nome, comprovante.read()
+        dropbox_path, error = dropbox_upload_finance_attachment(
+            projeto["caminho_pasta"], "entrada", anexo_nome, comprovante.read()
         )
         if dropbox_path:
             execute_db(
@@ -14794,8 +14829,8 @@ def financeiro_registrar_custo():
     comprovante = request.files.get("comprovante")
     if comprovante and comprovante.filename:
         anexo_nome = build_finance_attachment_name(descricao, comprovante.filename, fallback="Custo")
-        dropbox_path, error = dropbox_upload_project_attachment(
-            projeto["caminho_pasta"], "Financeiro", anexo_nome, comprovante.read()
+        dropbox_path, error = dropbox_upload_finance_attachment(
+            projeto["caminho_pasta"], "saida", anexo_nome, comprovante.read()
         )
         if dropbox_path:
             saved_name = os.path.basename(str(dropbox_path).replace("\\", "/")) or anexo_nome

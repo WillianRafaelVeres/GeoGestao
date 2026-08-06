@@ -23,6 +23,15 @@ O sistema tambem envia comprovantes financeiros e notas de exigencia. Para notas
 - o conteudo recebe um hash SHA-256 para impedir anexos identicos no mesmo projeto;
 - notas diferentes sao nomeadas `Nota de exigencia`, `Nota de exigencia V2`, `V3` e assim por diante.
 
+Para comprovantes financeiros (aba Financeiro, registro de pagamento ou custo):
+
+- projetos com o modelo novo tem uma pasta `01_FIN` na raiz, com subpastas `ENT`
+  (entrada — comprovante de pagamento recebido) e `SAI` (saida — comprovante de
+  custo pago). O sistema entra em `01_FIN` e usa a subpasta ja existente com esse
+  nome; se nao existir, cria `ENT` ou `SAI` conforme o caso;
+- projetos sem `01_FIN` (modelo antigo) usam uma pasta `Financeiro` na raiz,
+  criada automaticamente se ainda nao existir.
+
 ## Caminhos aceitos em `caminho_pasta`
 
 - Caminho local sincronizado: `C:\SC Dropbox\SC\Pastas\PASTA 500 Fulano`
