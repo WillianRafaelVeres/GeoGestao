@@ -209,6 +209,11 @@ FINANCEIRO_QUASE_PRONTO_PCT = 75
 
 PRIORITY_WEIGHT = {"Alta": 0, "Media": 1, "Baixa": 2, "": 3, None: 3}
 
+# Ordem do item mais "avancado" (acionavel) para o menos avancado, usada para
+# reduzir a fila de trabalho a 1 linha por projeto quando o mesmo projeto gera
+# varias entradas (tarefa, etapa e pendencia falando da mesma situacao).
+MISSION_KIND_ADVANCEMENT = {"task": 0, "stage": 1, "pending": 2}
+
 REPORT_THRESHOLDS = {
     "attention_days": 5,
     "bottleneck_days": 10,
@@ -13309,6 +13314,19 @@ def my_missions():
         due = mission["prazo"] or "9999-12-31"
         overdue_rank = 0 if is_overdue(mission["prazo"], mission["status"]) or mission["status"] == "atrasado" else 1
         return (overdue_rank, due, PRIORITY_WEIGHT.get(mission["priority"], 3), mission["project"], mission["title"])
+
+    most_advanced_by_project = {}
+    for mission in missions:
+        project_id = mission["project_id"]
+        current = most_advanced_by_project.get(project_id)
+        if current is None:
+            most_advanced_by_project[project_id] = mission
+            continue
+        rank = MISSION_KIND_ADVANCEMENT.get(mission["kind"], 3)
+        current_rank = MISSION_KIND_ADVANCEMENT.get(current["kind"], 3)
+        if rank < current_rank or (rank == current_rank and mission_sort_key(mission) < mission_sort_key(current)):
+            most_advanced_by_project[project_id] = mission
+    missions = list(most_advanced_by_project.values())
 
     missions.sort(key=mission_sort_key)
     return render_template("my_missions.html", missions=missions)
