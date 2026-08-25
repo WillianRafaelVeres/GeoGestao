@@ -11329,11 +11329,6 @@ def api_exigencia_ai_analysis(project_id, exigencia_id):
         return jsonify({"ok": False, "error": "A exigencia ja esta encerrada."}), 409
     if not exigencia["anexo_path"]:
         return jsonify({"ok": False, "error": "Anexe a nota antes de solicitar a analise."}), 400
-    if not GROQ_API_KEY:
-        return jsonify({
-            "ok": False,
-            "error": "Configure GROQ_API_KEY no Render para liberar a analise automatica.",
-        }), 503
 
     # Nao deixa uma transacao do Supabase aberta durante as chamadas externas.
     get_db().commit(force=True)
@@ -11360,12 +11355,20 @@ def api_exigencia_ai_analysis(project_id, exigencia_id):
     if exigencia["anexo_hash"] and source_hash != exigencia["anexo_hash"]:
         return jsonify({"ok": False, "error": "O arquivo do Dropbox mudou desde o anexo. Anexe a nota novamente."}), 409
     filename = exigencia["anexo_nome_original"] or exigencia["anexo_nome"] or exigencia["anexo_path"]
-    try:
-        result = analyze_exigencia_attachment(file_bytes, filename)
-    except ExigenciaAIError as err:
-        return jsonify({"ok": False, "error": str(err)}), 422
-    finally:
-        file_bytes = None
+    ai_error = None
+    # A IA pode falhar ou nao estar configurada (Groq fora do ar, limite atingido, sem
+    # GROQ_API_KEY etc.). Mesmo assim grava um rascunho vazio com o hash do arquivo, para
+    # o cadastro manual poder ser aplicado sem exigir uma analise automatica bem-sucedida.
+    if not GROQ_API_KEY:
+        result = {"items": [], "usage": {}, "warning": None, "source_method": "manual_fallback"}
+        ai_error = "Configure GROQ_API_KEY no Render para liberar a analise automatica."
+    else:
+        try:
+            result = analyze_exigencia_attachment(file_bytes, filename)
+        except ExigenciaAIError as err:
+            result = {"items": [], "usage": {}, "warning": None, "source_method": "manual_fallback"}
+            ai_error = str(err)
+    file_bytes = None
 
     now = app_now_iso()
     analysis_id = execute_db(
@@ -11394,24 +11397,35 @@ def api_exigencia_ai_analysis(project_id, exigencia_id):
         (
             project_id,
             exigencia_id,
-            GROQ_TEXT_MODEL,
+            None if ai_error else GROQ_TEXT_MODEL,
             source_hash,
             result["source_method"],
             psycopg2.extras.Json(result["items"]),
             psycopg2.extras.Json(result["usage"]),
-            result["warning"],
+            ai_error or result["warning"],
             EXIGENCIA_AI_PROMPT_VERSION,
             g.user["id"],
             now,
             now,
         ),
     )
+    saved = query_db("SELECT * FROM exigencia_analises_ia WHERE id = %s", (analysis_id,), one=True)
+    if ai_error:
+        record_event(
+            project_id,
+            "nota_exigencia_analise_falhou",
+            f"Analise automatica da exigencia #{exigencia_id} falhou: {ai_error} Cadastro manual liberado.",
+        )
+        return jsonify({
+            "ok": False,
+            "error": ai_error,
+            "analysis": exigencia_ai_analysis_payload(saved),
+        }), 422
     record_event(
         project_id,
         "nota_exigencia_analisada",
         f"Rascunho automatico da exigencia #{exigencia_id} gerado com {len(result['items'])} itens.",
     )
-    saved = query_db("SELECT * FROM exigencia_analises_ia WHERE id = %s", (analysis_id,), one=True)
     return jsonify({
         "ok": True,
         "message": f"{len(result['items'])} itens encontrados. Revise antes de criar o checklist.",

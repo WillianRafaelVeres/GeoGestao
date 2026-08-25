@@ -1827,14 +1827,11 @@ async function loadExigenciaAiAnalysis(elements, state) {
             renderExigenciaAiAnalysis(elements, data.analysis);
             return;
         }
-        if (!data.configured) {
-            setExigenciaAiLoading(elements, false);
-            showExigenciaAiMessage(elements, "Configure GROQ_API_KEY no Render para liberar a analise automatica.");
-            return;
-        }
+        // Sem analise salva ainda (ou sem Groq configurada): tenta analisar, e o
+        // proprio POST ja libera o cadastro manual caso a IA nao esteja disponivel.
         await analyzeExigenciaNote(elements, state);
     } catch (error) {
-        setExigenciaAiLoading(elements, false);
+        renderExigenciaAiAnalysis(elements, { items: [] });
         showExigenciaAiMessage(elements, error.message);
     }
 }
@@ -1848,12 +1845,10 @@ async function analyzeExigenciaNote(elements, state) {
             showExigenciaAiMessage(elements, data.message, "success");
         }
     } catch (error) {
-        setExigenciaAiLoading(elements, false);
-        if (error.payload?.analysis) {
-            renderExigenciaAiAnalysis(elements, error.payload.analysis);
-        }
+        // A IA pode falhar (Groq fora do ar, limite atingido etc.): mesmo assim libera
+        // o cadastro manual em vez de deixar o checklist travado.
+        renderExigenciaAiAnalysis(elements, error.payload?.analysis || { items: [] });
         showExigenciaAiMessage(elements, error.message);
-        elements.reanalyze.hidden = false;
     }
 }
 
