@@ -11402,7 +11402,7 @@ def api_exigencia_ai_analysis(project_id, exigencia_id):
             result["source_method"],
             psycopg2.extras.Json(result["items"]),
             psycopg2.extras.Json(result["usage"]),
-            ai_error or result["warning"],
+            result["warning"],
             EXIGENCIA_AI_PROMPT_VERSION,
             g.user["id"],
             now,
@@ -11416,16 +11416,23 @@ def api_exigencia_ai_analysis(project_id, exigencia_id):
             "nota_exigencia_analise_falhou",
             f"Analise automatica da exigencia #{exigencia_id} falhou: {ai_error} Cadastro manual liberado.",
         )
+    else:
+        record_event(
+            project_id,
+            "nota_exigencia_analisada",
+            f"Rascunho automatico da exigencia #{exigencia_id} gerado com {len(result['items'])} itens.",
+        )
+    # Commit explicito: a resposta de erro (>=400) faria o after_request reverter o
+    # rascunho e o evento que acabamos de gravar, e o "Criar checklist" manual
+    # dependeria desse rascunho continuar existindo.
+    get_db().commit(force=True)
+    invalidate_runtime_caches()
+    if ai_error:
         return jsonify({
             "ok": False,
             "error": ai_error,
             "analysis": exigencia_ai_analysis_payload(saved),
         }), 422
-    record_event(
-        project_id,
-        "nota_exigencia_analisada",
-        f"Rascunho automatico da exigencia #{exigencia_id} gerado com {len(result['items'])} itens.",
-    )
     return jsonify({
         "ok": True,
         "message": f"{len(result['items'])} itens encontrados. Revise antes de criar o checklist.",
