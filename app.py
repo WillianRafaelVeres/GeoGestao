@@ -10021,6 +10021,7 @@ def project_action(project_id):
             flash("Permissao negada.", "danger")
             return redirect(url_for("project_detail", project_id=project_id))
         motivo = request.form.get("motivo") or ""
+        descricao = (request.form.get("descricao") or "").strip()
         if motivo not in ("finalizado", "orcamento_nao_aprovado"):
             flash("Motivo de arquivamento invalido.", "danger")
         else:
@@ -10030,7 +10031,10 @@ def project_action(project_id):
                 (now, motivo, now, project_id),
             )
             motivo_label = "finalizado" if motivo == "finalizado" else "orcamento nao aprovado"
-            record_event(project_id, "projeto_arquivado", f"Projeto arquivado ({motivo_label}).")
+            evento_desc = f"Projeto arquivado ({motivo_label})."
+            if descricao:
+                evento_desc += f" {descricao}"
+            record_event(project_id, "projeto_arquivado", evento_desc)
             flash("Projeto arquivado. Ele saiu da matriz e fica disponivel na aba Arquivados.", "success")
 
     elif action == "unarchive_project":
