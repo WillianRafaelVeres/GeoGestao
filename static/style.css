@@ -2906,6 +2906,62 @@ a:hover { color: #1d4ed8; }
 .representative-popout-head { margin-bottom: 10px; }
 .representative-popout-actions { justify-content: flex-end; margin-top: 10px; }
 
+.representation-manager { display: grid; gap: 10px; }
+.representation-list { display: grid; gap: 8px; }
+
+.representation-card {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid #d0d5dd;
+    border-radius: 8px;
+    background: #fff;
+}
+.representation-card.is-inactive { opacity: .6; background: #f8fafc; }
+.representation-card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.representation-card-head strong { color: var(--text); font-size: 13px; }
+.representation-card-body { display: grid; gap: 3px; font-size: 12px; color: #475467; }
+.representation-card-body b { color: #344054; }
+
+.representation-rep-list { display: grid; gap: 6px; margin-bottom: 8px; }
+.representation-papel-select { display: block; margin-top: 4px; font-size: 12px; }
+.representation-papel-select select { min-width: 180px; }
+
+.representation-search { display: grid; gap: 6px; margin-bottom: 12px; }
+.representation-search-results {
+    display: grid;
+    gap: 4px;
+    max-height: 160px;
+    overflow-y: auto;
+}
+.representation-search-item {
+    text-align: left;
+    padding: 6px 9px;
+    border: 1px solid #d0d5dd;
+    border-radius: 6px;
+    background: #fff;
+    font-size: 12px;
+    color: #344054;
+}
+.representation-search-item:hover { background: #f0f4ff; border-color: #2563eb; }
+.representation-search-empty { padding: 6px 9px; font-size: 12px; color: var(--muted); }
+
+.representation-new-person {
+    display: grid;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 10px;
+    border: 1px dashed #cfd6df;
+    border-radius: 7px;
+    background: #f8fafc;
+}
+
+.representation-representados { display: grid; gap: 4px; margin-bottom: 8px; }
+.representation-modo { display: grid; gap: 4px; margin-bottom: 8px; }
+
+.representation-advanced { margin-top: 8px; }
+.representation-advanced summary { cursor: pointer; font-size: 12px; font-weight: 600; color: #344054; margin-bottom: 8px; }
+
 .pending-summary {
     display: grid;
     grid-template-columns: 90px repeat(2, minmax(0, 1fr));

@@ -28,14 +28,30 @@ Navegador
 - `process_stage_templates.py`: modelos de etapas por processo.
 - `process_checklist_templates.py`: modelos de checklist por processo/etapa.
 - `documental.py`: regras de cadastro documental de clientes.
+- `person_repository.py`: acesso ao cadastro central de pessoas
+  (`pessoas_cadastro`) via as RPCs `public.*_assinatura_v1` do Supabase.
+- `representation_service.py`: acesso a representacoes
+  (`representacoes`/`representacao_representantes`/
+  `representacao_representados`) via as mesmas RPCs, mais os vocabularios de
+  papel e modo de atuacao usados na tela de clientes.
 - `report_helpers.py`: calculos de relatorios.
 - `scripts/measure_routes.py`: benchmark local das rotas principais.
+- `docs/sql/pessoas_representacoes_schema.sql`: schema de referencia (ja
+  aplicado em producao) da arquitetura central de pessoas/representacoes,
+  usado apenas para o bootstrap idempotente de bancos novos/locais. Ver
+  [ADR 0004](adr/0004-pessoas-representacoes-central.md).
 
 ## Dados centrais
 
 - `usuarios`: login, perfil, cargo e status ativo.
 - `clientes` e tabelas auxiliares: proprietarios, pessoas fisicas/juridicas,
   procuradores, enderecos, imoveis e conjuges.
+- `pessoas_cadastro`, `pessoas_fisicas_cadastro`, `pessoas_juridicas_cadastro`:
+  identidade central de uma pessoa, reutilizada em qualquer papel/contexto.
+- `representacoes`, `representacao_representantes`,
+  `representacao_representados`: relacoes de representacao (quem representa
+  quem, com que papel, em que documento/validade). Ver
+  [`docs/CADASTRO_CLIENTES_DOCUMENTOS.md`](CADASTRO_CLIENTES_DOCUMENTOS.md#10-arquitetura-central-de-pessoas-e-representacoes).
 - `projetos`: cabecalho do projeto, cliente, processo, prioridade, pasta,
   responsavel geral e etapa atual.
 - `projeto_etapas`: etapas macro do projeto, status, prazo, responsavel e

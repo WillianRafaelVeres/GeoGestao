@@ -169,6 +169,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     initDocumentalClientForm();
     initRepresentativeManagers();
+    initRepresentationManagers();
     initClientLiveSearch();
     initClientLazyModals();
     initProjectClientAutocompletes();
@@ -628,6 +629,278 @@ function initRepresentativeManagers(root = document) {
     });
 }
 
+function initRepresentationManagers(root = document) {
+    root.querySelectorAll("[data-representation-manager]").forEach((manager) => {
+        if (manager.dataset.representationReady === "1") return;
+        manager.dataset.representationReady = "1";
+
+        const clientId = manager.dataset.clientId;
+        const saveUrl = manager.dataset.saveUrl;
+        const searchUrl = manager.dataset.searchUrl;
+        const createPessoaUrl = manager.dataset.createPessoaUrl;
+
+        const modal = document.getElementById(`modal-representacao-${clientId}`);
+        if (!modal) return;
+        const papeis = JSON.parse(modal.dataset.papeis || "{}");
+
+        const form = {
+            id: modal.querySelector('[data-rp-field="representacao_id"]'),
+            natureza: modal.querySelector('[data-rp-field="natureza"]'),
+            principal: modal.querySelector('[data-rp-field="principal"]'),
+            documentoBase: modal.querySelector('[data-rp-field="documento_base"]'),
+            referenciaDocumento: modal.querySelector('[data-rp-field="referencia_documento"]'),
+            escopoPoderes: modal.querySelector('[data-rp-field="escopo_poderes"]'),
+            validadeInicio: modal.querySelector('[data-rp-field="validade_inicio"]'),
+            validadeFim: modal.querySelector('[data-rp-field="validade_fim"]'),
+            observacoes: modal.querySelector('[data-rp-field="observacoes"]'),
+        };
+        const repList = modal.querySelector("[data-rp-representantes]");
+        const repEmpty = modal.querySelector("[data-rp-representantes-empty]");
+        const repRowTemplate = modal.querySelector("[data-rp-representante-template]");
+        const searchInput = modal.querySelector("[data-rp-search-input]");
+        const searchResults = modal.querySelector("[data-rp-search-results]");
+        const newPersonToggle = modal.querySelector("[data-rp-new-person]");
+        const newPersonForm = modal.querySelector("[data-rp-new-person-form]");
+        const newPersonSave = modal.querySelector("[data-rp-new-person-save]");
+        const errorBox = modal.querySelector("[data-rp-error]");
+        const saveButton = modal.querySelector("[data-rp-save]");
+        const modalTitle = modal.querySelector("[data-representation-modal-title]");
+
+        let representantes = [];
+        let bsModal = null;
+
+        function showError(message) {
+            if (!errorBox) return;
+            errorBox.textContent = message || "";
+            errorBox.style.display = message ? "block" : "none";
+        }
+
+        function renderRepresentantes() {
+            if (!repList) return;
+            repList.querySelectorAll("[data-rp-representante-row]").forEach((row) => row.remove());
+            representantes.forEach((rep, index) => {
+                const row = repRowTemplate.content.firstElementChild.cloneNode(true);
+                row.querySelector("[data-rp-rep-nome]").textContent = rep.nome;
+                const select = row.querySelector("[data-rp-rep-papel]");
+                Object.entries(papeis).forEach(([key, label]) => {
+                    const option = document.createElement("option");
+                    option.value = key;
+                    option.textContent = label;
+                    if (key === rep.papel) option.selected = true;
+                    select.appendChild(option);
+                });
+                select.addEventListener("change", () => { rep.papel = select.value; });
+                row.querySelector("[data-rp-rep-remove]").addEventListener("click", () => {
+                    representantes.splice(index, 1);
+                    renderRepresentantes();
+                });
+                repList.insertBefore(row, repEmpty);
+            });
+            if (repEmpty) repEmpty.hidden = representantes.length > 0;
+        }
+
+        function addRepresentante(pessoaId, nome, papel) {
+            if (representantes.some((rep) => rep.pessoa_id === pessoaId)) return;
+            representantes.push({ pessoa_id: pessoaId, nome, papel: papel || "PROCURADOR" });
+            renderRepresentantes();
+            if (searchInput) searchInput.value = "";
+            if (searchResults) searchResults.innerHTML = "";
+        }
+
+        function resetForm() {
+            form.id.value = "";
+            form.natureza.value = "";
+            form.principal.checked = false;
+            if (form.documentoBase) form.documentoBase.value = "";
+            if (form.referenciaDocumento) form.referenciaDocumento.value = "";
+            if (form.escopoPoderes) form.escopoPoderes.value = "";
+            if (form.validadeInicio) form.validadeInicio.value = "";
+            if (form.validadeFim) form.validadeFim.value = "";
+            if (form.observacoes) form.observacoes.value = "";
+            representantes = [];
+            renderRepresentantes();
+            modal.querySelectorAll("[data-rp-representado]").forEach((checkbox) => {
+                checkbox.checked = checkbox.disabled; // titular vem marcado e travado
+            });
+            modal.querySelectorAll("[data-rp-modo-option]").forEach((radio) => {
+                radio.checked = radio.value === "INDIVIDUAL";
+            });
+            if (newPersonForm) newPersonForm.classList.add("is-hidden");
+            showError("");
+            if (modalTitle) modalTitle.textContent = "Nova representação";
+        }
+
+        function fillFormForEdit(representacao) {
+            resetForm();
+            form.id.value = representacao.representacao_id;
+            form.natureza.value = representacao.natureza || "";
+            form.principal.checked = Boolean(representacao.principal);
+            if (form.documentoBase) form.documentoBase.value = representacao.documento_base || "";
+            if (form.referenciaDocumento) form.referenciaDocumento.value = representacao.referencia_documento || "";
+            if (form.escopoPoderes) form.escopoPoderes.value = representacao.escopo_poderes || "";
+            if (form.validadeInicio) form.validadeInicio.value = representacao.validade_inicio || "";
+            if (form.validadeFim) form.validadeFim.value = representacao.validade_fim || "";
+            if (form.observacoes) form.observacoes.value = representacao.observacoes || "";
+            (representacao.representantes || []).forEach((rep) => {
+                representantes.push({ pessoa_id: rep.pessoa_id, nome: rep.nome, papel: rep.papel });
+            });
+            renderRepresentantes();
+            modal.querySelectorAll("[data-rp-modo-option]").forEach((radio) => {
+                radio.checked = radio.value === representacao.modo_atuacao;
+            });
+            const representadoIds = new Set((representacao.representados || []).map((item) => item.cliente_id || item.pessoa_id));
+            modal.querySelectorAll("[data-rp-representado]").forEach((checkbox) => {
+                if (representadoIds.has(checkbox.dataset.id)) checkbox.checked = true;
+            });
+            if (modalTitle) modalTitle.textContent = "Editar representação";
+        }
+
+        function openModal() {
+            if (!bsModal) bsModal = window.bootstrap?.Modal.getOrCreateInstance(modal);
+            bsModal?.show();
+        }
+
+        manager.querySelector("[data-representation-add]")?.addEventListener("click", () => {
+            resetForm();
+            openModal();
+        });
+
+        manager.querySelectorAll("[data-representation-edit]").forEach((button) => {
+            button.addEventListener("click", () => {
+                const card = button.closest("[data-representation-card]");
+                const representacao = JSON.parse(card.dataset.representacao || "{}");
+                fillFormForEdit(representacao);
+                openModal();
+            });
+        });
+
+        manager.querySelectorAll("[data-representation-deactivate]").forEach((button) => {
+            button.addEventListener("click", async () => {
+                if (!confirm("Desativar esta representação? Ela deixa de aparecer como ativa, mas continua no histórico.")) return;
+                const representacaoId = button.dataset.representacaoId;
+                button.disabled = true;
+                try {
+                    const response = await fetch(`/clients/${clientId}/representacoes/${representacaoId}/desativar`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(data.error || "Não foi possível desativar.");
+                    await window.GeoGestaoClients?.reloadClientFragment(clientId);
+                } catch (error) {
+                    alert(error.message || "Não foi possível desativar a representação.");
+                    button.disabled = false;
+                }
+            });
+        });
+
+        let searchTimer = null;
+        searchInput?.addEventListener("input", () => {
+            window.clearTimeout(searchTimer);
+            const termo = searchInput.value.trim();
+            searchTimer = window.setTimeout(async () => {
+                if (!searchResults) return;
+                if (!termo) { searchResults.innerHTML = ""; return; }
+                try {
+                    const response = await fetch(`${searchUrl}?q=${encodeURIComponent(termo)}`, {
+                        headers: { "X-Requested-With": "XMLHttpRequest" },
+                    });
+                    const data = await response.json();
+                    searchResults.innerHTML = "";
+                    (data.pessoas || []).forEach((pessoa) => {
+                        const item = document.createElement("button");
+                        item.type = "button";
+                        item.className = "representation-search-item";
+                        item.textContent = `${pessoa.nome_display}${pessoa.documento ? " — " + pessoa.documento : ""}`;
+                        item.addEventListener("click", () => addRepresentante(pessoa.pessoa_id, pessoa.nome_display, "PROCURADOR"));
+                        searchResults.appendChild(item);
+                    });
+                    if (!(data.pessoas || []).length) {
+                        const empty = document.createElement("div");
+                        empty.className = "representation-search-empty";
+                        empty.textContent = "Nenhuma pessoa encontrada.";
+                        searchResults.appendChild(empty);
+                    }
+                } catch {
+                    searchResults.innerHTML = "";
+                }
+            }, 250);
+        });
+
+        newPersonToggle?.addEventListener("click", () => {
+            newPersonForm?.classList.toggle("is-hidden");
+        });
+
+        newPersonSave?.addEventListener("click", async () => {
+            const tipo = modal.querySelector("[data-rp-new-tipo]")?.value || "PESSOA_FISICA";
+            const nome = modal.querySelector("[data-rp-new-nome]")?.value.trim();
+            const documento = modal.querySelector("[data-rp-new-documento]")?.value.trim();
+            if (!nome) { showError("Informe o nome da nova pessoa."); return; }
+            const payload = { tipo_pessoa: tipo, nome_exibicao: nome, documento };
+            if (tipo === "PESSOA_JURIDICA") payload.pessoa_juridica = { razao_social: nome, cnpj: documento };
+            else payload.pessoa_fisica = { nome_completo: nome, cpf: documento };
+            try {
+                const response = await fetch(createPessoaUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Não foi possível cadastrar a pessoa.");
+                addRepresentante(data.pessoa_id, nome, "PROCURADOR");
+                newPersonForm?.classList.add("is-hidden");
+                modal.querySelectorAll("[data-rp-new-nome],[data-rp-new-documento]").forEach((input) => { input.value = ""; });
+                showError("");
+            } catch (error) {
+                showError(error.message || "Não foi possível cadastrar a pessoa.");
+            }
+        });
+
+        saveButton?.addEventListener("click", async () => {
+            showError("");
+            if (!representantes.length) { showError("Adicione ao menos um representante."); return; }
+            const representados = Array.from(modal.querySelectorAll("[data-rp-representado]:checked")).map((checkbox) => (
+                checkbox.dataset.tipo === "cliente" ? { cliente_id: Number(checkbox.dataset.id) } : { pessoa_id: checkbox.dataset.id }
+            ));
+            if (!representados.length) { showError("Selecione ao menos um representado."); return; }
+            const modoSelecionado = modal.querySelector("[data-rp-modo-option]:checked")?.value || "INDIVIDUAL";
+            const payload = {
+                representacao_id: form.id.value || undefined,
+                natureza: form.natureza.value.trim() || undefined,
+                modo_atuacao: modoSelecionado,
+                principal: form.principal.checked,
+                ativo: true,
+                documento_base: form.documentoBase?.value.trim() || undefined,
+                referencia_documento: form.referenciaDocumento?.value.trim() || undefined,
+                escopo_poderes: form.escopoPoderes?.value.trim() || undefined,
+                validade_inicio: form.validadeInicio?.value || undefined,
+                validade_fim: form.validadeFim?.value || undefined,
+                observacoes: form.observacoes?.value.trim() || undefined,
+                representantes: representantes.map((rep, index) => ({
+                    pessoa_id: rep.pessoa_id, papel: rep.papel || "PROCURADOR", principal: index === 0, ordem: index,
+                })),
+                representados,
+            };
+            saveButton.disabled = true;
+            try {
+                const response = await fetch(saveUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "Não foi possível salvar a representação.");
+                bsModal?.hide();
+                await window.GeoGestaoClients?.reloadClientFragment(clientId);
+            } catch (error) {
+                showError(error.message || "Não foi possível salvar a representação.");
+            } finally {
+                saveButton.disabled = false;
+            }
+        });
+    });
+}
+
 function initClientLiveSearch() {
     const form = document.querySelector("[data-client-search-form]");
     const input = document.querySelector("[data-client-search-input]");
@@ -760,6 +1033,7 @@ function initClientLazyModals() {
         if (window.CityService) window.CityService.initPickers(root);
         initDocumentalClientForm(root);
         initRepresentativeManagers(root);
+        initRepresentationManagers(root);
         initPendingFocusShortcuts(root);
     }
 
@@ -846,6 +1120,16 @@ function initClientLazyModals() {
         trigger.addEventListener("focus", () => preload(trigger));
         trigger.addEventListener("click", () => openFromTrigger(trigger));
     });
+
+    // Depois de salvar/desativar uma representacao via AJAX (fora do form
+    // principal do cliente), o fragmento em cache fica desatualizado. Isso
+    // permite descartar o cache e reabrir o mesmo modal ja atualizado.
+    window.GeoGestaoClients = window.GeoGestaoClients || {};
+    window.GeoGestaoClients.reloadClientFragment = async (clientId) => {
+        responseCache.delete(String(clientId));
+        const trigger = triggers.find((item) => item.dataset.clientId === String(clientId) && item.dataset.clientModalKind === "edit");
+        if (trigger) await openFromTrigger(trigger);
+    };
 }
 
 function initProjectClientAutocompletes(root = document) {

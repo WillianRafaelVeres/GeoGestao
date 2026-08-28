@@ -68,6 +68,8 @@ from documental import (
     validate_email,
     validate_uuid_like,
 )
+import person_repository
+import representation_service
 from process_types import PROCESS_TYPES, process_type_name, resolve_process_type_key
 from report_helpers import (
     calculate_stage_metrics_v2,
@@ -131,6 +133,10 @@ EXIGENCIA_AI_MAX_PAGES = max(1, int(os.environ.get("GEOGESTAO_AI_MAX_PAGES", "20
 EXIGENCIA_AI_MAX_VISION_PAGES = max(1, int(os.environ.get("GEOGESTAO_AI_MAX_VISION_PAGES", "10")))
 EXIGENCIA_AI_MAX_SOURCE_CHARS = max(4000, int(os.environ.get("GEOGESTAO_AI_MAX_SOURCE_CHARS", "24000")))
 EXIGENCIA_AI_PROMPT_VERSION = "exigencia-checklist-v2"
+# Chave compartilhada com as RPCs public.*_assinatura_v1 (cadastro central de
+# pessoas e representacoes). Configurada no Supabase via private.validar_chave_assinaturas;
+# aqui so lemos a variavel de ambiente, nunca o valor literal.
+ASSINATURAS_APP_KEY = os.environ.get("GEOGESTAO_ASSINATURAS_APP_KEY", "").strip()
 # Criacao automatica de pastas de trabalho novo: base local (sincronizada pelo Dropbox)
 # organizada em Novo\<CIDADE>\<PROPRIETARIO>\<PROJETO>, onde <PROJETO> e uma copia da
 # pasta modelo (00_MOD que fica na raiz de Novo).
@@ -168,10 +174,12 @@ ROLE_LABELS = {
     "consulta": "Consulta",
 }
 
-REPRESENTATIVE_TYPES = {
-    "PROCURADOR": "Procurador",
-    "REPRESENTANTE": "Representante",
-}
+# Reaproveita o vocabulario de papeis da arquitetura central de representacoes
+# (representation_service.PAPEIS_REPRESENTACAO) para que a secao legada de
+# "Procuradores e representantes" tambem aceite papeis como Inventariante,
+# Sindico, etc., e para que documental.py rotule o representante corretamente
+# independente de qual tela cadastrou o papel.
+REPRESENTATIVE_TYPES = representation_service.PAPEIS_REPRESENTACAO
 
 EXTERNAL_ORGAO_OPTIONS = [
     ("CARTORIO", "Cartorio"),
@@ -2075,10 +2083,40 @@ def init_db():
     ensure_project_checklists(db)
     ensure_project_stage_history(db)
     initialize_project_order(db)
+    bootstrap_pessoas_representacoes_schema(db)
     db.commit()
     ensure_performance_indexes(db)
     db.commit()
     db.close()
+
+
+def bootstrap_pessoas_representacoes_schema(db):
+    """Aplica de forma idempotente, em bancos novos/locais, o schema da
+    arquitetura central de pessoas e representacoes que ja esta aplicada em
+    producao (tabelas pessoas_cadastro/representacoes/..., triggers de
+    sincronizacao legada e as RPCs public.*_assinatura_v1).
+
+    So roda dentro de init_db(), que por sua vez so executa quando o operador
+    pede explicitamente (--init-db ou GEOGESTAO_AUTO_INIT_DB=1). Nunca migra
+    producao: no banco de producao real este script e um no-op idempotente,
+    pois todo objeto ja existe exatamente como descrito aqui.
+    """
+    schema_path = os.path.join(BASE_DIR, "docs", "sql", "pessoas_representacoes_schema.sql")
+    if not os.path.exists(schema_path):
+        return
+    with open(schema_path, "r", encoding="utf-8") as handle:
+        script = handle.read()
+    # Sem a chave configurada localmente, usamos um valor que nunca bate com
+    # nenhum p_chave_app real: as tabelas/RPCs sao criadas, mas as RPCs
+    # recusam chamadas ate GEOGESTAO_ASSINATURAS_APP_KEY ser definida.
+    key = ASSINATURAS_APP_KEY or "#local-dev-assinaturas-key-not-configured#"
+    quoted_key = psycopg2.extensions.adapt(key).getquoted().decode("utf-8")
+    script = script.replace("__ASSINATURAS_APP_KEY__", quoted_key)
+    cur = db.cursor()
+    try:
+        cur.execute(script)
+    finally:
+        cur.close()
 
 
 def seed_document_requirements(db):
@@ -12899,66 +12937,90 @@ def upsert_pessoa_juridica(cliente_id, now):
 
 
 def sync_procuradores(cliente_id, now):
+    """Sincroniza os procuradores/representantes legados por identidade.
+
+    IMPORTANTE: nunca apaga e recria toda a lista. Cada procurador agora pode
+    estar referenciado por representacao_representantes.procurador_legado_id
+    (arquitetura central de pessoas/representacoes); um DELETE+INSERT em massa
+    quebraria esse vinculo (ON DELETE SET NULL) e forcaria a recriacao de
+    representacoes ligadas via sincronizacao legada a cada simples edicao do
+    cadastro do cliente. Em vez disso: linha com id existente -> UPDATE,
+    linha nova -> INSERT, linha que sumiu da lista enviada pelo formulario
+    (removida explicitamente pelo usuario na tela) -> DELETE so dela.
+    """
     representantes = parse_representantes_form(request.form)
     db = get_db()
     supports_tipo_endereco = db_has_column("procuradores", "tipo_endereco")
     try:
-        db.execute("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
-        insert_values = []
-        for index, representante in enumerate(representantes):
-            values = (
-                cliente_id,
-                representative_type(representante.get("tipo_representacao")),
-                1 if index == 0 else 0,
-                representante.get("sexo") or None,
-                representante.get("nome_completo") or None,
-                representante.get("estado_civil") or None,
-                representante.get("regime_casamento") or None,
-                representante.get("profissao_ocupacao") or None,
-                representante.get("nacionalidade") or None,
-                representante.get("rg") or None,
-                representante.get("orgao_expedidor_rg") or None,
-                only_digits(representante.get("cpf")) or None,
-                representante.get("nome_pai") or None,
-                representante.get("nome_mae") or None,
-                representante.get("data_nascimento") or None,
-                representante.get("uf_nascimento") or None,
-                representante.get("cidade_nascimento") or None,
-                representante.get("email") or None,
-                representante.get("telefone") or None,
-                representante.get("texto_adicional") or None,
-                address_type(representante.get("tipo_endereco")),
-                representante.get("logradouro") or None,
-                representante.get("uf") or None,
-                representante.get("cidade") or None,
-                representante.get("bairro") or None,
-                only_digits(representante.get("cep")) or None,
-                representante.get("numero") or None,
-                representante.get("complemento") or None,
-                now,
-                now,
-            )
-            insert_values.append(values if supports_tipo_endereco else values[:20] + values[21:])
+        existing_rows = query_db("SELECT id FROM procuradores WHERE cliente_id = %s", (cliente_id,))
+        existing_ids = {row["id"] for row in existing_rows}
+        kept_ids = set()
 
-        if supports_tipo_endereco:
-            insert_sql = """
-                INSERT INTO procuradores
-                    (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
-                     profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
-                     data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional, tipo_endereco,
-                     logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
-                VALUES %s
-            """
-        else:
-            insert_sql = """
-                INSERT INTO procuradores
-                    (cliente_id, tipo_representacao, principal, sexo, nome_completo, estado_civil, regime_casamento,
-                     profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg, cpf, nome_pai, nome_mae,
-                     data_nascimento, uf_nascimento, cidade_nascimento, email, telefone, texto_adicional,
-                     logradouro, uf, cidade, bairro, cep, numero, complemento, criado_em, atualizado_em)
-                VALUES %s
-            """
-        execute_values_db(db, insert_sql, insert_values, page_size=1000)
+        for index, representante in enumerate(representantes):
+            values = {
+                "tipo_representacao": representative_type(representante.get("tipo_representacao")),
+                "principal": 1 if index == 0 else 0,
+                "sexo": representante.get("sexo") or None,
+                "nome_completo": representante.get("nome_completo") or None,
+                "estado_civil": representante.get("estado_civil") or None,
+                "regime_casamento": representante.get("regime_casamento") or None,
+                "profissao_ocupacao": representante.get("profissao_ocupacao") or None,
+                "nacionalidade": representante.get("nacionalidade") or None,
+                "rg": representante.get("rg") or None,
+                "orgao_expedidor_rg": representante.get("orgao_expedidor_rg") or None,
+                "cpf": only_digits(representante.get("cpf")) or None,
+                "nome_pai": representante.get("nome_pai") or None,
+                "nome_mae": representante.get("nome_mae") or None,
+                "data_nascimento": representante.get("data_nascimento") or None,
+                "uf_nascimento": representante.get("uf_nascimento") or None,
+                "cidade_nascimento": representante.get("cidade_nascimento") or None,
+                "email": representante.get("email") or None,
+                "telefone": representante.get("telefone") or None,
+                "texto_adicional": representante.get("texto_adicional") or None,
+                "logradouro": representante.get("logradouro") or None,
+                "uf": representante.get("uf") or None,
+                "cidade": representante.get("cidade") or None,
+                "bairro": representante.get("bairro") or None,
+                "cep": only_digits(representante.get("cep")) or None,
+                "numero": representante.get("numero") or None,
+                "complemento": representante.get("complemento") or None,
+            }
+            if supports_tipo_endereco:
+                values["tipo_endereco"] = address_type(representante.get("tipo_endereco"))
+
+            rep_id_raw = (representante.get("id") or "").strip()
+            rep_id = int(rep_id_raw) if rep_id_raw.isdigit() else None
+
+            if rep_id is not None and rep_id in existing_ids:
+                set_clause = ", ".join(f"{field} = %({field})s" for field in values)
+                db.execute(
+                    f"""
+                    UPDATE procuradores
+                    SET {set_clause}, atualizado_em = %(atualizado_em)s
+                    WHERE id = %(id)s AND cliente_id = %(cliente_id)s
+                    """,
+                    {**values, "atualizado_em": now, "id": rep_id, "cliente_id": cliente_id},
+                )
+                kept_ids.add(rep_id)
+            else:
+                columns = list(values.keys()) + ["cliente_id", "criado_em", "atualizado_em"]
+                placeholders = ", ".join(f"%({col})s" for col in columns)
+                cur = db.execute(
+                    f"INSERT INTO procuradores ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id",
+                    {**values, "cliente_id": cliente_id, "criado_em": now, "atualizado_em": now},
+                )
+                new_row = cur.fetchone()
+                cur.close()
+                if new_row:
+                    kept_ids.add(new_row["id"])
+
+        removed_ids = existing_ids - kept_ids
+        if removed_ids:
+            db.execute(
+                "DELETE FROM procuradores WHERE cliente_id = %s AND id = ANY(%s)",
+                (cliente_id, list(removed_ids)),
+            )
+
         db.commit()
         invalidate_runtime_caches()
     except Exception:
@@ -13458,6 +13520,21 @@ def clients():
     )
 
 
+def load_cliente_representacoes(client_id):
+    """Busca as representacoes da arquitetura central para um cliente.
+
+    Devolve (representacoes, indisponivel): indisponivel fica True quando a
+    chave GEOGESTAO_ASSINATURAS_APP_KEY nao esta configurada ou a RPC falha,
+    para a tela mostrar um aviso em vez de quebrar o modal do cliente.
+    """
+    try:
+        contexto = representation_service.get_contexto_assinatura(get_db(), ASSINATURAS_APP_KEY, client_id)
+    except representation_service.RepresentationServiceError as exc:
+        app.logger.warning("Representacoes indisponiveis para cliente %s: %s", client_id, exc)
+        return [], True
+    return (contexto or {}).get("representacoes", []), False
+
+
 @app.route("/clients/<int:client_id>/fragment")
 @login_required
 def client_modal_fragment(client_id):
@@ -13465,6 +13542,7 @@ def client_modal_fragment(client_id):
     if not context:
         return "Cliente nao encontrado.", 404
 
+    representacoes, assinaturas_indisponivel = load_cliente_representacoes(client_id)
     row = context["cliente"]
     response = Response(
         render_template(
@@ -13480,6 +13558,12 @@ def client_modal_fragment(client_id):
             status_cadastro_options=STATUS_CADASTRO,
             ufs=UFS,
             representative_types=REPRESENTATIVE_TYPES,
+            representacoes=representacoes,
+            assinaturas_indisponivel=assinaturas_indisponivel,
+            papeis_representacao=representation_service.PAPEIS_REPRESENTACAO,
+            modos_atuacao=representation_service.MODOS_ATUACAO,
+            naturezas_sugeridas=representation_service.NATUREZAS_SUGERIDAS,
+            condicoes_juridicas=representation_service.CONDICOES_JURIDICAS,
         ),
         mimetype="text/html",
     )
@@ -13487,6 +13571,82 @@ def client_modal_fragment(client_id):
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Vary"] = "Cookie"
     return response
+
+
+@app.route("/api/pessoas/search")
+@login_required
+def api_pessoas_search():
+    """Busca no cadastro central de pessoas (autocomplete de 'Buscar pessoa')."""
+    termo = (request.args.get("q") or "").strip()
+    try:
+        pessoas = get_cached_lookup(
+            "pessoas_cadastro_lista",
+            lambda: person_repository.list_pessoas(get_db(), ASSINATURAS_APP_KEY),
+            ttl_seconds=30,
+        )
+    except person_repository.PersonRepositoryError as exc:
+        return {"error": str(exc)}, 503
+    return {"pessoas": person_repository.search_pessoas(pessoas, termo, limit=20)}
+
+
+@app.route("/api/pessoas", methods=["POST"])
+@login_required
+def api_pessoas_create():
+    """Cadastra (ou reaproveita, se o CPF/CNPJ ja existir) uma pessoa central.
+
+    Usado quando a busca de pessoa nao encontra ninguem e o usuario decide
+    cadastrar um novo representante/representado diretamente no cadastro
+    central em vez de um registro isolado.
+    """
+    if not can_manage():
+        return {"error": "Permissao negada"}, 403
+    dados = request.get_json(silent=True) or {}
+    nome = (
+        dados.get("nome_exibicao")
+        or (dados.get("pessoa_fisica") or {}).get("nome_completo")
+        or (dados.get("pessoa_juridica") or {}).get("razao_social")
+        or ""
+    ).strip()
+    if not nome:
+        return {"error": "Informe o nome da pessoa."}, 400
+    try:
+        resultado = person_repository.save_pessoa(get_db(), ASSINATURAS_APP_KEY, dados)
+    except person_repository.PersonRepositoryError as exc:
+        return {"error": str(exc)}, 422
+    invalidate_lookup_entries("pessoas_cadastro_lista")
+    return resultado, 201
+
+
+@app.route("/clients/<int:client_id>/representacoes", methods=["POST"])
+@login_required
+def client_representacao_save(client_id):
+    """Cria ou atualiza UMA representacao (nunca apaga/recria as demais do cliente)."""
+    if not can_manage():
+        return {"error": "Permissao negada"}, 403
+    cliente = query_db("SELECT id FROM clientes WHERE id = %s", (client_id,), one=True)
+    if not cliente:
+        return {"error": "Cliente nao encontrado."}, 404
+    dados = request.get_json(silent=True) or {}
+    try:
+        resultado = representation_service.save_representacao(get_db(), ASSINATURAS_APP_KEY, dados)
+    except representation_service.RepresentationServiceError as exc:
+        return {"error": str(exc)}, 422
+    invalidate_runtime_caches()
+    return resultado, 200
+
+
+@app.route("/clients/<int:client_id>/representacoes/<representacao_id>/desativar", methods=["POST"])
+@login_required
+def client_representacao_deactivate(client_id, representacao_id):
+    """Desativa (soft-delete) uma representacao; ela continua no historico."""
+    if not can_manage():
+        return {"error": "Permissao negada"}, 403
+    try:
+        resultado = representation_service.deactivate_representacao(get_db(), ASSINATURAS_APP_KEY, representacao_id)
+    except representation_service.RepresentationServiceError as exc:
+        return {"error": str(exc)}, 422
+    invalidate_runtime_caches()
+    return resultado, 200
 
 
 CNJ_JUSTICA_ABERTA_API = "https://justicaabertaapi.cnj.jus.br/v1/api"

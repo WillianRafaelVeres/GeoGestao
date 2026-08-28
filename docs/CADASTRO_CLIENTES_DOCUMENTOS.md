@@ -296,6 +296,68 @@ Comportamento:
 Endpoint utilizado:
   GET https://brasilapi.com.br/api/cnpj/v1/{cnpj}
 
-## 10. Proxima etapa
+## 10. Arquitetura central de pessoas e representacoes
+
+Desde 2026-08 o banco Supabase de producao possui uma camada central que
+separa quatro conceitos que antes eram tratados como a mesma coisa. Ver
+detalhes tecnicos completos em [`docs/adr/0004-pessoas-representacoes-central.md`](adr/0004-pessoas-representacoes-central.md).
+
+- **Pessoa** (`pessoas_cadastro` + `pessoas_fisicas_cadastro` /
+  `pessoas_juridicas_cadastro`): a identidade. Nome, CPF/CNPJ, dados de
+  qualificacao. Existe uma unica vez, reutilizada onde quer que a pessoa
+  apareca.
+- **Cliente** (`clientes` e as tabelas legadas ja documentadas acima):
+  contexto cadastral/comercial/documental. E o "caso" que a SC Topografia
+  atende -- pode ter `pessoa_id` apontando para a pessoa central.
+- **Proprietario**: o papel que uma pessoa exerce em um imovel/projeto/
+  documento especifico. Nao e um cadastro separado; e uma qualificacao
+  dentro do contexto do cliente/imovel.
+- **Representante**: a relacao entre duas ou mais pessoas/partes
+  (`representacoes`, `representacao_representantes`,
+  `representacao_representados`). Registra quem representa quem, com que
+  papel (procurador, inventariante, sindico, socio-administrador etc.), em
+  que documento e por quanto tempo.
+
+Pessoa != Cliente != Proprietario != Representante. A mesma pessoa pode
+ocupar papeis diferentes em contextos diferentes sem nunca virar um segundo
+cadastro:
+
+> Eduardo Schier tem um unico `pessoa_id`. Em um caso ele e o proprietario
+> (cliente com `pessoa_id` apontando para ele). Em outro caso -- o
+> inventario do Espolio de Eliseu Schier -- ele e o representante, com
+> papel Inventariante. Abrir o cadastro de Eduardo nao mostra "Inventariante"
+> como caracteristica permanente dele; isso so aparece na secao
+> "Representacoes" do cliente que ele representa (no caso, o Espolio de
+> Eliseu Schier).
+
+O cliente ganhou dois campos novos para casos como esse:
+
+- `condicao_juridica`: `NORMAL`, `ESPOLIO` ou `OUTRO`.
+- `nome_documental`: nome a usar nos documentos quando difere do nome da
+  pessoa historica -- ex.: cliente e Eliseu Schier (pessoa), condicao
+  `ESPOLIO`, nome documental "Espolio de Eliseu Schier". A pessoa historica
+  (Eliseu) continua sendo Eliseu; nao se cria uma pessoa artificial chamada
+  "Espolio de Eliseu Schier".
+
+Na tela de cliente, a secao "Representacoes" (dentro do mesmo modal de
+cadastro, sem redesenho geral) lista as representacoes ativas daquele
+cliente e do respectivo conjuge, e permite adicionar uma nova: buscar a
+pessoa no cadastro central (por nome, CPF ou CNPJ) reaproveitando o
+`pessoa_id` se ja existir, escolher o papel daquela relacao especifica,
+marcar explicitamente quem e representado (o titular e/ou o conjuge -- a
+procuracao do conjuge nunca e inferida automaticamente) e o modo de atuacao
+em linguagem simples ("Pode assinar sozinho" / "Deve assinar em conjunto" /
+"Qualquer um dos representantes pode assinar"). Campos avancados (documento
+base, escopo de poderes, validade, observacoes) ficam em uma secao
+recolhivel para nao atrapalhar o fluxo normal.
+
+O modulo `person_repository.py` encapsula a busca/leitura/escrita de pessoas
+centrais; `representation_service.py` encapsula representacoes e os
+vocabularios de papel/modo de atuacao. Ambos delegam tudo as RPCs
+`public.*_assinatura_v1` ja publicadas no Supabase -- nenhum dos dois
+reimplementa a logica de resolucao de pessoa por documento, nem faz
+DELETE+INSERT em massa das representacoes de um cliente.
+
+## 11. Proxima etapa
 
 Quando a geracao de documentos for implementada, ela deve consumir `DocumentoContext`, validar os requisitos do documento escolhido e entao preencher o DOCX. A tela de cadastro nao deve armazenar textos prontos de documentos; ela deve armazenar os fatos que permitem gerar esses textos.

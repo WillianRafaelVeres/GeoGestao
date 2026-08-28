@@ -160,6 +160,39 @@ DOCUMENT_FIELD_REQUIREMENTS = {
     ],
 }
 
+# Rotulo (masculino, feminino) por papel de representacao. O papel pertence a
+# relacao entre pessoas (representacao_representantes.papel / legado
+# procuradores.tipo_representacao), nunca a pessoa em si: a mesma pessoa pode
+# ser Procurador em um documento e Inventariante em outro.
+TIPOS_REPRESENTACAO_LABEL = {
+    "PROCURADOR": ("Procurador", "Procuradora"),
+    "REPRESENTANTE_LEGAL": ("Representante Legal", "Representante Legal"),
+    "REPRESENTANTE": ("Representante", "Representante"),
+    "INVENTARIANTE": ("Inventariante", "Inventariante"),
+    "SOCIO_ADMINISTRADOR": ("Sócio-administrador", "Sócia-administradora"),
+    "ADMINISTRADOR": ("Administrador", "Administradora"),
+    "DIRETOR": ("Diretor", "Diretora"),
+    "SINDICO": ("Síndico", "Síndica"),
+    "ADMINISTRADOR_JUDICIAL": ("Administrador Judicial", "Administradora Judicial"),
+    "CURADOR": ("Curador", "Curadora"),
+    "TUTOR": ("Tutor", "Tutora"),
+    "OUTRO": ("Representante", "Representante"),
+}
+
+
+def label_tipo_representacao(tipo_representacao, sexo):
+    """Rotulo do papel de representacao para o texto de qualificacao.
+
+    Nunca assume que o papel e uma caracteristica permanente da pessoa: recebe
+    o papel daquela relacao especifica (tipo_representacao/papel) e o sexo
+    apenas para escolher a flexao de genero do rotulo.
+    """
+    masculino, feminino = TIPOS_REPRESENTACAO_LABEL.get(
+        (tipo_representacao or "").strip().upper(), TIPOS_REPRESENTACAO_LABEL["PROCURADOR"]
+    )
+    return feminino if sexo == "FEMININO" else masculino
+
+
 BD_DADOS_FIELDS = [
     "Tipo_Proprietario", "Quem_Assina", "Emp_Nome", "Emp_CNPJ",
     "Emp_Logradouro", "Emp_UF", "Emp_Cidade", "Emp_Bairro", "Emp_CEP",
@@ -823,9 +856,7 @@ def build_qualificacao_completa(cliente_context):
             parts.append(f"com sede na {end_pj}")
 
         if procurador.get("nome_completo"):
-            tipo_rep = "Procuradora" if procurador.get("sexo") == "FEMININO" else "Procurador"
-            if procurador.get("tipo_representacao") == "REPRESENTANTE":
-                tipo_rep = "Representante Legal"
+            tipo_rep = label_tipo_representacao(procurador.get("tipo_representacao"), procurador.get("sexo"))
 
             proc_name = procurador.get("nome_completo").strip().upper()
             flex_p = build_flexoes_genero(procurador.get("sexo"))
@@ -912,9 +943,7 @@ def build_qualificacao_completa(cliente_context):
                 parts.append(f"pelo regime da {format_regime(regime)}")
 
         if (cliente.get("quem_assina") == "PROCURADOR" or cliente.get("tem_procurador")) and procurador.get("nome_completo"):
-            tipo_rep = "Procuradora" if procurador.get("sexo") == "FEMININO" else "Procurador"
-            if procurador.get("tipo_representacao") == "REPRESENTANTE":
-                tipo_rep = "Representante Legal"
+            tipo_rep = label_tipo_representacao(procurador.get("tipo_representacao"), procurador.get("sexo"))
             proc_name = procurador.get("nome_completo").strip().upper()
             flex_p = build_flexoes_genero(procurador.get("sexo"))
             proc_subparts = [f"neste ato {flex['representado']} por seu {tipo_rep} {proc_name}"]

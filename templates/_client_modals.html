@@ -392,9 +392,55 @@
                             <div class="city-warning" data-city-warning="proc">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
 
+                        <section class="client-section" data-client-section="representacoes">
+                            <div class="client-section-title">
+                                <h3>6. Representações</h3>
+                                <small>Quem representa este cliente (procurador, inventariante, etc.) e, quando aplicável, o cônjuge. Independe do cadastro de procurador acima: aqui a pessoa e o papel ficam separados.</small>
+                            </div>
+                            {% if not cliente.id %}
+                                <div class="form-note">Salve o cadastro para gerenciar representações.</div>
+                            {% elif assinaturas_indisponivel %}
+                                <div class="form-note">Representações indisponíveis no momento. Verifique a configuração de GEOGESTAO_ASSINATURAS_APP_KEY.</div>
+                            {% else %}
+                                <div class="representation-manager" data-representation-manager
+                                     data-client-id="{{ cliente.id }}"
+                                     data-save-url="{{ url_for('client_representacao_save', client_id=cliente.id) }}"
+                                     data-search-url="{{ url_for('api_pessoas_search') }}"
+                                     data-create-pessoa-url="{{ url_for('api_pessoas_create') }}">
+                                    <div class="representation-list" data-representation-list>
+                                        {% for rep in representacoes %}
+                                            <div class="representation-card {{ 'is-inactive' if not rep.ativo }}" data-representation-card data-representacao='{{ rep|tojson|e }}'>
+                                                <div class="representation-card-head">
+                                                    <strong>{{ (rep.representantes or [])|map(attribute='nome')|join(' e ') or 'Sem representante' }}</strong>
+                                                    <span class="status-chip {{ 'status-chip-completo' if rep.ativo and rep.vigente else 'status-chip-incompleto' }}">
+                                                        {{ 'Inativa' if not rep.ativo else ('Vigente' if rep.vigente else 'Fora de validade') }}
+                                                    </span>
+                                                </div>
+                                                <div class="representation-card-body">
+                                                    <span><b>Papel:</b> {{ (rep.representantes or [])|map(attribute='papel')|map('replace', '_', ' ')|join(', ') or '-' }}</span>
+                                                    <span><b>Representa:</b> {{ (rep.representados or [])|map(attribute='nome')|join(', ') or '-' }}</span>
+                                                    <span><b>Atuação:</b> {{ modos_atuacao.get(rep.modo_atuacao, rep.modo_atuacao) }}</span>
+                                                    <span><b>Principal:</b> {{ 'Sim' if rep.principal else 'Não' }}</span>
+                                                </div>
+                                                <div class="representative-actions">
+                                                    <button type="button" class="mini-icon-btn" data-representation-edit title="Editar">Editar</button>
+                                                    {% if rep.ativo %}
+                                                        <button type="button" class="mini-icon-btn danger" data-representation-deactivate data-representacao-id="{{ rep.representacao_id }}" title="Desativar">Desativar</button>
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                        {% else %}
+                                            <div class="representative-empty">Nenhuma representação cadastrada.</div>
+                                        {% endfor %}
+                                    </div>
+                                    <button type="button" class="representative-add" data-representation-add title="Adicionar representação">+</button>
+                                </div>
+                            {% endif %}
+                        </section>
+
                         <section class="client-section">
                             <div class="client-section-title">
-                                <h3>6. Revisao rapida</h3>
+                                <h3>7. Revisao rapida</h3>
                                 <small>O cadastro pode ser salvo incompleto.</small>
                             </div>
                             <textarea name="observacoes" rows="3" class="full-textarea" placeholder="Observacoes internas do cliente">{{ cliente.observacoes or '' }}</textarea>
@@ -472,6 +518,119 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Fechar</button>
                     <button type="button" class="btn btn-primary" data-bs-target="#modal-client-{{ row.id }}" data-bs-toggle="modal">Editar cadastro</button>
+                </div>
+            </div>
+        </div>
+    </div>
+{%- endmacro %}
+
+{% macro representacao_modal(cliente, conjuge, papeis_representacao, modos_atuacao, naturezas_sugeridas) -%}
+    <div class="modal fade representation-modal" id="modal-representacao-{{ cliente.id }}" tabindex="-1" aria-hidden="true" data-papeis='{{ papeis_representacao|tojson|e }}'>
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div>
+                        <span class="module-label">Representação</span>
+                        <h2 class="modal-title" data-representation-modal-title>Nova representação</h2>
+                        <p>Quem representa, com que papel, e quem é representado.</p>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" data-rp-field="representacao_id" value="">
+
+                    <div class="form-grid two">
+                        <label>Natureza
+                            <input type="text" list="rp-naturezas-{{ cliente.id }}" data-rp-field="natureza" placeholder="Ex.: Procuração, Inventário...">
+                            <datalist id="rp-naturezas-{{ cliente.id }}">
+                                {% for natureza in naturezas_sugeridas %}<option value="{{ natureza }}">{% endfor %}
+                            </datalist>
+                        </label>
+                        <label class="inline-check" style="align-self:end">
+                            <input type="checkbox" data-rp-field="principal"> Representação principal
+                        </label>
+                    </div>
+
+                    <div class="form-subsection-title"><strong>Representantes</strong></div>
+                    <div class="representation-rep-list" data-rp-representantes>
+                        <div class="representative-empty" data-rp-representantes-empty>Nenhum representante adicionado ainda.</div>
+                    </div>
+                    <template data-rp-representante-template>
+                        <div class="representative-row" data-rp-representante-row>
+                            <div>
+                                <strong data-rp-rep-nome></strong>
+                                <label class="representation-papel-select">Papel
+                                    <select data-rp-rep-papel></select>
+                                </label>
+                            </div>
+                            <div class="representative-actions">
+                                <button type="button" class="mini-icon-btn danger" data-rp-rep-remove title="Remover">Remover</button>
+                            </div>
+                        </div>
+                    </template>
+
+                    <div class="representation-search">
+                        <label>Buscar pessoa (nome, CPF ou CNPJ)
+                            <input type="text" data-rp-search-input placeholder="Digite para buscar no cadastro central...">
+                        </label>
+                        <div class="representation-search-results" data-rp-search-results></div>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-rp-new-person>Pessoa não encontrada: cadastrar nova</button>
+                        <div class="representation-new-person is-hidden" data-rp-new-person-form>
+                            <div class="form-grid three">
+                                <label>Tipo
+                                    <select data-rp-new-tipo>
+                                        <option value="PESSOA_FISICA">Pessoa física</option>
+                                        <option value="PESSOA_JURIDICA">Pessoa jurídica</option>
+                                    </select>
+                                </label>
+                                <label>Nome completo / razão social<input type="text" data-rp-new-nome></label>
+                                <label>CPF/CNPJ<input type="text" data-rp-new-documento></label>
+                            </div>
+                            <button type="button" class="btn btn-primary btn-sm" data-rp-new-person-save>Cadastrar e adicionar</button>
+                        </div>
+                    </div>
+
+                    <div class="form-subsection-title"><strong>Representa</strong></div>
+                    <div class="representation-representados">
+                        <label class="inline-check">
+                            <input type="checkbox" data-rp-representado data-tipo="cliente" data-id="{{ cliente.id }}" checked disabled>
+                            {{ cliente.nome_exibicao or cliente.nome or 'Cliente' }} (titular)
+                        </label>
+                        {% if conjuge and conjuge.pessoa_id %}
+                            <label class="inline-check">
+                                <input type="checkbox" data-rp-representado data-tipo="pessoa" data-id="{{ conjuge.pessoa_id }}">
+                                {{ conjuge.nome_completo }} (cônjuge)
+                            </label>
+                        {% endif %}
+                    </div>
+
+                    <div class="form-subsection-title"><strong>Modo de atuação</strong></div>
+                    <div class="representation-modo">
+                        {% for key, label in modos_atuacao.items() %}
+                            <label class="inline-check">
+                                <input type="radio" name="rp_modo_atuacao_{{ cliente.id }}" value="{{ key }}" data-rp-modo-option {% if key == 'INDIVIDUAL' %}checked{% endif %}>
+                                {{ label }}
+                            </label>
+                        {% endfor %}
+                    </div>
+
+                    <details class="representation-advanced">
+                        <summary>Detalhes da representação (opcional)</summary>
+                        <div class="form-grid two">
+                            <label>Documento/base<input type="text" data-rp-field="documento_base" placeholder="Ex.: Procuração pública, escritura..."></label>
+                            <label>Referência do documento<input type="text" data-rp-field="referencia_documento" placeholder="Livro, folha, cartório..."></label>
+                            <label>Validade início<input type="date" data-rp-field="validade_inicio"></label>
+                            <label>Validade fim<input type="date" data-rp-field="validade_fim"></label>
+                        </div>
+                        <label>Escopo dos poderes<textarea rows="2" data-rp-field="escopo_poderes"></textarea></label>
+                        <label>Observações<textarea rows="2" data-rp-field="observacoes"></textarea></label>
+                    </details>
+
+                    <div class="form-note" data-rp-error style="display:none;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-primary" data-rp-save>Salvar representação</button>
                 </div>
             </div>
         </div>
