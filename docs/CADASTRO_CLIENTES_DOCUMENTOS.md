@@ -358,6 +358,21 @@ vocabularios de papel/modo de atuacao. Ambos delegam tudo as RPCs
 reimplementa a logica de resolucao de pessoa por documento, nem faz
 DELETE+INSERT em massa das representacoes de um cliente.
 
+### 10.1 Experiencia de assinatura e compatibilidade
+
+O modal apresenta uma unica secao de **Assinatura e representacao**. O campo
+legado `clientes.quem_assina` continua no formulario e conserva os valores
+`PROPRIETARIO` e `PROCURADOR`, mas recebe textos mais claros para o usuario.
+Representacoes centrais aparecem em cards com representante, papel, status,
+modo de atuacao e validade.
+
+O formulario normal envia `representation_ui_version=2`. O salvamento
+cadastral nao interpreta a ausencia dos campos legados `rep_*` como remocao;
+essa protecao evita perder procuradores ou vinculos ao editar apenas telefone,
+endereco ou outro dado do cliente. O fluxo legado permanece disponivel somente
+como **Modo de compatibilidade** quando a chave/RPC da camada central estiver
+indisponivel. Nenhuma alteracao de schema e necessaria para essa decisao.
+
 ## 11. Proxima etapa
 
 Quando a geracao de documentos for implementada, ela deve consumir `DocumentoContext`, validar os requisitos do documento escolhido e entao preencher o DOCX. A tela de cadastro nao deve armazenar textos prontos de documentos; ela deve armazenar os fatos que permitem gerar esses textos.

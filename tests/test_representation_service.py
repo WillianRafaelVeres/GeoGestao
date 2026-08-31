@@ -1,4 +1,5 @@
 import unittest
+import datetime as dt
 
 import psycopg2
 
@@ -55,6 +56,45 @@ class LabelDictionariesTests(unittest.TestCase):
         self.assertEqual(svc.MODOS_ATUACAO["INDIVIDUAL"], "Pode assinar sozinho")
         self.assertEqual(svc.MODOS_ATUACAO["CONJUNTA"], "Deve assinar em conjunto")
         self.assertEqual(svc.MODOS_ATUACAO["QUALQUER_UM"], "Qualquer um dos representantes pode assinar")
+
+    def test_v2_marker_does_not_allow_legacy_sync_by_absence(self):
+        self.assertFalse(svc.legacy_representatives_sync_allowed({"representation_ui_version": "2"}))
+        self.assertFalse(svc.legacy_representatives_sync_allowed({"representation_ui_version": " 2 "}))
+
+    def test_missing_v2_marker_preserves_legacy_sync_contract(self):
+        self.assertTrue(svc.legacy_representatives_sync_allowed({}))
+        self.assertTrue(svc.legacy_representatives_sync_allowed({"representation_ui_version": "1"}))
+
+    def test_representation_view_formats_roles_status_and_validity(self):
+        result = svc.representacao_view({
+            "ativo": True,
+            "vigente": True,
+            "principal": True,
+            "modo_atuacao": "INDIVIDUAL",
+            "validade_fim": "2028-08-15",
+            "representantes": [{"nome": "Eduardo Schier", "papel": "INVENTARIANTE"}],
+        }, today=dt.date(2026, 8, 31))
+        self.assertEqual(result["representantes_label"], "Eduardo Schier")
+        self.assertEqual(result["papel_label"], "Inventariante")
+        self.assertEqual(result["status_label"], "Vigente")
+        self.assertEqual(result["validade_label"], "Válida até 15/08/2028")
+
+    def test_representation_view_does_not_use_color_only_for_inactive_status(self):
+        result = svc.representacao_view({"ativo": False, "vigente": False, "representantes": []})
+        self.assertEqual(result["status_label"], "Inativa")
+        self.assertEqual(result["validade_label"], "Sem prazo informado")
+
+    def test_select_document_representante_prefers_vigente_principal(self):
+        result = svc.select_document_representante([
+            {"ativo": True, "vigente": False, "representantes": [{"nome": "Antigo", "papel": "PROCURADOR"}]},
+            {"ativo": True, "vigente": True, "representantes": [{
+                "nome": "Eduardo Schier", "cpf_cnpj": "111", "papel": "INVENTARIANTE",
+                "principal": True, "qualificacao_central": {"sexo": "MASCULINO"},
+            }]},
+        ])
+        self.assertEqual(result["nome_completo"], "Eduardo Schier")
+        self.assertEqual(result["tipo_representacao"], "INVENTARIANTE")
+        self.assertEqual(result["sexo"], "MASCULINO")
 
 
 class RpcWrapperTests(unittest.TestCase):

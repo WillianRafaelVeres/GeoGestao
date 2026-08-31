@@ -2918,10 +2918,17 @@ a:hover { color: #1d4ed8; }
     background: #fff;
 }
 .representation-card.is-inactive { opacity: .6; background: #f8fafc; }
-.representation-card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.representation-card-head { display: flex; justify-content: flex-start; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
 .representation-card-head strong { color: var(--text); font-size: 13px; }
+.representation-card-role { font-size: 12px; font-weight: 600; color: #344054; }
 .representation-card-body { display: grid; gap: 3px; font-size: 12px; color: #475467; }
 .representation-card-body b { color: #344054; }
+.status-chip-principal { background: #eef4ff; color: #1d4ed8; }
+.representation-empty { display: grid; gap: 5px; padding: 12px; border: 1px dashed #b8c7dc; border-radius: 8px; color: #475467; font-size: 12px; }
+.representation-empty strong { color: var(--text); }
+.attention-state { border-color: #f0b44d; background: #fffbeb; }
+.form-note-warning { border-color: #f0b44d; background: #fffbeb; color: #7a4b00; }
+.compatibility-section { border-color: #f0b44d; }
 
 .representation-rep-list { display: grid; gap: 6px; margin-bottom: 8px; }
 .representation-papel-select { display: block; margin-top: 4px; font-size: 12px; }

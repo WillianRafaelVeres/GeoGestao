@@ -760,9 +760,11 @@ function initRepresentationManagers(root = document) {
             bsModal?.show();
         }
 
-        manager.querySelector("[data-representation-add]")?.addEventListener("click", () => {
-            resetForm();
-            openModal();
+        manager.querySelectorAll("[data-representation-add]").forEach((button) => {
+            button.addEventListener("click", () => {
+                resetForm();
+                openModal();
+            });
         });
 
         manager.querySelectorAll("[data-representation-edit]").forEach((button) => {
@@ -1465,7 +1467,8 @@ function initDocumentalClientForm(root = document) {
             const showSpouse = !isPJ && (requiresSpouse || (isSeparationTotal && incluirConjuge && incluirConjuge.checked));
             setSectionVisible("conjuge", showSpouse, !showSpouse);
 
-            const showProcurador = isPJ || (quemAssina && quemAssina.value === "PROCURADOR");
+            const compatibilityMode = Boolean(form.querySelector('[data-section="procurador"].compatibility-section'));
+            const showProcurador = compatibilityMode || isPJ || (quemAssina && quemAssina.value === "PROCURADOR");
             setSectionVisible("procurador", showProcurador);
             if (pjNotice) pjNotice.style.display = isPJ ? "block" : "none";
 

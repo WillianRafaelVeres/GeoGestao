@@ -12702,10 +12702,16 @@ def save_cliente_documental():
         upsert_endereco_pf(pf_id, now)
         upsert_conjuge(pf_id, now)
 
-    if quem_assina == "PROCURADOR" or tipo_cliente == "PESSOA_JURIDICA":
-        sync_procuradores(cliente_id, now)
-    else:
-        execute_db("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
+    # A UI V2 não envia o payload legado `rep_*`: sua ausência significa que
+    # o gerenciamento central de representações ficou fora deste POST, não
+    # que o usuário pediu para remover procuradores existentes. O formulário
+    # legado continua com o comportamento histórico quando o marcador não
+    # está presente (inclusive a remoção explícita ao trocar para proprietário).
+    if representation_service.legacy_representatives_sync_allowed(form):
+        if quem_assina == "PROCURADOR" or tipo_cliente == "PESSOA_JURIDICA":
+            sync_procuradores(cliente_id, now)
+        else:
+            execute_db("DELETE FROM procuradores WHERE cliente_id = %s", (cliente_id,))
 
     upsert_imovel_vinculado(cliente_id, now)
     refresh_cliente_status(cliente_id)
@@ -13527,12 +13533,15 @@ def load_cliente_representacoes(client_id):
     chave GEOGESTAO_ASSINATURAS_APP_KEY nao esta configurada ou a RPC falha,
     para a tela mostrar um aviso em vez de quebrar o modal do cliente.
     """
+    if not ASSINATURAS_APP_KEY:
+        return [], True
     try:
         contexto = representation_service.get_contexto_assinatura(get_db(), ASSINATURAS_APP_KEY, client_id)
     except representation_service.RepresentationServiceError as exc:
         app.logger.warning("Representacoes indisponiveis para cliente %s: %s", client_id, exc)
         return [], True
-    return (contexto or {}).get("representacoes", []), False
+    representacoes = (contexto or {}).get("representacoes", [])
+    return [representation_service.representacao_view(rep) for rep in representacoes], False
 
 
 @app.route("/clients/<int:client_id>/fragment")
@@ -13543,6 +13552,14 @@ def client_modal_fragment(client_id):
         return "Cliente nao encontrado.", 404
 
     representacoes, assinaturas_indisponivel = load_cliente_representacoes(client_id)
+    if not assinaturas_indisponivel:
+        representante_documental = representation_service.select_document_representante(representacoes)
+        if representante_documental:
+            # A camada documental ainda consome `procurador`; a projeção é
+            # somente de leitura e mantém o contrato antigo sem gravar ou
+            # duplicar a pessoa central em `procuradores`.
+            context["procurador"] = representante_documental
+            context["texto_qualificacao"] = build_qualificacao_completa(context)
     row = context["cliente"]
     response = Response(
         render_template(
@@ -13577,6 +13594,8 @@ def client_modal_fragment(client_id):
 @login_required
 def api_pessoas_search():
     """Busca no cadastro central de pessoas (autocomplete de 'Buscar pessoa')."""
+    if not ASSINATURAS_APP_KEY:
+        return {"error": "Representacoes indisponiveis no momento."}, 503
     termo = (request.args.get("q") or "").strip()
     try:
         pessoas = get_cached_lookup(
@@ -13600,6 +13619,8 @@ def api_pessoas_create():
     """
     if not can_manage():
         return {"error": "Permissao negada"}, 403
+    if not ASSINATURAS_APP_KEY:
+        return {"error": "Representacoes indisponiveis no momento."}, 503
     dados = request.get_json(silent=True) or {}
     nome = (
         dados.get("nome_exibicao")
@@ -13623,6 +13644,8 @@ def client_representacao_save(client_id):
     """Cria ou atualiza UMA representacao (nunca apaga/recria as demais do cliente)."""
     if not can_manage():
         return {"error": "Permissao negada"}, 403
+    if not ASSINATURAS_APP_KEY:
+        return {"error": "Representacoes indisponiveis no momento."}, 503
     cliente = query_db("SELECT id FROM clientes WHERE id = %s", (client_id,), one=True)
     if not cliente:
         return {"error": "Cliente nao encontrado."}, 404
@@ -13641,6 +13664,8 @@ def client_representacao_deactivate(client_id, representacao_id):
     """Desativa (soft-delete) uma representacao; ela continua no historico."""
     if not can_manage():
         return {"error": "Permissao negada"}, 403
+    if not ASSINATURAS_APP_KEY:
+        return {"error": "Representacoes indisponiveis no momento."}, 503
     try:
         resultado = representation_service.deactivate_representacao(get_db(), ASSINATURAS_APP_KEY, representacao_id)
     except representation_service.RepresentationServiceError as exc:

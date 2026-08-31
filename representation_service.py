@@ -13,6 +13,8 @@ permanecem intocadas. Desativar usa soft-delete (`ativo = false`), nunca
 DELETE.
 """
 
+import datetime as dt
+
 import psycopg2
 import psycopg2.extras
 
@@ -24,10 +26,10 @@ PAPEIS_REPRESENTACAO = {
     "PROCURADOR": "Procurador",
     "REPRESENTANTE_LEGAL": "Representante legal",
     "INVENTARIANTE": "Inventariante",
-    "SOCIO_ADMINISTRADOR": "Socio-administrador",
+    "SOCIO_ADMINISTRADOR": "Sócio-administrador",
     "ADMINISTRADOR": "Administrador",
     "DIRETOR": "Diretor",
-    "SINDICO": "Sindico",
+    "SINDICO": "Síndico",
     "ADMINISTRADOR_JUDICIAL": "Administrador judicial",
     "CURADOR": "Curador",
     "TUTOR": "Tutor",
@@ -51,13 +53,104 @@ NATUREZAS_SUGERIDAS = [
 
 CONDICOES_JURIDICAS = {
     "NORMAL": "Normal",
-    "ESPOLIO": "Espolio",
+    "ESPOLIO": "Espólio",
     "OUTRO": "Outro",
 }
 
 
+def legacy_representatives_sync_allowed(form):
+    """Indica se o POST ainda usa a tela legada de procuradores.
+
+    A interface V2 gerencia representações pelas RPCs próprias e não envia
+    `rep_*`. A ausência desses campos, portanto, não pode ser interpretada
+    como remoção quando o marcador V2 está presente. Sem o marcador,
+    preservamos o contrato histórico do formulário.
+    """
+    return str(form.get("representation_ui_version") or "").strip() != "2"
+
+
 class RepresentationServiceError(RuntimeError):
     """Erro de negocio devolvido pelas RPCs de representacoes (mensagem ja tratada)."""
+
+
+def papel_label(papel):
+    """Converte o codigo do papel em texto apropriado para a interface."""
+    codigo = str(papel or "").strip().upper()
+    return PAPEIS_REPRESENTACAO.get(codigo, codigo.replace("_", " ").title() or "Representante")
+
+
+def _date_value(value):
+    if not value:
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    try:
+        return dt.date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def validade_label(representacao, today=None):
+    """Formata a validade para o card sem substituir a vigencia da RPC."""
+    inicio = _date_value(representacao.get("validade_inicio"))
+    fim = _date_value(representacao.get("validade_fim"))
+    if not inicio and not fim:
+        return "Sem prazo informado"
+    hoje = today or dt.date.today()
+    if fim and fim < hoje:
+        return f"Fora de validade desde {fim.strftime('%d/%m/%Y')}"
+    if fim:
+        return f"Válida até {fim.strftime('%d/%m/%Y')}"
+    return f"Válida desde {inicio.strftime('%d/%m/%Y')}"
+
+
+def representacao_view(representacao, today=None):
+    """Adiciona significado de apresentacao ao payload retornado pela RPC."""
+    view = dict(representacao or {})
+    representantes = [dict(item) for item in (view.get("representantes") or [])]
+    for representante in representantes:
+        representante["papel_label"] = papel_label(representante.get("papel"))
+    view["representantes"] = representantes
+    view["representantes_label"] = " e ".join(
+        item.get("nome") or "Sem nome" for item in representantes
+    )
+    view["papel_label"] = ", ".join(item["papel_label"] for item in representantes) or "Representante"
+    view["atuacao_label"] = MODOS_ATUACAO.get(
+        view.get("modo_atuacao"), view.get("modo_atuacao") or ""
+    )
+    view["status_label"] = (
+        "Inativa" if not view.get("ativo")
+        else ("Vigente" if view.get("vigente") else "Fora de validade")
+    )
+    view["validade_label"] = validade_label(view, today=today)
+    return view
+
+
+def select_document_representante(representacoes):
+    """Projeta a representacao central principal para o contrato documental legado."""
+    vigentes = [
+        item for item in (representacoes or [])
+        if item.get("ativo") and item.get("vigente") and item.get("representantes")
+    ]
+    ativas = [
+        item for item in (representacoes or [])
+        if item.get("ativo") and item.get("representantes")
+    ]
+    representacao = (vigentes or ativas or [None])[0]
+    if not representacao:
+        return None
+    representantes = sorted(
+        representacao.get("representantes") or [],
+        key=lambda item: (not bool(item.get("principal")), item.get("ordem") or 0),
+    )
+    pessoa = representantes[0]
+    perfil = dict(pessoa.get("qualificacao_central") or {})
+    perfil["nome_completo"] = pessoa.get("nome") or perfil.get("nome_completo") or ""
+    perfil["cpf"] = pessoa.get("cpf_cnpj") or perfil.get("cpf") or ""
+    perfil["tipo_representacao"] = pessoa.get("papel") or "PROCURADOR"
+    return perfil
 
 
 def _clean_pg_message(exc):

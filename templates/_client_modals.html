@@ -30,6 +30,7 @@
         <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
             <form class="modal-content cliente-form" method="post" novalidate>
                 <input type="hidden" name="cliente_id" value="{{ cliente.id or '' }}">
+                <input type="hidden" name="representation_ui_version" value="{{ '' if assinaturas_indisponivel else '2' }}">
                 <div class="modal-header">
                     <div>
                         <span class="module-label">{{ 'Editar cadastro' if cliente.id else 'Novo cadastro' }}</span>
@@ -62,7 +63,7 @@
                                 <h3>1. Tipo de cliente</h3>
                                 <small>Pessoa juridica exige representante/procurador.</small>
                             </div>
-                            <div class="form-grid three">
+                            <div class="form-grid two">
                                 <label>Tipo de cliente
                                     <select name="tipo_cliente" data-role="tipo-cliente">
                                         {% for key, label in tipos_cliente.items() %}
@@ -70,16 +71,8 @@
                                         {% endfor %}
                                     </select>
                                 </label>
-                                <label>Quem assina
-                                    <select name="quem_assina" data-role="quem-assina">
-                                        {% for key, label in quem_assina_options.items() %}
-                                            <option value="{{ key }}" {% if (cliente.quem_assina or 'PROPRIETARIO') == key %}selected{% endif %}>{{ label }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </label>
                                 {{ field_text('Nome para exibicao', 'nome_exibicao', cliente.nome_exibicao, 'text', '', '', 'Opcional para buscas') }}
                             </div>
-                            <div class="form-note pj-notice">Pessoa juridica sera salva com assinatura por representante/procurador.</div>
                         </section>
 
                         <section class="client-section conditional-section" data-section="pf" data-client-section="pessoa-fisica">
@@ -228,11 +221,13 @@
                             <div class="city-warning" data-city-warning="pf_end">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
 
-                        <section class="client-section conditional-section" data-section="procurador" data-client-section="procurador">
+                        {% if assinaturas_indisponivel %}
+                        <section class="client-section conditional-section compatibility-section" data-section="procurador" data-client-section="procurador">
                             <div class="client-section-title">
-                                <h3>5. Procuradores e representantes</h3>
-                                <small>Adicione um ou mais responsaveis pela assinatura sem ocupar espaco no cadastro.</small>
+                                <h3>Modo de compatibilidade</h3>
+                                <small>As representacoes centrais estao temporariamente indisponiveis. O gerenciamento legado continua disponivel.</small>
                             </div>
+                            <div class="form-note">Use esta area somente enquanto o servico novo estiver indisponivel.</div>
                             <div class="representative-manager" data-representative-manager>
                                 <div class="representative-list" data-rep-list>
                                     {% for rep in procuradores %}
@@ -391,16 +386,27 @@
                             </div>
                             <div class="city-warning" data-city-warning="proc">Verifique a cidade: ela nao foi encontrada para o UF selecionado.</div>
                         </section>
+                        {% endif %}
 
                         <section class="client-section" data-client-section="representacoes">
                             <div class="client-section-title">
-                                <h3>6. Representações</h3>
-                                <small>Quem representa este cliente (procurador, inventariante, etc.) e, quando aplicável, o cônjuge. Independe do cadastro de procurador acima: aqui a pessoa e o papel ficam separados.</small>
+                                <h3>5. Assinatura e representação</h3>
+                                <small>Defina quem assina documentos por este cliente e, quando necessário, quem o representa.</small>
+                            </div>
+                            <div class="form-grid two">
+                                <label>Forma de assinatura
+                                    <select name="quem_assina" data-role="quem-assina">
+                                        {% for key, label in quem_assina_options.items() %}
+                                            <option value="{{ key }}" {% if (cliente.quem_assina or 'PROPRIETARIO') == key %}selected{% endif %}>{{ 'O próprio cliente assina' if key == 'PROPRIETARIO' else 'Outra pessoa representa este cliente' }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                <div class="form-note pj-notice">Pessoa jurídica deve possuir ao menos um representante habilitado para assinatura.</div>
                             </div>
                             {% if not cliente.id %}
-                                <div class="form-note">Salve o cadastro para gerenciar representações.</div>
+                                <div class="form-note">Salve o cadastro do cliente para adicionar representantes.</div>
                             {% elif assinaturas_indisponivel %}
-                                <div class="form-note">Representações indisponíveis no momento. Verifique a configuração de GEOGESTAO_ASSINATURAS_APP_KEY.</div>
+                                <div class="form-note form-note-warning">Representações estão temporariamente indisponíveis. Os demais dados do cliente continuam disponíveis.</div>
                             {% else %}
                                 <div class="representation-manager" data-representation-manager
                                      data-client-id="{{ cliente.id }}"
@@ -411,16 +417,19 @@
                                         {% for rep in representacoes %}
                                             <div class="representation-card {{ 'is-inactive' if not rep.ativo }}" data-representation-card data-representacao='{{ rep|tojson|e }}'>
                                                 <div class="representation-card-head">
-                                                    <strong>{{ (rep.representantes or [])|map(attribute='nome')|join(' e ') or 'Sem representante' }}</strong>
+                                                    <strong>{{ rep.representantes_label or ((rep.representantes or [])|map(attribute='nome')|join(' e ') or 'Sem representante') }}</strong>
                                                     <span class="status-chip {{ 'status-chip-completo' if rep.ativo and rep.vigente else 'status-chip-incompleto' }}">
-                                                        {{ 'Inativa' if not rep.ativo else ('Vigente' if rep.vigente else 'Fora de validade') }}
+                                                        {{ rep.status_label or ('Inativa' if not rep.ativo else ('Vigente' if rep.vigente else 'Fora de validade')) }}
                                                     </span>
+                                                    {% if rep.principal %}<span class="status-chip status-chip-principal">Principal</span>{% endif %}
+                                                </div>
+                                                <div class="representation-card-role">
+                                                    {{ rep.papel_label or ((rep.representantes or [])|map(attribute='papel')|map('replace', '_', ' ')|join(', ') or '-') }}
                                                 </div>
                                                 <div class="representation-card-body">
-                                                    <span><b>Papel:</b> {{ (rep.representantes or [])|map(attribute='papel')|map('replace', '_', ' ')|join(', ') or '-' }}</span>
                                                     <span><b>Representa:</b> {{ (rep.representados or [])|map(attribute='nome')|join(', ') or '-' }}</span>
-                                                    <span><b>Atuação:</b> {{ modos_atuacao.get(rep.modo_atuacao, rep.modo_atuacao) }}</span>
-                                                    <span><b>Principal:</b> {{ 'Sim' if rep.principal else 'Não' }}</span>
+                                                    <span><b>Atuação:</b> {{ rep.atuacao_label or modos_atuacao.get(rep.modo_atuacao, rep.modo_atuacao) }}</span>
+                                                    <span><b>Validade:</b> {{ rep.validade_label or 'Sem prazo informado' }}</span>
                                                 </div>
                                                 <div class="representative-actions">
                                                     <button type="button" class="mini-icon-btn" data-representation-edit title="Editar">Editar</button>
@@ -430,7 +439,18 @@
                                                 </div>
                                             </div>
                                         {% else %}
-                                            <div class="representative-empty">Nenhuma representação cadastrada.</div>
+                                            {% if cliente.quem_assina == 'PROCURADOR' %}
+                                                <div class="representation-empty attention-state">
+                                                    <strong>Nenhuma representação ativa cadastrada.</strong>
+                                                    <span>Adicione quem pode assinar por este cliente.</span>
+                                                    <button type="button" class="btn btn-primary btn-sm" data-representation-add>Adicionar representante</button>
+                                                </div>
+                                            {% else %}
+                                                <div class="representation-empty">
+                                                    <strong>O próprio cliente está configurado como responsável pela assinatura.</strong>
+                                                    <span>Você pode adicionar uma representação quando necessário.</span>
+                                                </div>
+                                            {% endif %}
                                         {% endfor %}
                                     </div>
                                     <button type="button" class="representative-add" data-representation-add title="Adicionar representação">+</button>
@@ -604,7 +624,7 @@
                         {% endif %}
                     </div>
 
-                    <div class="form-subsection-title"><strong>Modo de atuação</strong></div>
+                    <div class="form-subsection-title" data-rp-modo-section><strong>Como eles podem assinar?</strong></div>
                     <div class="representation-modo">
                         {% for key, label in modos_atuacao.items() %}
                             <label class="inline-check">
