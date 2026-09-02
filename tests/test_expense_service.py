@@ -252,6 +252,42 @@ class RegistrarReembolsoTests(unittest.TestCase):
         self.repo.insert_reembolso.assert_not_called()
 
 
+class CancelarReembolsoTests(unittest.TestCase):
+    """Fase 3: cancelar um reembolso lancado por engano reabre a pendencia da despesa
+    (soft, auditado -- nunca DELETE)."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cancel_active_reembolso(self):
+        self.repo.get_reembolso.return_value = {"id": 50, "status": "confirmado"}
+        self.repo.list_reembolso_alocacoes.return_value = [
+            {"despesa_id": 1, "valor": 180},
+            {"despesa_id": 2, "valor": 120},
+        ]
+        svc.cancelar_reembolso(self.db, 50, "Lancado para a pessoa errada", "2026-09-03T09:00:00", cancelado_por=1)
+
+        self.repo.cancel_reembolso.assert_called_once_with(
+            self.db, 50, "Lancado para a pessoa errada", "2026-09-03T09:00:00", 1
+        )
+        self.assertEqual(self.repo.insert_evento.call_count, 2)
+
+    def test_cannot_cancel_missing_reembolso(self):
+        self.repo.get_reembolso.return_value = None
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.cancelar_reembolso(self.db, 999, None, "2026-09-03T09:00:00")
+        self.repo.cancel_reembolso.assert_not_called()
+
+    def test_cannot_cancel_already_cancelled_reembolso(self):
+        self.repo.get_reembolso.return_value = {"id": 50, "status": "cancelado"}
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.cancelar_reembolso(self.db, 50, None, "2026-09-03T09:00:00")
+        self.repo.cancel_reembolso.assert_not_called()
+
+
 class DuplicateAttachmentTests(unittest.TestCase):
     """Item 20 do pedido: hash identico e sinalizado, decisao fica com o usuario."""
 

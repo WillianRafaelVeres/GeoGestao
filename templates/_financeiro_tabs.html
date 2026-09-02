@@ -6,5 +6,10 @@
     <li class="nav-item" role="presentation">
         <a class="nav-link {{ 'active' if active == 'despesas' else '' }}" href="{{ url_for('financeiro_despesas') }}">Despesas</a>
     </li>
+    {% if can_manage_despesas() %}
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if active == 'reembolsos' else '' }}" href="{{ url_for('financeiro_reembolsos') }}">Reembolsos</a>
+        </li>
+    {% endif %}
 </ul>
 {%- endmacro %}

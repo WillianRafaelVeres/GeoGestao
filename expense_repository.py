@@ -380,14 +380,23 @@ def sum_reembolsado_por_despesa(db, despesa_id):
 
 
 def list_despesas_pendentes_por_desembolsante(db, desembolsante_id):
-    """Despesas prontas, desembolsadas por essa pessoa, com saldo de reembolso > 0."""
+    """Despesas prontas, desembolsadas por essa pessoa, com saldo de reembolso > 0.
+
+    Traz projeto(s)/cliente(s) (JSON agregado) e o comprovante original da
+    despesa junto -- e o que a tela 'Financeiro -> Reembolsos' mostra ao
+    expandir uma pessoa (item 7 do pedido), sem outra consulta por despesa.
+    expense_service.registrar_reembolso usa so d.id/saldo_pendente desta
+    mesma linha; os campos extras nao afetam essa logica.
+    """
     return _fetchall(
         db,
         """
         SELECT
             d.*,
             COALESCE(ra.total_reembolsado, 0) AS total_reembolsado,
-            d.valor_total - COALESCE(ra.total_reembolsado, 0) AS saldo_pendente
+            d.valor_total - COALESCE(ra.total_reembolsado, 0) AS saldo_pendente,
+            COALESCE(alloc.items, '[]'::json) AS alocacoes,
+            anexo.principal_path AS anexo_principal_path
         FROM despesas d
         LEFT JOIN LATERAL (
             SELECT SUM(ra.valor) AS total_reembolsado
@@ -395,6 +404,20 @@ def list_despesas_pendentes_por_desembolsante(db, desembolsante_id):
             JOIN despesa_reembolsos r ON r.id = ra.reembolso_id
             WHERE ra.despesa_id = d.id AND r.status = 'confirmado'
         ) ra ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT json_agg(json_build_object(
+                'projeto_codigo', p.codigo, 'projeto_nome', p.nome,
+                'cliente_nome', COALESCE(c.nome_exibicao, c.nome)
+            ) ORDER BY a.id) AS items
+            FROM despesa_alocacoes a
+            JOIN projetos p ON p.id = a.projeto_id
+            LEFT JOIN clientes c ON c.id = a.cliente_id
+            WHERE a.despesa_id = d.id
+        ) alloc ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT (ARRAY_AGG(caminho_dropbox ORDER BY principal DESC, id))[1] AS principal_path
+            FROM despesa_anexos WHERE despesa_id = d.id
+        ) anexo ON TRUE
         WHERE d.desembolsado_por_tipo = 'PESSOA'
           AND d.desembolsado_por_id = %s
           AND d.status != 'cancelada'
@@ -406,7 +429,12 @@ def list_despesas_pendentes_por_desembolsante(db, desembolsante_id):
 
 
 def summarize_pendencias_reembolso(db):
-    """Uma linha por desembolsante com saldo pendente > 0, para 'Financeiro -> Reembolsos'."""
+    """Uma linha por desembolsante com saldo pendente > 0, para 'Financeiro -> Reembolsos'.
+
+    'total_reembolsado_historico' soma TODOS os reembolsos confirmados dessa
+    pessoa (nao so os das despesas ainda pendentes) -- e o "valor ja
+    reembolsado" opcional do item 7 do pedido, so para dar contexto.
+    """
     return _fetchall(
         db,
         """
@@ -414,7 +442,8 @@ def summarize_pendencias_reembolso(db):
             p.id AS desembolsante_id,
             p.nome,
             COUNT(*) AS despesas_pendentes,
-            SUM(d.valor_total - COALESCE(ra.total_reembolsado, 0)) AS total_pendente
+            SUM(d.valor_total - COALESCE(ra.total_reembolsado, 0)) AS total_pendente,
+            COALESCE(hist.total, 0) AS total_reembolsado_historico
         FROM despesas d
         JOIN desembolsantes p ON p.id = d.desembolsado_por_id
         LEFT JOIN LATERAL (
@@ -423,13 +452,55 @@ def summarize_pendencias_reembolso(db):
             JOIN despesa_reembolsos r ON r.id = ra.reembolso_id
             WHERE ra.despesa_id = d.id AND r.status = 'confirmado'
         ) ra ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT SUM(valor) AS total
+            FROM despesa_reembolsos
+            WHERE desembolsante_id = p.id AND status = 'confirmado'
+        ) hist ON TRUE
         WHERE d.desembolsado_por_tipo = 'PESSOA'
           AND d.status != 'cancelada'
           AND d.valor_total - COALESCE(ra.total_reembolsado, 0) > 0.005
-        GROUP BY p.id, p.nome
+        GROUP BY p.id, p.nome, hist.total
         ORDER BY total_pendente DESC
         """,
     )
+
+
+def get_reembolso(db, reembolso_id):
+    return _fetchone(db, "SELECT * FROM despesa_reembolsos WHERE id = %s", (reembolso_id,))
+
+
+def list_reembolso_alocacoes(db, reembolso_id):
+    return _fetchall(
+        db,
+        """
+        SELECT ra.*, d.descricao AS despesa_descricao
+        FROM despesa_reembolso_alocacoes ra
+        JOIN despesas d ON d.id = ra.despesa_id
+        WHERE ra.reembolso_id = %s
+        ORDER BY ra.id
+        """,
+        (reembolso_id,),
+    )
+
+
+def list_reembolsos_por_desembolsante(db, desembolsante_id):
+    return _fetchall(
+        db,
+        "SELECT * FROM despesa_reembolsos WHERE desembolsante_id = %s ORDER BY criado_em DESC, id DESC",
+        (desembolsante_id,),
+    )
+
+
+def cancel_reembolso(db, reembolso_id, motivo, cancelado_em, cancelado_por=None):
+    db.execute(
+        """
+        UPDATE despesa_reembolsos
+        SET status = 'cancelado', motivo_cancelamento = %s, cancelado_em = %s, cancelado_por = %s
+        WHERE id = %s
+        """,
+        (motivo, cancelado_em, cancelado_por, reembolso_id),
+    ).close()
 
 
 # --- Lotes de importacao ----------------------------------------------

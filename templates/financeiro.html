@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% from '_financeiro_tabs.html' import financeiro_tabs %}
+{% from '_financeiro_tabs.html' import financeiro_tabs with context %}
 {% block title %}Financeiro - GeoGestao{% endblock %}
 
 {% macro historico_botao(item, target_id) -%}

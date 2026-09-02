@@ -349,6 +349,26 @@ def registrar_reembolso(
     return {"id": reembolso_id, "valor": total_selecionado, "despesas": [d["id"] for d in pendentes]}
 
 
+def cancelar_reembolso(db, reembolso_id, motivo, cancelado_em, cancelado_por=None):
+    """Cancela um reembolso registrado por engano. Soft (nunca DELETE): as despesas
+    que ele quitava voltam a aparecer como pendentes automaticamente, porque toda
+    consulta de saldo ja filtra por status='confirmado'."""
+    reembolso = repo.get_reembolso(db, reembolso_id)
+    if not reembolso:
+        raise ExpenseServiceError("Reembolso nao encontrado.")
+    if reembolso["status"] == "cancelado":
+        raise ExpenseServiceError("Este reembolso ja esta cancelado.")
+    alocacoes = repo.list_reembolso_alocacoes(db, reembolso_id)
+    repo.cancel_reembolso(db, reembolso_id, motivo, cancelado_em, cancelado_por)
+    for alocacao in alocacoes:
+        repo.insert_evento(
+            db, alocacao["despesa_id"], "reembolso_cancelado",
+            f"Reembolso de R$ {to_currency(alocacao['valor'])} cancelado."
+            + (f" Motivo: {motivo}." if motivo else "") + " A despesa voltou a ficar pendente de reembolso.",
+            cancelado_em, usuario_id=cancelado_por,
+        )
+
+
 # --- Anexos / duplicidade -----------------------------------------------
 
 def check_duplicate_anexo(db, file_hash, despesa_id=None):

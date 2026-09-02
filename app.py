@@ -6909,6 +6909,9 @@ def utility_processor():
         "checklist_requirement_conditional": REQUIREMENT_CONDITIONAL,
         "can_manage": can_manage,
         "can_admin": can_admin,
+        "can_view_despesas": can_view_despesas,
+        "can_manage_despesas": can_manage_despesas,
+        "can_register_reembolso": can_register_reembolso,
         "dropbox_web_url": dropbox_web_url,
         "today_iso": app_today().isoformat(),
         "ufs": UFS,
@@ -9261,6 +9264,46 @@ def read_despesa_attachment(upload):
         "extension": extension,
         "original_name": original_name[:255],
         "size": len(file_bytes),
+    }, None
+
+
+def dropbox_reembolso_destination(data_reembolso):
+    """Acha/cria Novo/_despesas/_reembolsos/<ano>/<mes> -- comprovante do reembolso em
+    si (ex.: print do PIX da empresa pro Rafael), separado do comprovante original da
+    despesa (que fica em Novo/_despesas/<ano>/<mes>). Um reembolso pode quitar varias
+    despesas de uma vez, entao tambem nao pertence a uma despesa especifica."""
+    if not dropbox_enabled():
+        return None, "Integracao com o Dropbox nao esta configurada."
+    root = dropbox_despesas_root()
+    if not root:
+        return None, "Nao foi possivel determinar a pasta '_despesas' (verifique GEOGESTAO_NOVO_WORK_BASE)."
+    try:
+        referencia = datetime.fromisoformat(data_reembolso).date() if data_reembolso else app_today()
+    except ValueError:
+        referencia = app_today()
+    subpath = f"{root}/_reembolsos/{referencia.year:04d}/{referencia.month:02d}"
+    ok, error = dropbox_ensure_folder(subpath)
+    if not ok:
+        return None, f"Nao foi possivel preparar a pasta de reembolsos no Dropbox: {error}"
+    return subpath, None
+
+
+def dropbox_upload_reembolso_attachment(data_reembolso, titulo, attachment):
+    """Envia o comprovante de um reembolso. Nunca sobrescreve: em caso de nome repetido
+    o Dropbox renomeia automaticamente."""
+    folder_path, error = dropbox_reembolso_destination(data_reembolso)
+    if not folder_path:
+        return None, error
+    safe_title = re.sub(r'[\\/:*?"<>|]+', " ", str(titulo or "").strip())
+    safe_title = re.sub(r"\s+", " ", safe_title).strip(" _-") or "Reembolso"
+    filename = f"{safe_title}{attachment['extension']}"
+    upload_path = f"{folder_path}/{filename}"
+    metadata, error = _dropbox_upload(upload_path, attachment["bytes"])
+    if not metadata:
+        return None, f"Falha ao enviar o arquivo para o Dropbox: {error}"
+    return {
+        "path": metadata.get("path_display") or upload_path,
+        "name": metadata.get("name") or filename,
     }, None
 
 
@@ -15619,6 +15662,106 @@ def financeiro_despesas_cancelar(despesa_id):
         return redirect(url_for("financeiro_despesas"))
     flash("Despesa cancelada.", "success")
     return redirect(url_for("financeiro_despesas"))
+
+
+@app.route("/financeiro/reembolsos")
+@login_required
+def financeiro_reembolsos():
+    """Financeiro -> Reembolsos: quem a empresa deve reembolsar por ter desembolsado
+    uma despesa do bolso proprio. Nunca confundir com pagamento/recebimento de cliente."""
+    if not can_manage_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro"))
+
+    db = get_db()
+    pendencias = expense_repository.summarize_pendencias_reembolso(db)
+    despesas_por_pessoa = {
+        pendencia["desembolsante_id"]: expense_repository.list_despesas_pendentes_por_desembolsante(
+            db, pendencia["desembolsante_id"]
+        )
+        for pendencia in pendencias
+    }
+
+    return render_template(
+        "reembolsos.html",
+        pendencias=pendencias,
+        despesas_por_pessoa=despesas_por_pessoa,
+        formas_pagamento=FORMAS_PAGAMENTO,
+        can_register_reembolso_flag=can_register_reembolso(),
+    )
+
+
+@app.route("/financeiro/reembolsos", methods=["POST"])
+@login_required
+def financeiro_reembolsos_criar():
+    if not can_register_reembolso():
+        flash("Permissao negada para registrar reembolsos.", "danger")
+        return redirect(url_for("financeiro_reembolsos"))
+
+    db = get_db()
+    now = app_now_iso()
+    desembolsante_id = request.form.get("desembolsante_id", type=int)
+    if not desembolsante_id:
+        flash("Selecione a pessoa a ser reembolsada.", "danger")
+        return redirect(url_for("financeiro_reembolsos"))
+    data_reembolso = parse_payment_date(request.form.get("data_reembolso"))
+    forma_reembolso = request.form.get("forma_reembolso", "")
+    if forma_reembolso not in FORMAS_PAGAMENTO:
+        forma_reembolso = "OUTRO"
+    observacoes = (request.form.get("observacoes") or "").strip() or None
+    registro_uid = (request.form.get("registro_uid") or "").strip()[:64] or secrets.token_hex(16)
+    despesa_ids = [int(value) for value in request.form.getlist("despesa_id") if value.strip().isdigit()] or None
+
+    try:
+        reembolso = expense_service.registrar_reembolso(
+            db,
+            desembolsante_id=desembolsante_id,
+            data_reembolso=data_reembolso,
+            criado_em=now,
+            despesa_ids=despesa_ids,
+            forma_reembolso=forma_reembolso,
+            observacoes=observacoes,
+            registro_uid=registro_uid,
+            criado_por=g.user["id"],
+        )
+    except expense_service.ExpenseServiceError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("financeiro_reembolsos"))
+
+    attachment, attachment_error = read_despesa_attachment(request.files.get("comprovante"))
+    if attachment_error:
+        flash(f"Reembolso registrado, mas o comprovante nao pode ser anexado: {attachment_error}", "warning")
+    elif attachment:
+        desembolsante = expense_repository.get_desembolsante(db, desembolsante_id)
+        uploaded, upload_error = dropbox_upload_reembolso_attachment(
+            data_reembolso, f"Reembolso {desembolsante['nome'] if desembolsante else ''}", attachment
+        )
+        if not uploaded:
+            flash(f"Reembolso registrado, mas o comprovante nao pode ser enviado ao Dropbox: {upload_error}", "warning")
+        else:
+            db.execute(
+                "UPDATE despesa_reembolsos SET anexo_path = %s, anexo_nome = %s WHERE id = %s",
+                (uploaded["path"], uploaded["name"], reembolso["id"]),
+            ).close()
+
+    flash(f"Reembolso de {format_currency(reembolso['valor'])} registrado.", "success")
+    return redirect(url_for("financeiro_reembolsos"))
+
+
+@app.route("/financeiro/reembolsos/<int:reembolso_id>/cancelar", methods=["POST"])
+@login_required
+def financeiro_reembolsos_cancelar(reembolso_id):
+    if not can_register_reembolso():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro_reembolsos"))
+    motivo = (request.form.get("motivo") or "").strip() or None
+    try:
+        expense_service.cancelar_reembolso(get_db(), reembolso_id, motivo, app_now_iso(), cancelado_por=g.user["id"])
+    except expense_service.ExpenseServiceError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("financeiro_reembolsos"))
+    flash("Reembolso cancelado; a(s) despesa(s) voltaram a ficar pendentes.", "success")
+    return redirect(url_for("financeiro_reembolsos"))
 
 
 @app.route("/cartorio")
