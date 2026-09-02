@@ -235,6 +235,36 @@
         <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('financeiro_despesas') }}">Ver despesas</a>
     </div>
     <div class="dash-kpi-row finance-summary-grid">
+        <a class="dash-kpi finance-summary-card {{ 'dash-kpi--danger' if despesas_indicadores.documentos_pendentes else '' }}"
+           href="{{ url_for('financeiro_lancamentos') }}">
+            <span class="dash-kpi-label">Documentos para lancar</span>
+            <strong class="dash-kpi-value">{{ despesas_indicadores.documentos_pendentes }}</strong>
+            <span class="dash-kpi-sub">aguardando classificacao</span>
+        </a>
+        <a class="dash-kpi finance-summary-card {{ 'dash-kpi--warn' if total_a_cobrar and total_a_cobrar > 0.005 else '' }}"
+           href="{{ url_for('financeiro_cobrancas') }}">
+            <span class="dash-kpi-label">Total a cobrar</span>
+            <strong class="dash-kpi-value">{{ format_currency(total_a_cobrar) }}</strong>
+            <span class="dash-kpi-sub">dos proprietarios</span>
+        </a>
+        <a class="dash-kpi finance-summary-card" href="{{ url_for('financeiro_cobrancas') }}">
+            <span class="dash-kpi-label">Proprietarios pendentes</span>
+            <strong class="dash-kpi-value">{{ pendencias_cobranca|length }}</strong>
+            <span class="dash-kpi-sub">com valores a cobrar</span>
+        </a>
+        <a class="dash-kpi finance-summary-card finance-summary-card--received" href="{{ url_for('financeiro_cobrancas') }}">
+            <span class="dash-kpi-label">Total cobrado</span>
+            <strong class="dash-kpi-value">{{ format_currency(total_cobrado) }}</strong>
+            <span class="dash-kpi-sub">cobrancas ativas</span>
+        </a>
+        <a class="dash-kpi finance-summary-card {{ 'dash-kpi--warn' if total_a_reembolsar and total_a_reembolsar > 0.005 else '' }}"
+           href="{{ url_for('financeiro_reembolsos') }}">
+            <span class="dash-kpi-label">Reembolsos pendentes</span>
+            <strong class="dash-kpi-value">{{ format_currency(total_a_reembolsar) }}</strong>
+            <span class="dash-kpi-sub">{{ pendencias_reembolso|length }} pessoa(s) com saldo</span>
+        </a>
+    </div>
+    <div class="dash-kpi-row finance-summary-grid finance-summary-grid--secondary">
         <div class="dash-kpi finance-summary-card finance-summary-card--primary">
             <span class="dash-kpi-label">Total lancado no mes</span>
             <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.total_mes) }}</strong>
@@ -249,16 +279,6 @@
             <span class="dash-kpi-label">Pago por colaboradores</span>
             <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.pago_pessoas_mes) }}</strong>
             <span class="dash-kpi-sub">no mes</span>
-        </div>
-        <div class="dash-kpi finance-summary-card {{ 'dash-kpi--warn' if total_a_reembolsar and total_a_reembolsar > 0.005 else '' }}">
-            <span class="dash-kpi-label">A reembolsar</span>
-            <strong class="dash-kpi-value">{{ format_currency(total_a_reembolsar) }}</strong>
-            <span class="dash-kpi-sub">{{ pendencias_reembolso|length }} pessoa(s) com saldo</span>
-        </div>
-        <div class="dash-kpi finance-summary-card {{ 'dash-kpi--danger' if despesas_indicadores.documentos_pendentes else '' }}">
-            <span class="dash-kpi-label">Aguardando classificacao</span>
-            <strong class="dash-kpi-value">{{ despesas_indicadores.documentos_pendentes }}</strong>
-            <span class="dash-kpi-sub">documento(s) importado(s)</span>
         </div>
     </div>
     {% set alertas_despesa = [] %}

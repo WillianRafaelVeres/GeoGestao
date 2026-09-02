@@ -98,12 +98,11 @@
                 <tr>
                     <th>Data</th>
                     <th>Descricao</th>
+                    <th>Proprietario</th>
                     <th>Projeto(s)</th>
-                    <th>Cliente(s)</th>
-                    <th>Quem desembolsou</th>
                     <th>Valor</th>
-                    <th>Status</th>
-                    <th>Comprovante</th>
+                    <th>Situacao</th>
+                    <th>Documento</th>
                     <th>Acoes</th>
                 </tr>
             </thead>
@@ -114,8 +113,12 @@
                         <td>{{ format_date(despesa.data_despesa) }}</td>
                         <td>
                             <strong>{{ despesa.descricao }}</strong>
-                            {% if despesa.observacoes %}<br><small class="text-muted">{{ despesa.observacoes }}</small>{% endif %}
+                            <br><small class="text-muted">
+                                {{ 'Empresa' if despesa.desembolsado_por_tipo == 'EMPRESA' else (despesa.desembolsante_nome or '-') }}
+                                {% if despesa.observacoes %} &middot; {{ despesa.observacoes }}{% endif %}
+                            </small>
                         </td>
+                        <td>{{ clientes|join(' / ') if clientes else '-' }}</td>
                         <td>
                             {% if despesa.projeto_count == 1 %}
                                 {% set unico = despesa.alocacoes[0] %}
@@ -133,8 +136,6 @@
                                 <span class="text-muted">Sem projeto</span>
                             {% endif %}
                         </td>
-                        <td>{{ clientes|join(' / ') if clientes else '-' }}</td>
-                        <td>{{ 'Empresa' if despesa.desembolsado_por_tipo == 'EMPRESA' else (despesa.desembolsante_nome or '-') }}</td>
                         <td>{{ format_currency(despesa.valor_total) }}</td>
                         <td><span class="badge bg-{{ status_badges.get(despesa.status, 'secondary') }}">{{ status_labels.get(despesa.status, despesa.status) }}</span></td>
                         <td>
@@ -167,7 +168,7 @@
                     </tr>
                 {% else %}
                     <tr>
-                        <td colspan="9" class="text-muted">Nenhuma despesa encontrada com os filtros atuais.</td>
+                        <td colspan="8" class="text-muted">Nenhuma despesa encontrada com os filtros atuais.</td>
                     </tr>
                 {% endfor %}
             </tbody>

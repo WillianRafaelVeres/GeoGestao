@@ -779,6 +779,15 @@ a:hover { color: #1d4ed8; }
 .finance-summary-card--received { border-left-color: #0f766e; }
 .finance-summary-card.dash-kpi--warn { border-left-color: var(--amber); background: #fffbeb; }
 .finance-summary-card.dash-kpi--danger { border-left-color: var(--red); background: #fef2f2; }
+a.finance-summary-card {
+    text-decoration: none;
+    color: inherit;
+    transition: box-shadow .12s ease, transform .12s ease;
+}
+a.finance-summary-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    transform: translateY(-1px);
+}
 
 .dash-kpi-label {
     color: var(--muted);
@@ -1112,6 +1121,11 @@ a:hover { color: #1d4ed8; }
 
 .finance-despesas-panel { margin-bottom: 14px; }
 .finance-despesas-panel .finance-summary-grid { margin-top: 4px; }
+.finance-summary-grid--secondary {
+    margin-top: 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    opacity: .9;
+}
 .finance-despesas-alerts {
     list-style: none;
     margin: 12px 0 0;

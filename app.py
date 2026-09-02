@@ -15463,6 +15463,9 @@ def financeiro():
     )
     pendencias_reembolso = expense_repository.summarize_pendencias_reembolso(despesas_db)
     total_a_reembolsar = sum(float(item["total_pendente"] or 0) for item in pendencias_reembolso)
+    pendencias_cobranca = expense_repository.list_despesas_a_cobrar_por_cliente(despesas_db)
+    total_a_cobrar = sum(float(item["total_a_cobrar"] or 0) for item in pendencias_cobranca)
+    total_cobrado = expense_repository.get_total_cobrado(despesas_db)
     meses_label = [
         "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
         "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
@@ -15533,6 +15536,9 @@ def financeiro():
         despesas_indicadores=despesas_indicadores,
         pendencias_reembolso=pendencias_reembolso,
         total_a_reembolsar=total_a_reembolsar,
+        pendencias_cobranca=pendencias_cobranca,
+        total_a_cobrar=total_a_cobrar,
+        total_cobrado=total_cobrado,
         hoje_mes_label=hoje_mes_label,
         resumo={
             "total_a_receber": a_receber_ativos + a_receber_concluidos,

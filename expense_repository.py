@@ -975,3 +975,10 @@ def list_cobrancas_recentes(db, limit=20):
         """,
         (limit,),
     )
+
+
+def get_total_cobrado(db):
+    """Soma de todas as cobrancas ainda ativas, para o card 'Total cobrado' da
+    Visao Geral (item 12 do redesenho)."""
+    row = _fetchone(db, "SELECT COALESCE(SUM(valor_total), 0) AS total FROM cobrancas WHERE status = 'ativa'")
+    return float(row["total"]) if row else 0.0
