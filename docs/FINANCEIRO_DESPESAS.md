@@ -97,9 +97,14 @@ pronta                               (valor + divisao + desembolsante definidos)
 cancelada                            (soft, a qualquer momento; nunca DELETE)
 ```
 
-`valor_total` so e `NOT NULL`/`> 0` fora dos status de rascunho (migration
-`20260902_despesas_fase4_importacao.sql`). Cancelamento bloqueia se ja houver
-reembolso confirmado sobre a despesa (precisa cancelar o reembolso primeiro).
+`valor_total` so e `NOT NULL`/`> 0` fora dos status de rascunho/pendente/**cancelada**
+(migrations `20260902_despesas_fase4_importacao.sql` e
+`..._fase9_permitir_cancelar_rascunho.sql` -- a fase4 tinha deixado de fora o
+proprio `cancelada`, entao cancelar um documento importado que ainda nao
+tinha `valor_total` -- o caso normal de descartar algo na fila de Lancamentos
+-- violava a constraint e derrubava a rota com 500). Cancelamento bloqueia se
+ja houver reembolso confirmado sobre a despesa (precisa cancelar o reembolso
+primeiro).
 
 ### `despesa_alocacoes` -- cliente vem do projeto, nunca escolhido a mao
 

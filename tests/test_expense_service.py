@@ -284,6 +284,21 @@ class CancelDespesaTests(unittest.TestCase):
             svc.cancelar_despesa(self.db, 1, None, "2026-09-02T10:00:00")
         self.repo.cancel_despesa.assert_not_called()
 
+    def test_cancel_still_unclassified_expense_without_valor_total(self):
+        # Regressao: descartar um documento da fila de Lancamentos (rascunho/
+        # pendente_classificacao, sem valor_total ainda) precisa funcionar --
+        # a constraint despesas_valor_total_check so permitia isso a partir da
+        # migration fase9 (ver docs/FINANCEIRO_DESPESAS.md).
+        self.repo.get_despesa.return_value = {
+            "id": 1, "status": "pendente_classificacao", "descricao": "recibo.jpg", "valor_total": None,
+        }
+        self.repo.sum_reembolsado_por_despesa.return_value = 0.0
+
+        svc.cancelar_despesa(self.db, 1, None, "2026-09-02T10:00:00", cancelado_por=9)
+
+        self.repo.cancel_despesa.assert_called_once_with(self.db, 1, None, "2026-09-02T10:00:00", 9)
+        self.repo.insert_evento.assert_called_once()
+
     def test_cannot_cancel_already_reimbursed_expense(self):
         self.repo.get_despesa.return_value = {"id": 1, "status": "pronta"}
         self.repo.sum_reembolsado_por_despesa.return_value = 300.0
