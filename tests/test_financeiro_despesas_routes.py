@@ -255,5 +255,85 @@ class CancelarReembolsoRouteTests(RouteTestCase):
         self.assertTrue(any(categoria == "success" for categoria, _ in flashes))
 
 
+class CriarCobrancaRouteTests(RouteTestCase):
+    def test_valid_submission_calls_service(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "criar_cobranca") as criar_mock:
+            criar_mock.return_value = {"id": 900, "valor_total": Decimal("63.00")}
+            response, flashes = self._run(
+                appmod.financeiro_cobrancas_criar, "/financeiro/cobrancas",
+                form={
+                    "cliente_id": "7", "despesa_id": ["1", "2"],
+                    "data_cobranca": "2026-09-02", "registro_uid": "abc-123",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/financeiro/cobrancas", response.location)
+        criar_mock.assert_called_once()
+        kwargs = criar_mock.call_args.kwargs
+        self.assertEqual(kwargs["cliente_id"], 7)
+        self.assertEqual(kwargs["despesa_ids"], [1, 2])
+        self.assertTrue(any(categoria == "success" for categoria, _ in flashes))
+
+    def test_missing_client_is_rejected_before_calling_service(self):
+        with mock.patch.object(appmod.expense_service, "criar_cobranca") as criar_mock:
+            response, flashes = self._run(
+                appmod.financeiro_cobrancas_criar, "/financeiro/cobrancas",
+                form={"despesa_id": ["1"]},
+            )
+        self.assertEqual(response.status_code, 302)
+        criar_mock.assert_not_called()
+        self.assertTrue(any(categoria == "danger" for categoria, _ in flashes))
+
+    def test_service_error_is_flashed_and_does_not_crash(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "criar_cobranca",
+                                side_effect=appmod.expense_service.ExpenseServiceError("Ja esta em outra cobranca.")):
+            response, flashes = self._run(
+                appmod.financeiro_cobrancas_criar, "/financeiro/cobrancas",
+                form={"cliente_id": "7", "despesa_id": ["1"]},
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(("danger", "Ja esta em outra cobranca."), flashes)
+
+    def test_non_manager_cannot_create_cobranca(self):
+        with mock.patch.object(appmod.expense_service, "criar_cobranca") as criar_mock:
+            response, flashes = self._run(
+                appmod.financeiro_cobrancas_criar, "/financeiro/cobrancas",
+                form={"cliente_id": "7", "despesa_id": ["1"]},
+                user={"id": 2, "nome": "Tecnico", "perfil_acesso": "tecnico"},
+            )
+        self.assertEqual(response.status_code, 302)
+        criar_mock.assert_not_called()
+        self.assertTrue(any(categoria == "danger" for categoria, _ in flashes))
+
+
+class CancelarCobrancaRouteTests(RouteTestCase):
+    def test_cancel_calls_service_and_redirects(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_cobranca") as cancelar_mock:
+            response, flashes = self._run(
+                appmod.financeiro_cobrancas_cancelar, "/financeiro/cobrancas/900/cancelar",
+                form={"motivo": "Lancado errado"},
+                cobranca_id=900,
+            )
+        self.assertEqual(response.status_code, 302)
+        cancelar_mock.assert_called_once()
+        self.assertEqual(cancelar_mock.call_args.args[1], 900)
+        self.assertTrue(any(categoria == "success" for categoria, _ in flashes))
+
+    def test_non_manager_cannot_cancel_cobranca(self):
+        with mock.patch.object(appmod.expense_service, "cancelar_cobranca") as cancelar_mock:
+            response, flashes = self._run(
+                appmod.financeiro_cobrancas_cancelar, "/financeiro/cobrancas/900/cancelar",
+                form={}, cobranca_id=900,
+                user={"id": 2, "nome": "Tecnico", "perfil_acesso": "tecnico"},
+            )
+        self.assertEqual(response.status_code, 302)
+        cancelar_mock.assert_not_called()
+        self.assertTrue(any(categoria == "danger" for categoria, _ in flashes))
+
+
 if __name__ == "__main__":
     unittest.main()

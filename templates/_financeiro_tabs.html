@@ -8,6 +8,9 @@
     </li>
     {% if can_manage_despesas() %}
         <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if active == 'cobrancas' else '' }}" href="{{ url_for('financeiro_cobrancas') }}">Cobrancas</a>
+        </li>
+        <li class="nav-item" role="presentation">
             <a class="nav-link {{ 'active' if active == 'reembolsos' else '' }}" href="{{ url_for('financeiro_reembolsos') }}">Reembolsos</a>
         </li>
     {% endif %}

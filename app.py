@@ -16299,6 +16299,82 @@ def financeiro_reembolsos_cancelar(reembolso_id):
     return redirect(url_for("financeiro_reembolsos"))
 
 
+@app.route("/financeiro/cobrancas")
+@login_required
+def financeiro_cobrancas():
+    """Financeiro -> Cobrancas: despesas 'prontas' agrupadas por cliente, prontas
+    para virar uma cobranca formal (item 9/10 do redesenho)."""
+    if not can_manage_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro"))
+
+    db = get_db()
+    pendencias = expense_repository.list_despesas_a_cobrar_por_cliente(db)
+    despesas_por_cliente = {
+        pendencia["cliente_id"]: expense_repository.list_despesas_a_cobrar_do_cliente(db, pendencia["cliente_id"])
+        for pendencia in pendencias
+    }
+    cobrancas_recentes = expense_repository.list_cobrancas_recentes(db)
+
+    return render_template(
+        "cobrancas.html",
+        pendencias=pendencias,
+        despesas_por_cliente=despesas_por_cliente,
+        cobrancas_recentes=cobrancas_recentes,
+    )
+
+
+@app.route("/financeiro/cobrancas", methods=["POST"])
+@login_required
+def financeiro_cobrancas_criar():
+    if not can_manage_despesas():
+        flash("Permissao negada para registrar cobrancas.", "danger")
+        return redirect(url_for("financeiro_cobrancas"))
+
+    cliente_id = request.form.get("cliente_id", type=int)
+    if not cliente_id:
+        flash("Selecione o cliente/proprietario a cobrar.", "danger")
+        return redirect(url_for("financeiro_cobrancas"))
+    despesa_ids = [int(value) for value in request.form.getlist("despesa_id") if value.strip().isdigit()]
+    data_cobranca = parse_payment_date(request.form.get("data_cobranca"))
+    observacoes = (request.form.get("observacoes") or "").strip() or None
+    registro_uid = (request.form.get("registro_uid") or "").strip()[:64] or secrets.token_hex(16)
+
+    try:
+        cobranca = expense_service.criar_cobranca(
+            get_db(),
+            cliente_id=cliente_id,
+            despesa_ids=despesa_ids,
+            data_cobranca=data_cobranca,
+            criado_em=app_now_iso(),
+            observacoes=observacoes,
+            registro_uid=registro_uid,
+            criado_por=g.user["id"],
+        )
+    except expense_service.ExpenseServiceError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("financeiro_cobrancas"))
+
+    flash(f"Cobranca de {format_currency(cobranca['valor_total'])} registrada.", "success")
+    return redirect(url_for("financeiro_cobrancas"))
+
+
+@app.route("/financeiro/cobrancas/<int:cobranca_id>/cancelar", methods=["POST"])
+@login_required
+def financeiro_cobrancas_cancelar(cobranca_id):
+    if not can_manage_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro_cobrancas"))
+    motivo = (request.form.get("motivo") or "").strip() or None
+    try:
+        expense_service.cancelar_cobranca(get_db(), cobranca_id, motivo, app_now_iso(), cancelado_por=g.user["id"])
+    except expense_service.ExpenseServiceError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("financeiro_cobrancas"))
+    flash("Cobranca cancelada; a(s) despesa(s) voltaram a ficar 'a cobrar'.", "success")
+    return redirect(url_for("financeiro_cobrancas"))
+
+
 @app.route("/cartorio")
 @login_required
 def cartorio_board():

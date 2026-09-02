@@ -554,7 +554,8 @@ def classificar_despesa_rapida(
 # --- Cobrancas (Financeiro -> Cobrancas) -----------------------------------
 
 def criar_cobranca(
-    db, *, cliente_id, despesa_ids, data_cobranca, criado_em, observacoes=None, criado_por=None,
+    db, *, cliente_id, despesa_ids, data_cobranca, criado_em,
+    observacoes=None, registro_uid=None, criado_por=None,
 ):
     """Formaliza a cobranca de um conjunto de despesas 'prontas' de UM cliente
     (item 9/10 do redesenho). Recusa qualquer despesa que nao esteja pronta,
@@ -562,6 +563,10 @@ def criar_cobranca(
     tudo verificado ANTES de escrever, no mesmo espirito de
     validate_allocations_sum (uma falha de regra nunca pode deixar escrita
     parcial, porque o redirect de erro nao e status >=400)."""
+    if registro_uid:
+        existing = repo.find_cobranca_by_registro_uid(db, registro_uid)
+        if existing:
+            return existing
     if not despesa_ids:
         raise ExpenseServiceError("Selecione ao menos uma despesa para cobrar.")
     despesa_ids = list(dict.fromkeys(despesa_ids))  # remove duplicados, preserva ordem
@@ -582,10 +587,18 @@ def criar_cobranca(
     if total <= 0:
         raise ExpenseServiceError("O total da cobranca precisa ser maior que zero.")
 
-    cobranca_id = repo.insert_cobranca(
-        db, cliente_id, total, data_cobranca, criado_em,
-        observacoes=observacoes, criado_por=criado_por,
-    )
+    try:
+        cobranca_id = repo.insert_cobranca(
+            db, cliente_id, total, data_cobranca, criado_em,
+            observacoes=observacoes, registro_uid=registro_uid, criado_por=criado_por,
+        )
+    except psycopg2.errors.UniqueViolation:
+        db.rollback()
+        existing = repo.find_cobranca_by_registro_uid(db, registro_uid)
+        if existing:
+            return existing
+        raise ExpenseServiceError("Esta cobranca ja havia sido criada; o envio repetido foi ignorado.") from None
+
     for despesa_id in despesa_ids:
         valor = to_currency(elegiveis[despesa_id]["valor_total"])
         repo.insert_cobranca_item(db, cobranca_id, despesa_id, valor)

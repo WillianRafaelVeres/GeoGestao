@@ -622,9 +622,19 @@ class CriarCobrancaTests(unittest.TestCase):
         self.assertEqual(result, {"id": 900, "valor_total": Decimal("63.00")})
         self.repo.insert_cobranca.assert_called_once_with(
             self.db, 7, Decimal("63.00"), "2026-09-02", "2026-09-02T10:00:00",
-            observacoes=None, criado_por=1,
+            observacoes=None, registro_uid=None, criado_por=1,
         )
         self.assertEqual(self.repo.insert_cobranca_item.call_count, 2)
+
+    def test_duplicate_registro_uid_is_idempotent(self):
+        existing = {"id": 900, "valor_total": Decimal("63.00")}
+        self.repo.find_cobranca_by_registro_uid.return_value = existing
+        result = svc.criar_cobranca(
+            self.db, cliente_id=7, despesa_ids=[1, 2],
+            data_cobranca="2026-09-02", criado_em="2026-09-02T10:00:00", registro_uid="abc-123",
+        )
+        self.assertIs(result, existing)
+        self.repo.insert_cobranca.assert_not_called()
 
     def test_empty_selection_is_rejected(self):
         with self.assertRaises(svc.ExpenseServiceError):

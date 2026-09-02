@@ -1,0 +1,150 @@
+{% extends 'base.html' %}
+{% from '_financeiro_tabs.html' import financeiro_tabs with context %}
+{% block title %}Cobrancas - Financeiro - GeoGestao{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Financeiro</h1>
+        <p>Despesas prontas, agrupadas por proprietario, ainda nao cobradas. Selecione e marque como cobrado quando enviar a cobranca.</p>
+    </div>
+</div>
+
+{{ financeiro_tabs('cobrancas') }}
+
+{% for pendencia in pendencias %}
+    {% set despesas = despesas_por_cliente.get(pendencia.cliente_id, []) %}
+    <section class="panel reembolso-card">
+        <div class="reembolso-card-header">
+            <div>
+                <strong>{{ pendencia.cliente_nome }}</strong>
+                <span class="text-muted">{{ pendencia.despesas_a_cobrar }} despesa(s) a cobrar</span>
+            </div>
+            <div class="reembolso-card-values">
+                <span class="reembolso-total-pendente">{{ format_currency(pendencia.total_a_cobrar) }} a cobrar</span>
+            </div>
+            <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modalMarcarCobrado"
+                    data-cobranca-cliente-id="{{ pendencia.cliente_id }}"
+                    data-cobranca-cliente-nome="{{ pendencia.cliente_nome }}"
+                    data-cobranca-despesas='{{ despesas|tojson }}'>
+                Marcar como cobrado
+            </button>
+        </div>
+        <details class="reembolso-detail">
+            <summary>Ver despesas a cobrar</summary>
+            <div class="table-responsive">
+                <table class="table compact-table">
+                    <thead>
+                        <tr><th>Data</th><th>Descricao</th><th>Projeto(s)</th><th>Valor</th><th>Comprovante</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for despesa in despesas %}
+                            <tr>
+                                <td>{{ format_date(despesa.data_despesa) }}</td>
+                                <td>{{ despesa.descricao }}</td>
+                                <td>{{ despesa.alocacoes|map(attribute='projeto_codigo')|select|join(', ') }}</td>
+                                <td>{{ format_currency(despesa.valor_total) }}</td>
+                                <td>
+                                    {% if despesa.anexo_principal_path %}
+                                        <a href="{{ dropbox_web_url(despesa.anexo_principal_path) }}" target="_blank" rel="noopener">Ver</a>
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </section>
+{% else %}
+    <div class="empty-state">Nenhuma despesa pronta aguardando cobranca no momento.</div>
+{% endfor %}
+
+{% if cobrancas_recentes %}
+<section class="panel">
+    <div class="panel-header">
+        <h2>Cobrancas recentes</h2>
+    </div>
+    <div class="table-responsive">
+        <table class="table compact-table">
+            <thead>
+                <tr><th>Data</th><th>Cliente</th><th>Valor</th><th>Despesas</th><th>Status</th><th>Acoes</th></tr>
+            </thead>
+            <tbody>
+                {% for cobranca in cobrancas_recentes %}
+                    <tr>
+                        <td>{{ format_date(cobranca.data_cobranca) }}</td>
+                        <td>{{ cobranca.cliente_nome }}</td>
+                        <td>{{ format_currency(cobranca.valor_total) }}</td>
+                        <td>
+                            {% set descricoes = cobranca.despesas|map(attribute='descricao')|list %}
+                            {{ descricoes|join(', ') if descricoes else '-' }}
+                        </td>
+                        <td>
+                            {% if cobranca.status == 'cancelada' %}
+                                <span class="badge bg-secondary">Cancelada</span>
+                            {% else %}
+                                <span class="badge bg-success">Cobrado</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if cobranca.status == 'ativa' %}
+                                <form method="post" action="{{ url_for('financeiro_cobrancas_cancelar', cobranca_id=cobranca.id) }}"
+                                      onsubmit="return confirm('Cancelar esta cobranca? A(s) despesa(s) voltam a aparecer como a cobrar.');">
+                                    <button class="btn btn-outline-danger btn-sm" type="submit">Cancelar</button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+<div class="modal fade" id="modalMarcarCobrado" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <form method="post" action="{{ url_for('financeiro_cobrancas_criar') }}" class="modal-content" data-modal-finance-form id="cobrancaForm">
+            <input type="hidden" name="cliente_id" id="cobrancaClienteId">
+            <input type="hidden" name="registro_uid" id="cobrancaRegistroUid">
+            <div class="modal-header">
+                <div>
+                    <span class="module-label">Marcar como cobrado</span>
+                    <h2 class="modal-title" id="cobrancaClienteNome">Cliente</h2>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label">Despesas a incluir na cobranca</label>
+                        <small class="d-block text-muted mb-2">Todas vem marcadas por padrao. Desmarque as que nao entram nesta cobranca.</small>
+                        <div class="reembolso-despesas-list" data-cobranca-despesas-list></div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Total selecionado</label>
+                        <input class="form-control" id="cobrancaValor" readonly tabindex="-1">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Data</label>
+                        <input class="form-control" type="date" name="data_cobranca" value="{{ today_iso }}">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Observacoes</label>
+                        <input class="form-control" name="observacoes" placeholder="Observacoes internas" autocomplete="off">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary" type="submit">Marcar como cobrado</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='cobrancas.js') }}"></script>
+{% endblock %}

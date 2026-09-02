@@ -784,20 +784,29 @@ def list_projetos_do_cliente(db, cliente_id):
 
 # --- Cobrancas (Financeiro -> Cobrancas) -----------------------------------
 
-def insert_cobranca(db, cliente_id, valor_total, data_cobranca, criado_em, observacoes=None, criado_por=None):
+def insert_cobranca(
+    db, cliente_id, valor_total, data_cobranca, criado_em,
+    observacoes=None, registro_uid=None, criado_por=None,
+):
     return _insert_returning_id(
         db,
         """
-        INSERT INTO cobrancas (cliente_id, valor_total, data_cobranca, observacoes, criado_em, criado_por)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO cobrancas (cliente_id, valor_total, data_cobranca, observacoes, registro_uid, criado_em, criado_por)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (cliente_id, valor_total, data_cobranca, observacoes, criado_em, criado_por),
+        (cliente_id, valor_total, data_cobranca, observacoes, registro_uid, criado_em, criado_por),
     )
 
 
 def get_cobranca(db, cobranca_id):
     return _fetchone(db, "SELECT * FROM cobrancas WHERE id = %s", (cobranca_id,))
+
+
+def find_cobranca_by_registro_uid(db, registro_uid):
+    if not registro_uid:
+        return None
+    return _fetchone(db, "SELECT * FROM cobrancas WHERE registro_uid = %s", (registro_uid,))
 
 
 def insert_cobranca_item(db, cobranca_id, despesa_id, valor):
