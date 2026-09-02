@@ -29,3 +29,9 @@ services:
         sync: false
       - key: DROPBOX_REFRESH_TOKEN
         sync: false
+      # Chave de aplicacao das RPCs de pessoas/representacoes (public.*_assinatura_v1
+      # no Supabase). Sem ela, a secao "Representacoes" do cliente aparece como
+      # indisponivel (ver load_cliente_representacoes em app.py). Mesmo valor do
+      # .env local -- configure no dashboard do Render.
+      - key: GEOGESTAO_ASSINATURAS_APP_KEY
+        sync: false
