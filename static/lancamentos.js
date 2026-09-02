@@ -313,6 +313,22 @@ function updateLancamentoDoc(despesa) {
     autoAnalyzeLancamento(despesa.ai_analysis_url);
 }
 
+function lancamentoUrl(action, currentId) {
+    const params = new URLSearchParams();
+    if (window.lancamentoLoteId) params.set("lote_id", window.lancamentoLoteId);
+    return `/financeiro/lancamentos/${currentId}/${action}${params.toString() ? `?${params}` : ""}`;
+}
+
+function applyLancamentoAdvance(currentId, data) {
+    const savedItem = document.querySelector(`[data-lancamento-fila-item="${currentId}"]`);
+    savedItem?.remove();
+    const countBadge = document.querySelector("[data-lancamento-fila-count]");
+    if (countBadge) countBadge.textContent = String(lancamentoFilaCount());
+    const filaEmpty = document.querySelector("[data-lancamento-fila-empty]");
+    if (filaEmpty) filaEmpty.hidden = lancamentoFilaCount() > 0;
+    updateLancamentoDoc(data.next);
+}
+
 function initLancamentoForm() {
     const form = document.getElementById("lancamentoForm");
     if (!form) return;
@@ -331,10 +347,7 @@ function initLancamentoForm() {
         }
         try {
             const formData = new FormData(form);
-            const params = new URLSearchParams();
-            if (window.lancamentoLoteId) params.set("lote_id", window.lancamentoLoteId);
-            const url = `/financeiro/lancamentos/${currentId}/salvar-proximo${params.toString() ? `?${params}` : ""}`;
-            const response = await fetch(url, {
+            const response = await fetch(lancamentoUrl("salvar-proximo", currentId), {
                 method: "POST",
                 headers: { "X-Requested-With": "XMLHttpRequest" },
                 body: formData,
@@ -344,13 +357,7 @@ function initLancamentoForm() {
                 if (errorBox) errorBox.textContent = data.error || "Nao foi possivel salvar. Confira os campos.";
                 return;
             }
-            const savedItem = document.querySelector(`[data-lancamento-fila-item="${currentId}"]`);
-            savedItem?.remove();
-            const countBadge = document.querySelector("[data-lancamento-fila-count]");
-            if (countBadge) countBadge.textContent = String(lancamentoFilaCount());
-            const filaEmpty = document.querySelector("[data-lancamento-fila-empty]");
-            if (filaEmpty) filaEmpty.hidden = lancamentoFilaCount() > 0;
-            updateLancamentoDoc(data.next);
+            applyLancamentoAdvance(currentId, data);
         } catch {
             if (errorBox) errorBox.textContent = "Nao foi possivel conectar para salvar. Tente novamente.";
         } finally {
@@ -358,6 +365,33 @@ function initLancamentoForm() {
                 submitButton.disabled = false;
                 submitButton.textContent = originalText;
             }
+        }
+    });
+
+    const cancelButton = form.querySelector("[data-lancamento-cancelar]");
+    cancelButton?.addEventListener("click", async () => {
+        const currentId = window.lancamentoAberto?.id;
+        if (!currentId) return;
+        if (!confirm("Descartar este documento? Ele sai da fila sem virar despesa (fica preservado no historico como cancelado).")) return;
+        if (errorBox) errorBox.textContent = "";
+        cancelButton.disabled = true;
+        if (submitButton) submitButton.disabled = true;
+        try {
+            const response = await fetch(lancamentoUrl("cancelar", currentId), {
+                method: "POST",
+                headers: { "X-Requested-With": "XMLHttpRequest" },
+            });
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                if (errorBox) errorBox.textContent = data.error || "Nao foi possivel descartar este documento.";
+                return;
+            }
+            applyLancamentoAdvance(currentId, data);
+        } catch {
+            if (errorBox) errorBox.textContent = "Nao foi possivel conectar para descartar. Tente novamente.";
+        } finally {
+            cancelButton.disabled = false;
+            if (submitButton) submitButton.disabled = false;
         }
     });
 }

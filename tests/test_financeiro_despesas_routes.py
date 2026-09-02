@@ -425,6 +425,75 @@ class FinanceiroLancamentosRouteTests(RouteTestCase):
         self.assertIsNone(kwargs["aberto"])
 
 
+class CancelarLancamentoRouteTests(RouteTestCase):
+    """Cancelar um documento da fila de Lancamentos (arquivo errado, duplicado
+    etc.): reaproveita cancelar_despesa e avanca pro proximo, igual "Salvar e
+    proximo"."""
+
+    AJAX_HEADERS = {"X-Requested-With": "XMLHttpRequest"}
+
+    def test_valid_cancel_returns_next_document_as_json(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_despesa") as cancelar_mock, \
+             mock.patch.object(appmod.expense_repository, "count_fila_lancamento", return_value=5), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=[
+                 {"id": 9, "descricao": "recibo_2.jpg", "categoria": None, "valor_total": None,
+                  "data_despesa": None, "observacoes": None, "anexo_nome_original": "recibo_2.jpg",
+                  "anexo_caminho_dropbox": None},
+             ]):
+            response, _ = self._run(
+                appmod.financeiro_lancamentos_cancelar, "/financeiro/lancamentos/8/cancelar",
+                form={"motivo": "Arquivo ilegivel"},
+                headers=self.AJAX_HEADERS,
+                despesa_id=8,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["remaining"], 5)
+        self.assertEqual(payload["next"]["id"], 9)
+        cancelar_mock.assert_called_once()
+        self.assertEqual(cancelar_mock.call_args.args[1], 8)
+
+    def test_service_error_returns_json_error(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_despesa",
+                                side_effect=appmod.expense_service.ExpenseServiceError("Despesa nao encontrada.")):
+            response, _ = self._run(
+                appmod.financeiro_lancamentos_cancelar, "/financeiro/lancamentos/8/cancelar",
+                form={}, headers=self.AJAX_HEADERS, despesa_id=8,
+            )
+        status, payload = SalvarProximoRouteTests._unpack(response)
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "Despesa nao encontrada.")
+
+    def test_without_ajax_header_falls_back_to_redirect(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_despesa"), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=[]):
+            response, flashes = self._run(
+                appmod.financeiro_lancamentos_cancelar, "/financeiro/lancamentos/8/cancelar",
+                form={}, despesa_id=8,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/financeiro/lancamentos", response.location)
+        self.assertTrue(any(categoria == "success" for categoria, _ in flashes))
+
+    def test_non_manager_cannot_cancel(self):
+        with mock.patch.object(appmod.expense_service, "cancelar_despesa") as cancelar_mock:
+            response, _ = self._run(
+                appmod.financeiro_lancamentos_cancelar, "/financeiro/lancamentos/8/cancelar",
+                form={}, headers=self.AJAX_HEADERS,
+                user={"id": 2, "nome": "Tecnico", "perfil_acesso": "tecnico"},
+                despesa_id=8,
+            )
+        status, _payload = SalvarProximoRouteTests._unpack(response)
+        self.assertEqual(status, 403)
+        cancelar_mock.assert_not_called()
+
+
 class ApiClienteProjetosRouteTests(RouteTestCase):
     def test_returns_projects_for_client(self):
         with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \

@@ -16308,10 +16308,17 @@ def financeiro_lancamentos_salvar_proximo(despesa_id):
         expense_repository.mark_ia_analysis_applied(db, despesa_id, now)
 
     lote_id = request.args.get("lote_id", type=int)
-    proxima_fila = expense_repository.list_fila_lancamento(db, lote_id=lote_id, limit=1)
     mensagem = f"Despesa classificada: {despesa['descricao']} - {format_currency(despesa['valor_total'])}."
+    return _lancamento_avancar(db, lote_id, wants_json, mensagem)
+
+
+def _lancamento_avancar(db, lote_id, wants_json, mensagem, categoria_flash="success"):
+    """Devolve/redireciona para o proximo documento pendente da fila -- usado
+    tanto depois de classificar (Salvar e proximo) quanto depois de descartar
+    um documento (Cancelar), para nao duplicar essa parte em cada rota."""
+    proxima_fila = expense_repository.list_fila_lancamento(db, lote_id=lote_id, limit=1)
     if not wants_json:
-        flash(mensagem, "success")
+        flash(mensagem, categoria_flash)
         proximo_id = proxima_fila[0]["id"] if proxima_fila else None
         return redirect(url_for("financeiro_lancamentos", despesa_id=proximo_id, lote_id=lote_id))
     return jsonify({
@@ -16320,6 +16327,35 @@ def financeiro_lancamentos_salvar_proximo(despesa_id):
         "remaining": expense_repository.count_fila_lancamento(db),
         "next": _lancamento_fila_item_payload(proxima_fila[0]) if proxima_fila else None,
     })
+
+
+@app.route("/financeiro/lancamentos/<int:despesa_id>/cancelar", methods=["POST"])
+@login_required
+def financeiro_lancamentos_cancelar(despesa_id):
+    """Descarta um documento da fila sem classificar (arquivo errado, duplicado,
+    ilegivel etc.) -- reaproveita cancelar_despesa (soft, auditado, nunca
+    DELETE, a mesma rota 'Cancelar' de Financeiro > Despesas) e avanca pro
+    proximo item da fila, igual 'Salvar e proximo'."""
+    wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    def fail(message, status=400):
+        if wants_json:
+            return jsonify({"ok": False, "error": message}), status
+        flash(message, "danger")
+        return redirect(url_for("financeiro_lancamentos", despesa_id=despesa_id))
+
+    if not can_manage_despesas():
+        return fail("Permissao negada.", 403)
+
+    db = get_db()
+    motivo = (request.form.get("motivo") or "").strip() or None
+    try:
+        expense_service.cancelar_despesa(db, despesa_id, motivo, app_now_iso(), cancelado_por=g.user["id"])
+    except expense_service.ExpenseServiceError as exc:
+        return fail(str(exc))
+
+    lote_id = request.args.get("lote_id", type=int)
+    return _lancamento_avancar(db, lote_id, wants_json, "Documento descartado.")
 
 
 @app.route("/api/clientes/<int:cliente_id>/projetos")
