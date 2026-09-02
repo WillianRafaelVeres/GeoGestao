@@ -376,3 +376,45 @@ indisponivel. Nenhuma alteracao de schema e necessaria para essa decisao.
 ## 11. Proxima etapa
 
 Quando a geracao de documentos for implementada, ela deve consumir `DocumentoContext`, validar os requisitos do documento escolhido e entao preencher o DOCX. A tela de cadastro nao deve armazenar textos prontos de documentos; ela deve armazenar os fatos que permitem gerar esses textos.
+
+## 12. Filiacao do conjuge
+
+Desde 2026-09, `conjuges` tambem guarda `nome_pai` e `nome_mae`, igual ja
+acontecia com o titular (`pessoas_fisicas`) e com o procurador
+(`procuradores`). Migracao aditiva em
+[`docs/migrations/20260902_conjuge_filiacao_documentos_cliente.sql`](migrations/20260902_conjuge_filiacao_documentos_cliente.sql).
+
+## 13. Documentos anexados do cliente (RG, comprovantes etc.)
+
+O cadastro do cliente tem uma secao **Documentos**, no final do modal, para
+anexar arquivos escaneados do cliente (RG, comprovante de residencia,
+contrato social etc.). Diferente das notas de exigencia e dos comprovantes
+financeiros -- que ficam dentro da pasta de um projeto especifico -- os
+documentos do cliente ficam em uma pasta unica e compartilhada entre todos
+os projetos daquele cliente, porque o mesmo cliente normalmente tem varios
+projetos ao longo do tempo.
+
+Estrutura no Dropbox:
+
+```
+C:\SC Dropbox\SC\Novo\
+  _clientes\
+    <Nome do cliente>\
+      RG.pdf
+      Comprovante de Endereco.pdf
+```
+
+A pasta `_clientes` ja existe na raiz de `Novo` (irma das pastas de cidade e
+da pasta modelo `00_MOD`). O sistema so entra nela: procura uma subpasta com
+o nome do cliente (reaproveitando o mesmo casamento de nomes usado para
+pastas de proprietario, tolerante a acento/caixa/pequena variacao) e, se nao
+encontrar, cria uma nova. O nome do arquivo dentro da pasta e o titulo
+digitado no upload (ex.: titulo "RG" vira `RG.pdf`); em caso de titulo
+repetido o Dropbox renomeia automaticamente (`RG (1).pdf`) em vez de
+sobrescrever.
+
+Metadados de cada upload (titulo, caminho no Dropbox, nome do arquivo, hash,
+tamanho, data, usuario) ficam em `cliente_documentos`, tabela nova que nao
+afeta nenhuma tabela existente. A secao de upload so aparece depois que o
+cliente ja foi salvo pelo menos uma vez (precisa de `cliente_id` e nome para
+achar/criar a pasta).
