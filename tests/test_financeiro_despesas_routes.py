@@ -25,8 +25,8 @@ from flask import get_flashed_messages
 
 
 class RouteTestCase(unittest.TestCase):
-    def _run(self, view, path, form=None, user=None, **view_kwargs):
-        ctx = appmod.app.test_request_context(path, method="POST", data=form or {})
+    def _run(self, view, path, form=None, user=None, headers=None, method="POST", **view_kwargs):
+        ctx = appmod.app.test_request_context(path, method=method, data=form or {}, headers=headers or {})
         ctx.push()
         self.addCleanup(ctx.pop)
         appmod.g.user = user or {"id": 1, "nome": "Admin", "perfil_acesso": "admin"}
@@ -253,6 +253,129 @@ class CancelarReembolsoRouteTests(RouteTestCase):
         cancelar_mock.assert_called_once()
         self.assertEqual(cancelar_mock.call_args.args[1], 50)
         self.assertTrue(any(categoria == "success" for categoria, _ in flashes))
+
+
+class SalvarProximoRouteTests(RouteTestCase):
+    """Item 3 do redesenho: 'Salvar e proximo' classifica e devolve o proximo
+    documento pendente em JSON (fluxo continuo, sem reload)."""
+
+    AJAX_HEADERS = {"X-Requested-With": "XMLHttpRequest"}
+
+    @staticmethod
+    def _unpack(response):
+        # Chamar a view direto via __wrapped__ (sem passar pelo dispatcher do
+        # Flask) devolve a tupla crua (jsonify(...), status) quando a rota
+        # retorna erro -- so o Flask normaliza isso em Response de verdade.
+        if isinstance(response, tuple):
+            body, status = response
+            return status, body.get_json()
+        return response.status_code, response.get_json()
+
+    def test_valid_submission_returns_next_document_as_json(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_repository, "get_ia_analysis", return_value=None), \
+             mock.patch.object(appmod.expense_service, "classificar_despesa_rapida") as classificar_mock, \
+             mock.patch.object(appmod.expense_repository, "count_fila_lancamento", return_value=4), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=[
+                 {"id": 8, "descricao": "recibo_2.jpg", "categoria": None, "valor_total": None,
+                  "data_despesa": None, "observacoes": None, "anexo_nome_original": "recibo_2.jpg",
+                  "anexo_caminho_dropbox": None},
+             ]):
+            classificar_mock.return_value = {
+                "id": 7, "descricao": "Matricula", "valor_total": Decimal("45.00"),
+            }
+            response, _ = self._run(
+                appmod.financeiro_lancamentos_salvar_proximo, "/financeiro/lancamentos/7/salvar-proximo",
+                form={
+                    "descricao": "Matricula", "valor_total": "45,00", "categoria": "MATRICULA",
+                    "data_despesa": "2026-09-02", "desembolso_tipo": "EMPRESA", "projeto_id": "245",
+                },
+                headers=self.AJAX_HEADERS,
+                despesa_id=7,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["remaining"], 4)
+        self.assertEqual(payload["next"]["id"], 8)
+        classificar_mock.assert_called_once()
+        self.assertEqual(classificar_mock.call_args.kwargs["projeto_id"], 245)
+
+    def test_no_more_pending_documents_returns_next_none(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_repository, "get_ia_analysis", return_value=None), \
+             mock.patch.object(appmod.expense_service, "classificar_despesa_rapida",
+                                return_value={"id": 7, "descricao": "x", "valor_total": Decimal("10.00")}), \
+             mock.patch.object(appmod.expense_repository, "count_fila_lancamento", return_value=0), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=[]):
+            response, _ = self._run(
+                appmod.financeiro_lancamentos_salvar_proximo, "/financeiro/lancamentos/7/salvar-proximo",
+                form={"descricao": "x", "valor_total": "10,00", "projeto_id": "1"},
+                headers=self.AJAX_HEADERS,
+                despesa_id=7,
+            )
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertIsNone(payload["next"])
+
+    def test_service_error_returns_json_error_without_advancing(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "classificar_despesa_rapida",
+                                side_effect=appmod.expense_service.ExpenseServiceError("Selecione o projeto.")):
+            response, _ = self._run(
+                appmod.financeiro_lancamentos_salvar_proximo, "/financeiro/lancamentos/7/salvar-proximo",
+                form={"descricao": "x", "valor_total": "10,00"},
+                headers=self.AJAX_HEADERS,
+                despesa_id=7,
+            )
+        status, payload = self._unpack(response)
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "Selecione o projeto.")
+
+    def test_without_ajax_header_falls_back_to_redirect(self):
+        # Item 15 do redesenho: se o JS nao rodar, o mesmo form ainda funciona
+        # (POST comum, redirect+flash de sempre) em vez de devolver JSON cru.
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_repository, "get_ia_analysis", return_value=None), \
+             mock.patch.object(appmod.expense_service, "classificar_despesa_rapida",
+                                return_value={"id": 7, "descricao": "x", "valor_total": Decimal("10.00")}), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=[]):
+            response, flashes = self._run(
+                appmod.financeiro_lancamentos_salvar_proximo, "/financeiro/lancamentos/7/salvar-proximo",
+                form={"descricao": "x", "valor_total": "10,00", "projeto_id": "1"},
+                despesa_id=7,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/financeiro/lancamentos", response.location)
+        self.assertTrue(any(categoria == "success" for categoria, _ in flashes))
+
+    def test_non_manager_cannot_classify(self):
+        with mock.patch.object(appmod.expense_service, "classificar_despesa_rapida") as classificar_mock:
+            response, _ = self._run(
+                appmod.financeiro_lancamentos_salvar_proximo, "/financeiro/lancamentos/7/salvar-proximo",
+                form={"descricao": "x", "valor_total": "10,00"},
+                headers=self.AJAX_HEADERS,
+                user={"id": 2, "nome": "Tecnico", "perfil_acesso": "tecnico"},
+                despesa_id=7,
+            )
+        status, _payload = self._unpack(response)
+        self.assertEqual(status, 403)
+        classificar_mock.assert_not_called()
+
+
+class ApiClienteProjetosRouteTests(RouteTestCase):
+    def test_returns_projects_for_client(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_repository, "list_projetos_do_cliente",
+                                return_value=[{"id": 245, "codigo": "GEO-001", "nome": "Fazenda X"}]):
+            response, _ = self._run(
+                appmod.api_cliente_projetos, "/api/clientes/7/projetos", method="GET", cliente_id=7,
+            )
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["projetos"], [{"id": 245, "codigo": "GEO-001", "nome": "Fazenda X", "label": "GEO-001 - Fazenda X"}])
 
 
 class CriarCobrancaRouteTests(RouteTestCase):

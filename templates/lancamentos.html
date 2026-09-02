@@ -1,0 +1,174 @@
+{% extends 'base.html' %}
+{% from '_financeiro_tabs.html' import financeiro_tabs with context %}
+{% block title %}Lancamentos - Financeiro - GeoGestao{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Financeiro</h1>
+        <p>Caixa de entrada de documentos: receba o comprovante, confira os dados, relacione ao proprietario/projeto e salve. Um documento de cada vez, sem sair da tela.</p>
+    </div>
+</div>
+
+{{ financeiro_tabs('lancamentos') }}
+
+{% if not can_manage_despesas_flag %}
+    <div class="empty-state">Voce nao tem permissao para lancar despesas.</div>
+{% else %}
+<form method="post" action="{{ url_for('financeiro_despesas_importar') }}" enctype="multipart/form-data" id="lancamentoImportForm">
+    <input type="hidden" name="destino" value="lancamentos">
+    <div class="finance-dropzone lancamento-dropzone" data-lancamento-dropzone tabindex="0" role="button" aria-controls="lancamentoArquivosInput">
+        <input class="visually-hidden" id="lancamentoArquivosInput" type="file" name="arquivos" multiple data-lancamento-file-input
+               accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff">
+        <div class="finance-dropzone__copy">
+            <strong>Arraste e solte os comprovantes aqui</strong>
+            <span>ou clique para escolher varios PDFs/imagens de uma vez</span>
+        </div>
+    </div>
+</form>
+
+<div class="lancamento-layout">
+    <aside class="panel lancamento-fila">
+        <div class="lancamento-fila-header">
+            <strong>Documentos pendentes</strong>
+            <span class="badge bg-secondary" data-lancamento-fila-count>{{ fila|length }}</span>
+        </div>
+        <div class="lancamento-fila-list" data-lancamento-fila-list>
+            {% for item in fila %}
+                <a class="lancamento-fila-item {{ 'is-active' if aberto and item.id == aberto.id else '' }}"
+                   href="{{ url_for('financeiro_lancamentos', despesa_id=item.id, lote_id=lote_id) }}"
+                   data-lancamento-fila-item="{{ item.id }}">
+                    <strong>{{ item.anexo_nome or item.descricao }}</strong>
+                    <small>{{ item.descricao }}</small>
+                </a>
+            {% endfor %}
+            <div class="lancamento-fila-empty" data-lancamento-fila-empty {{ 'hidden' if fila else '' }}>Nenhum documento pendente.</div>
+        </div>
+    </aside>
+
+    <section class="panel lancamento-main" data-lancamento-main {{ 'hidden' if not aberto else '' }}>
+        <div class="lancamento-doc-head">
+            <div>
+                <span class="module-label">Documento selecionado</span>
+                <h2 data-lancamento-doc-nome>{{ aberto.anexo_nome if aberto else '' }}</h2>
+            </div>
+            <a class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener"
+               data-lancamento-doc-link href="{{ aberto.anexo_url if aberto else '#' }}" {{ 'hidden' if not (aberto and aberto.anexo_url) else '' }}>
+                Abrir comprovante
+            </a>
+        </div>
+
+        <div class="despesa-ai-suggest" data-lancamento-ai-status-wrap>
+            <small class="despesa-ai-status" data-lancamento-ai-status></small>
+        </div>
+
+        <form id="lancamentoForm" data-lancamento-form>
+            <input type="hidden" name="projeto_id" id="lancamentoProjetoId" data-lancamento-projeto-id>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Proprietario</label>
+                    <div class="ac-wrapper" data-client-autocomplete data-client-source="lancamentoClientes">
+                        <input class="form-control" type="text" placeholder="Buscar proprietario por nome..." autocomplete="off"
+                               data-client-autocomplete-input id="lancamentoClienteInput">
+                        <input type="hidden" data-client-autocomplete-id id="lancamentoClienteId">
+                        <div class="ac-list" data-client-autocomplete-list></div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Projeto</label>
+                    <div class="ac-wrapper" data-lancamento-projeto-autocomplete>
+                        <input class="form-control" type="text" placeholder="Selecione o proprietario primeiro..." autocomplete="off"
+                               data-lancamento-projeto-input disabled>
+                        <div class="ac-list" data-lancamento-projeto-list></div>
+                    </div>
+                    <small class="text-muted">Mostra so os projetos do proprietario escolhido. Digite para buscar qualquer projeto diretamente.</small>
+                </div>
+
+                <div class="col-md-8">
+                    <label class="form-label">Descricao / tipo da despesa</label>
+                    <input class="form-control" name="descricao" id="lancamentoDescricao" list="lancamentoDescricaoSugestoes" autocomplete="off" required>
+                    <datalist id="lancamentoDescricaoSugestoes">
+                        {% for sugestao in ["Matricula", "Certidao", "Reconhecimento de firma", "Taxa de cartorio", "Protocolo", "Averbacao", "Escritura", "Impressao/Copia", "Correios", "Outro"] %}
+                            <option value="{{ sugestao }}">
+                        {% endfor %}
+                    </datalist>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Categoria</label>
+                    <select class="form-select" name="categoria" id="lancamentoCategoria">
+                        {% for chave, nome in categorias_despesa.items() %}
+                            <option value="{{ chave }}" {{ 'selected' if chave == 'OUTRO' else '' }}>{{ nome }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="col-md-6">
+                    <label class="form-label">Valor</label>
+                    <input class="form-control" name="valor_total" id="lancamentoValor" placeholder="0,00" inputmode="decimal" autocomplete="off" required>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Data</label>
+                    <input class="form-control" type="date" name="data_despesa" id="lancamentoData" value="{{ today_iso }}">
+                </div>
+
+                <div class="col-12">
+                    <details class="exigencia-disclosure">
+                        <summary>Mais opcoes</summary>
+                        <div class="row g-3 pt-2">
+                            <div class="col-12">
+                                <label class="form-label">Quem pagou esta despesa?</label>
+                                <div class="despesa-desembolso-toggle">
+                                    <div class="form-check form-check-inline">
+                                        <input class="form-check-input" type="radio" name="desembolso_tipo" value="EMPRESA" id="lancamentoTipoEmpresa" checked data-lancamento-tipo-radio>
+                                        <label class="form-check-label" for="lancamentoTipoEmpresa">A propria empresa</label>
+                                    </div>
+                                    <div class="form-check form-check-inline">
+                                        <input class="form-check-input" type="radio" name="desembolso_tipo" value="PESSOA" id="lancamentoTipoPessoa" data-lancamento-tipo-radio>
+                                        <label class="form-check-label" for="lancamentoTipoPessoa">Uma pessoa (gera reembolso)</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6" data-lancamento-pessoa-field hidden>
+                                <label class="form-label">Pessoa</label>
+                                <select class="form-select" name="desembolsante_id" id="lancamentoDesembolsanteSelect">
+                                    <option value="">+ Nova pessoa...</option>
+                                    {% for pessoa in desembolsantes %}
+                                        <option value="{{ pessoa.id }}">{{ pessoa.nome }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-6" data-lancamento-pessoa-nova-field hidden>
+                                <label class="form-label">Nome da pessoa</label>
+                                <input class="form-control" name="desembolsante_nome_novo" placeholder="Ex.: Rafael" autocomplete="off">
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label">Observacoes</label>
+                                <input class="form-control" name="observacoes" placeholder="Observacoes internas" autocomplete="off">
+                            </div>
+                        </div>
+                    </details>
+                </div>
+            </div>
+
+            <div class="lancamento-footer">
+                <div class="lancamento-footer-status" data-lancamento-form-error></div>
+                <button class="btn btn-primary btn-lg" type="submit" data-lancamento-submit>Salvar e proximo</button>
+            </div>
+        </form>
+    </section>
+
+    <div class="panel lancamento-empty" data-lancamento-empty {{ '' if not aberto else 'hidden' }}>
+        <strong>Fila vazia.</strong>
+        <span>Arraste documentos acima para comecar a lancar.</span>
+    </div>
+</div>
+{% endif %}
+
+<script>
+window.lancamentoClientes = {{ clientes_json|tojson }};
+window.despesaProjetosOptions = {{ projetos_json|tojson }};
+window.lancamentoAberto = {{ aberto|tojson }};
+window.lancamentoLoteId = {{ (lote_id or '')|tojson }};
+</script>
+<script src="{{ url_for('static', filename='lancamentos.js') }}"></script>
+{% endblock %}

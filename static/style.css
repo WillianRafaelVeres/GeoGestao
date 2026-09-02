@@ -1037,6 +1037,79 @@ a:hover { color: #1d4ed8; }
 .despesa-ai-status.is-success { color: #1e7d3a; }
 .despesa-ai-status.is-error { color: #b42318; }
 
+/* Financeiro -> Lancamentos: fila de documentos + formulario de lancamento rapido. */
+.lancamento-dropzone { margin-bottom: 14px; }
+
+.lancamento-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 14px;
+    align-items: start;
+}
+@media (max-width: 900px) {
+    .lancamento-layout { grid-template-columns: 1fr; }
+}
+
+.lancamento-fila { padding: 10px; }
+.lancamento-fila-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.lancamento-fila-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+.lancamento-fila-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 6px 8px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    text-decoration: none;
+    color: inherit;
+}
+.lancamento-fila-item:hover { background: #f1f5f9; }
+.lancamento-fila-item.is-active { background: #eaf1ff; border-color: #b9cdfa; }
+.lancamento-fila-item strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lancamento-fila-item small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lancamento-fila-empty { color: var(--muted); font-size: 12px; padding: 8px; }
+
+.lancamento-main { padding: 14px; }
+.lancamento-doc-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.lancamento-doc-head h2 { font-size: 14px; margin: 2px 0 0; word-break: break-word; }
+
+.lancamento-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #e4e7ec;
+}
+.lancamento-footer-status { font-size: 12px; color: #b42318; flex: 1; }
+
+.lancamento-empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 40px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .finance-despesas-panel { margin-bottom: 14px; }
 .finance-despesas-panel .finance-summary-grid { margin-top: 4px; }
 .finance-despesas-alerts {

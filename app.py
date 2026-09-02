@@ -16178,6 +16178,8 @@ def financeiro_despesas_importar():
         resumo_falhas = "; ".join(falhas[:3]) + ("..." if len(falhas) > 3 else "")
         partes.append(f"{len(falhas)} falharam: {resumo_falhas}")
     flash(" ".join(partes), "success" if importados else "warning")
+    if request.form.get("destino") == "lancamentos":
+        return redirect(url_for("financeiro_lancamentos", lote_id=lote_id))
     return redirect(url_for("financeiro_despesas", lote_id=lote_id, status="pendente_classificacao"))
 
 
@@ -16195,6 +16197,141 @@ def financeiro_despesas_cancelar(despesa_id):
         return redirect(url_for("financeiro_despesas"))
     flash("Despesa cancelada.", "success")
     return redirect(url_for("financeiro_despesas"))
+
+
+def _lancamento_fila_item_payload(row):
+    """Formato compacto de um item da fila (Financeiro -> Lancamentos), usado
+    tanto no primeiro render da pagina quanto na resposta JSON de
+    'Salvar e proximo' -- um so lugar decide quais campos o front-end recebe."""
+    return {
+        "id": row["id"],
+        "descricao": row["descricao"],
+        "categoria": row.get("categoria"),
+        "valor_total": float(row["valor_total"]) if row.get("valor_total") is not None else None,
+        "data_despesa": row.get("data_despesa"),
+        "observacoes": row.get("observacoes"),
+        "anexo_nome": row.get("anexo_nome_original"),
+        "anexo_url": dropbox_web_url(row["anexo_caminho_dropbox"]) if row.get("anexo_caminho_dropbox") else None,
+        "ai_analysis_url": url_for("api_despesa_ai_analysis", despesa_id=row["id"]),
+    }
+
+
+@app.route("/financeiro/lancamentos")
+@login_required
+def financeiro_lancamentos():
+    """Financeiro -> Lancamentos: fila de documentos importados/pendentes,
+    lancados um a um em sequencia (item 2/3 do redesenho) -- a tela principal
+    de entrada, complementar a visao administrativa completa em Despesas."""
+    if not can_view_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro"))
+
+    db = get_db()
+    lote_id = request.args.get("lote_id", type=int)
+    fila = expense_repository.list_fila_lancamento(db, lote_id=lote_id)
+    despesa_id = request.args.get("despesa_id", type=int)
+    aberto = next((item for item in fila if item["id"] == despesa_id), fila[0] if fila else None)
+
+    return render_template(
+        "lancamentos.html",
+        fila=[_lancamento_fila_item_payload(item) for item in fila],
+        aberto=_lancamento_fila_item_payload(aberto) if aberto else None,
+        lote_id=lote_id,
+        categorias_despesa=CATEGORIAS_DESPESA,
+        desembolsantes=expense_repository.list_desembolsantes(db),
+        clientes_json=fetch_cliente_autocomplete_options(),
+        projetos_json=fetch_despesa_projeto_options(),
+        can_manage_despesas_flag=can_manage_despesas(),
+    )
+
+
+@app.route("/financeiro/lancamentos/<int:despesa_id>/salvar-proximo", methods=["POST"])
+@login_required
+def financeiro_lancamentos_salvar_proximo(despesa_id):
+    """Classifica UM documento da fila e devolve o proximo em JSON, sem reload
+    de pagina (item 3 do redesenho: 'Salvar e proximo' continuo). Reaproveita
+    classificar_despesa_rapida (monta sozinha a alocacao de 100% para o
+    projeto escolhido) -- a mesma regra de negocio da tela completa de
+    Despesas, so a colagem HTTP e diferente."""
+    # JS sempre manda esse header (fetch com X-Requested-With): e como a rota
+    # distingue o fluxo continuo (JSON, sem reload) do fallback sem JS (form
+    # nativo, redirect+flash de sempre) -- item 15 do redesenho, "manter
+    # fallback seguro" se o JS falhar em anexar o listener de submit.
+    wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    def fail(message, status=400):
+        if wants_json:
+            return jsonify({"ok": False, "error": message}), status
+        flash(message, "danger")
+        return redirect(url_for("financeiro_lancamentos", despesa_id=despesa_id))
+
+    if not can_manage_despesas():
+        return fail("Permissao negada.", 403)
+
+    db = get_db()
+    now = app_now_iso()
+    descricao = (request.form.get("descricao") or "").strip()
+    valor_total = parse_currency_value((request.form.get("valor_total") or "").strip())
+    categoria = request.form.get("categoria", "")
+    if categoria not in CATEGORIAS_DESPESA:
+        categoria = "OUTRO"
+    data_despesa = parse_payment_date(request.form.get("data_despesa"))
+    observacoes = (request.form.get("observacoes") or "").strip() or None
+    desembolso_tipo = "PESSOA" if request.form.get("desembolso_tipo") == "PESSOA" else "EMPRESA"
+    desembolsante_id = request.form.get("desembolsante_id", type=int)
+    desembolsante_nome_novo = (request.form.get("desembolsante_nome_novo") or "").strip() or None
+    projeto_id = request.form.get("projeto_id", type=int)
+
+    if not valor_total or valor_total <= 0:
+        return fail("Informe um valor de despesa maior que zero.")
+
+    try:
+        despesa = expense_service.classificar_despesa_rapida(
+            db, despesa_id,
+            descricao=descricao, valor_total=valor_total, categoria=categoria,
+            data_despesa=data_despesa, observacoes=observacoes,
+            desembolsado_por_tipo=desembolso_tipo, projeto_id=projeto_id,
+            desembolsante_id=desembolsante_id, desembolsante_nome_novo=desembolsante_nome_novo,
+            atualizado_em=now, atualizado_por=g.user["id"],
+        )
+    except expense_service.ExpenseServiceError as exc:
+        return fail(str(exc))
+
+    ia_analysis = expense_repository.get_ia_analysis(db, despesa_id)
+    if ia_analysis and ia_analysis["status"] == "rascunho":
+        expense_repository.mark_ia_analysis_applied(db, despesa_id, now)
+
+    lote_id = request.args.get("lote_id", type=int)
+    proxima_fila = expense_repository.list_fila_lancamento(db, lote_id=lote_id, limit=1)
+    mensagem = f"Despesa classificada: {despesa['descricao']} - {format_currency(despesa['valor_total'])}."
+    if not wants_json:
+        flash(mensagem, "success")
+        proximo_id = proxima_fila[0]["id"] if proxima_fila else None
+        return redirect(url_for("financeiro_lancamentos", despesa_id=proximo_id, lote_id=lote_id))
+    return jsonify({
+        "ok": True,
+        "message": mensagem,
+        "remaining": expense_repository.count_fila_lancamento(db),
+        "next": _lancamento_fila_item_payload(proxima_fila[0]) if proxima_fila else None,
+    })
+
+
+@app.route("/api/clientes/<int:cliente_id>/projetos")
+@login_required
+def api_cliente_projetos(cliente_id):
+    """Projetos de um proprietario/cliente, para o segundo passo do lancamento
+    rapido (item 4 do redesenho: proprietario primeiro, projeto depois). Uma
+    consulta indexada por cliente, nunca a lista inteira de projetos."""
+    if not can_view_despesas():
+        return jsonify({"ok": False, "error": "Permissao negada."}), 403
+    rows = expense_repository.list_projetos_do_cliente(get_db(), cliente_id)
+    return jsonify({
+        "ok": True,
+        "projetos": [
+            {"id": row["id"], "codigo": row["codigo"], "nome": row["nome"], "label": f"{row['codigo']} - {row['nome']}"}
+            for row in rows
+        ],
+    })
 
 
 @app.route("/financeiro/reembolsos")

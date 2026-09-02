@@ -3,6 +3,11 @@
     <li class="nav-item" role="presentation">
         <a class="nav-link {{ 'active' if active == 'visao_geral' else '' }}" href="{{ url_for('financeiro') }}">Visao geral</a>
     </li>
+    {% if can_manage_despesas() %}
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if active == 'lancamentos' else '' }}" href="{{ url_for('financeiro_lancamentos') }}">Lancamentos</a>
+        </li>
+    {% endif %}
     <li class="nav-item" role="presentation">
         <a class="nav-link {{ 'active' if active == 'despesas' else '' }}" href="{{ url_for('financeiro_despesas') }}">Despesas</a>
     </li>
