@@ -535,6 +535,30 @@ def list_reembolsos_por_desembolsante(db, desembolsante_id):
     )
 
 
+def list_reembolsos_recentes(db, limit=20):
+    """Reembolsos recentes de qualquer pessoa (confirmados e cancelados), para a
+    tela poder oferecer 'Cancelar' mesmo em uma pessoa que ja quitou tudo e por
+    isso nao aparece mais em summarize_pendencias_reembolso."""
+    return _fetchall(
+        db,
+        """
+        SELECT r.*, p.nome AS desembolsante_nome,
+               COALESCE(alloc.despesas, '[]'::json) AS despesas
+        FROM despesa_reembolsos r
+        JOIN desembolsantes p ON p.id = r.desembolsante_id
+        LEFT JOIN LATERAL (
+            SELECT json_agg(json_build_object('despesa_id', ra.despesa_id, 'descricao', d.descricao, 'valor', ra.valor) ORDER BY ra.id) AS despesas
+            FROM despesa_reembolso_alocacoes ra
+            JOIN despesas d ON d.id = ra.despesa_id
+            WHERE ra.reembolso_id = r.id
+        ) alloc ON TRUE
+        ORDER BY r.criado_em DESC, r.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+
+
 def cancel_reembolso(db, reembolso_id, motivo, cancelado_em, cancelado_por=None):
     db.execute(
         """

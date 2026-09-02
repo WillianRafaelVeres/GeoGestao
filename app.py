@@ -15687,6 +15687,8 @@ def financeiro_registrar_custo():
         return redirect(url_for("financeiro"))
 
     anexo_aviso = ""
+    anexo_path_final = None
+    anexo_nome_final = None
     comprovante = request.files.get("comprovante")
     if comprovante and comprovante.filename:
         anexo_nome = build_finance_attachment_name(descricao, comprovante.filename, fallback="Custo")
@@ -15699,14 +15701,49 @@ def financeiro_registrar_custo():
                 "UPDATE projeto_custos SET anexo_path = %s, anexo_nome = %s WHERE id = %s",
                 (dropbox_path, saved_name, cost_id),
             )
+            anexo_path_final = dropbox_path
+            anexo_nome_final = saved_name
         else:
             anexo_aviso = f" O comprovante nao pode ser anexado: {error}"
 
+    now = app_now_iso()
     record_event(
         projeto["id"],
         "custo_financeiro",
         f"Custo registrado: {descricao} ({CATEGORIAS_CUSTO.get(categoria, 'Outro custo')}) - {format_currency(valor)}.",
     )
+
+    # A tela antiga continua sendo a fonte de verdade de projeto_custos; este
+    # espelho garante que o novo modulo de Despesas (Financeiro -> Despesas)
+    # tambem enxerga o que for lancado por aqui, sem exigir que o usuario
+    # relance manualmente. Mesma funcao usada na migracao inicial dos 46
+    # custos antigos -- idempotente via migrado_de_custo_id, nunca falha o
+    # registro do custo em si se o espelho der algum problema inesperado.
+    try:
+        expense_service.migrate_custo(
+            get_db(),
+            {
+                "id": cost_id,
+                "projeto_id": projeto["id"],
+                "descricao": descricao,
+                "categoria": categoria,
+                "valor": valor,
+                "data_custo": data_custo,
+                "observacoes": request.form.get("observacoes", "").strip(),
+                "status": "a_cobrar",
+                "criado_em": now,
+                "usuario_id": g.user["id"],
+                "anexo_path": anexo_path_final,
+                "anexo_nome": anexo_nome_final,
+            },
+            now,
+        )
+    except expense_service.ExpenseServiceError:
+        app.logger.warning(
+            "custo_despesa_mirror_failed request_id=%s cost_id=%s",
+            getattr(g, "request_id", ""), cost_id,
+        )
+
     flash(f"Custo de {format_currency(valor)} registrado para cobranca futura.{anexo_aviso}", "success" if not anexo_aviso else "warning")
     return redirect(url_for("financeiro"))
 
@@ -15746,6 +15783,21 @@ def financeiro_cancelar_custo(cost_id):
         "custo_financeiro_cancelado",
         f"Custo cancelado: {cost['descricao']} - {format_currency(cost['valor'])}.",
     )
+
+    # Mantem o espelho em despesas consistente com o custo antigo.
+    mirrored = expense_repository.find_despesa_by_migrado_de_custo(get_db(), cost_id)
+    if mirrored and mirrored["status"] != "cancelada":
+        try:
+            expense_service.cancelar_despesa(
+                get_db(), mirrored["id"], "Custo cancelado na tela antiga do Financeiro.",
+                app_now_iso(), cancelado_por=g.user["id"],
+            )
+        except expense_service.ExpenseServiceError:
+            app.logger.warning(
+                "custo_despesa_mirror_cancel_failed request_id=%s cost_id=%s despesa_id=%s",
+                getattr(g, "request_id", ""), cost_id, mirrored["id"],
+            )
+
     flash(f"Custo de {format_currency(cost['valor'])} cancelado.", "success")
     return redirect(url_for("financeiro"))
 
@@ -16162,11 +16214,13 @@ def financeiro_reembolsos():
         )
         for pendencia in pendencias
     }
+    reembolsos_recentes = expense_repository.list_reembolsos_recentes(db)
 
     return render_template(
         "reembolsos.html",
         pendencias=pendencias,
         despesas_por_pessoa=despesas_por_pessoa,
+        reembolsos_recentes=reembolsos_recentes,
         formas_pagamento=FORMAS_PAGAMENTO,
         can_register_reembolso_flag=can_register_reembolso(),
     )

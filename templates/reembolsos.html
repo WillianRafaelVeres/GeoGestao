@@ -69,6 +69,50 @@
     <div class="empty-state">Nenhuma pendencia de reembolso no momento.</div>
 {% endfor %}
 
+{% if reembolsos_recentes %}
+<section class="panel">
+    <div class="panel-header">
+        <h2>Reembolsos recentes</h2>
+    </div>
+    <div class="table-responsive">
+        <table class="table compact-table">
+            <thead>
+                <tr><th>Data</th><th>Pessoa</th><th>Valor</th><th>Forma</th><th>Despesas quitadas</th><th>Status</th><th>Acoes</th></tr>
+            </thead>
+            <tbody>
+                {% for reembolso in reembolsos_recentes %}
+                    <tr>
+                        <td>{{ format_date(reembolso.data_reembolso) }}</td>
+                        <td>{{ reembolso.desembolsante_nome }}</td>
+                        <td>{{ format_currency(reembolso.valor) }}</td>
+                        <td>{{ formas_pagamento.get(reembolso.forma_reembolso, reembolso.forma_reembolso or '-') }}</td>
+                        <td>
+                            {% set descricoes = reembolso.despesas|map(attribute='descricao')|list %}
+                            {{ descricoes|join(', ') if descricoes else '-' }}
+                        </td>
+                        <td>
+                            {% if reembolso.status == 'cancelado' %}
+                                <span class="badge bg-secondary">Cancelado</span>
+                            {% else %}
+                                <span class="badge bg-success">Confirmado</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if can_register_reembolso_flag and reembolso.status == 'confirmado' %}
+                                <form method="post" action="{{ url_for('financeiro_reembolsos_cancelar', reembolso_id=reembolso.id) }}"
+                                      onsubmit="return confirm('Cancelar este reembolso? A(s) despesa(s) quitada(s) voltam a ficar pendentes.');">
+                                    <button class="btn btn-outline-danger btn-sm" type="submit">Cancelar</button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
 {% if can_register_reembolso_flag %}
 <div class="modal fade" id="modalRegistrarReembolso" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
