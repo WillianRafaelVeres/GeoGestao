@@ -903,6 +903,107 @@ function initRepresentationManagers(root = document) {
     });
 }
 
+function initClientDocumentUploads(root = document) {
+    root.querySelectorAll("[data-client-documents]").forEach((container) => {
+        if (container.dataset.docReady === "1") return;
+        container.dataset.docReady = "1";
+
+        const uploadUrl = container.dataset.uploadUrl;
+        const dropzone = container.querySelector("[data-doc-dropzone]");
+        const dropzoneText = container.querySelector("[data-doc-dropzone-text]");
+        const fileInput = container.querySelector("[data-doc-file]");
+        const titleInput = container.querySelector("[data-doc-titulo]");
+        const uploadButton = container.querySelector("[data-doc-upload]");
+        const errorBox = container.querySelector("[data-doc-error]");
+        const list = container.querySelector("[data-doc-list]");
+        if (!uploadUrl || !fileInput || !uploadButton) return;
+
+        const defaultDropText = dropzoneText ? dropzoneText.textContent : "";
+
+        function showError(message) {
+            if (errorBox) errorBox.textContent = message || "";
+        }
+
+        function updateDropzoneLabel() {
+            if (!dropzoneText) return;
+            const file = fileInput.files && fileInput.files[0];
+            dropzoneText.textContent = file ? file.name : defaultDropText;
+        }
+
+        fileInput.addEventListener("change", updateDropzoneLabel);
+
+        ["dragover", "dragenter"].forEach((eventName) => {
+            dropzone?.addEventListener(eventName, (event) => {
+                event.preventDefault();
+                dropzone.classList.add("is-dragover");
+            });
+        });
+        ["dragleave", "dragend"].forEach((eventName) => {
+            dropzone?.addEventListener(eventName, () => dropzone.classList.remove("is-dragover"));
+        });
+        dropzone?.addEventListener("drop", (event) => {
+            event.preventDefault();
+            dropzone.classList.remove("is-dragover");
+            const file = event.dataTransfer?.files?.[0];
+            if (!file) return;
+            const transfer = new DataTransfer();
+            transfer.items.add(file);
+            fileInput.files = transfer.files;
+            updateDropzoneLabel();
+        });
+
+        uploadButton.addEventListener("click", async () => {
+            showError("");
+            const titulo = (titleInput?.value || "").trim();
+            const file = fileInput.files && fileInput.files[0];
+            if (!titulo) { showError("Informe um titulo para o documento."); return; }
+            if (!file) { showError("Selecione um arquivo."); return; }
+
+            const formData = new FormData();
+            formData.append("titulo", titulo);
+            formData.append("arquivo", file);
+
+            uploadButton.disabled = true;
+            uploadButton.textContent = "Enviando...";
+            try {
+                const response = await fetch(uploadUrl, {
+                    method: "POST",
+                    body: formData,
+                    credentials: "same-origin",
+                    headers: { "X-Requested-With": "XMLHttpRequest" },
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.ok) throw new Error(data.error || "Nao foi possivel anexar o documento.");
+
+                const emptyItem = list?.querySelector("[data-doc-empty]");
+                emptyItem?.remove();
+                const item = document.createElement("li");
+                item.dataset.docItem = "";
+                const link = document.createElement("a");
+                link.href = data.documento.url;
+                link.target = "_blank";
+                link.rel = "noopener";
+                link.textContent = data.documento.titulo;
+                const meta = document.createElement("span");
+                meta.className = "client-document-meta";
+                meta.textContent = data.documento.nome_arquivo;
+                item.appendChild(link);
+                item.appendChild(meta);
+                list?.prepend(item);
+
+                if (titleInput) titleInput.value = "";
+                fileInput.value = "";
+                updateDropzoneLabel();
+            } catch (error) {
+                showError(error.message || "Nao foi possivel anexar o documento.");
+            } finally {
+                uploadButton.disabled = false;
+                uploadButton.textContent = "Anexar documento";
+            }
+        });
+    });
+}
+
 function initClientLiveSearch() {
     const form = document.querySelector("[data-client-search-form]");
     const input = document.querySelector("[data-client-search-input]");
@@ -1036,6 +1137,7 @@ function initClientLazyModals() {
         initDocumentalClientForm(root);
         initRepresentativeManagers(root);
         initRepresentationManagers(root);
+        initClientDocumentUploads(root);
         initPendingFocusShortcuts(root);
     }
 

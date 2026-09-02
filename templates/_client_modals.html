@@ -26,6 +26,7 @@
     {% set procurador = context.procurador or {} %}
     {% set procuradores = context.procuradores or ([procurador] if procurador else []) %}
     {% set pend = context.cliente_pendencias or {} %}
+    {% set documentos = context.documentos or [] %}
     <div class="modal fade client-modal" id="{{ modal_id }}" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
             <form class="modal-content cliente-form" method="post" novalidate>
@@ -161,6 +162,8 @@
                                 </label>
                                 {{ field_text('RG', 'conj_rg', conjuge.rg, 'text', '', '', '', 'maxlength="20"') }}
                                 {{ field_text('Orgao RG', 'conj_orgao_expedidor_rg', conjuge.orgao_expedidor_rg, 'text', '', '', '', 'maxlength="20"') }}
+                                {{ field_text('Nome do pai', 'conj_nome_pai', conjuge.nome_pai) }}
+                                {{ field_text('Nome da mae', 'conj_nome_mae', conjuge.nome_mae) }}
                                 {{ field_text('Nacionalidade', 'conj_nacionalidade', conjuge.nacionalidade) }}
                                 {{ field_text('Profissao/ocupacao', 'conj_profissao_ocupacao', conjuge.profissao_ocupacao) }}
                                 {{ field_text('E-mail', 'conj_email', conjuge.email, 'email') }}
@@ -468,6 +471,38 @@
                                 <strong>Pendencias atuais</strong>
                                 <span>{{ (pend.pendenciasObrigatorias or [])|length }} obrigatoria(s) e {{ (pend.pendenciasRecomendadas or [])|length }} recomendada(s).</span>
                             </div>
+                        </section>
+
+                        <section class="client-section" data-client-section="documentos">
+                            <div class="client-section-title">
+                                <h3>8. Documentos</h3>
+                                <small>RG, comprovantes e outros arquivos do cliente. Ficam guardados na pasta do cliente no Dropbox (Novo/_clientes).</small>
+                            </div>
+                            {% if cliente.id %}
+                                <div class="client-documents" data-client-documents data-client-id="{{ cliente.id }}" data-upload-url="{{ url_for('client_documento_upload', client_id=cliente.id) }}">
+                                    <div class="client-document-upload">
+                                        <input type="text" class="client-document-title" data-doc-titulo placeholder="Titulo do documento (ex.: RG)" maxlength="120">
+                                        <label class="client-dropzone" data-doc-dropzone>
+                                            <input type="file" data-doc-file accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.doc,.docx" hidden>
+                                            <span data-doc-dropzone-text>Arraste um arquivo aqui ou clique para escolher</span>
+                                        </label>
+                                        <button type="button" class="btn btn-outline-primary btn-sm" data-doc-upload>Anexar documento</button>
+                                        <small class="field-error" data-doc-error></small>
+                                    </div>
+                                    <ul class="client-document-list" data-doc-list>
+                                        {% for doc in documentos %}
+                                            <li data-doc-item>
+                                                <a href="{{ dropbox_web_url(doc.caminho_dropbox) }}" target="_blank" rel="noopener">{{ doc.titulo }}</a>
+                                                <span class="client-document-meta">{{ doc.nome_arquivo }}</span>
+                                            </li>
+                                        {% else %}
+                                            <li class="client-document-empty" data-doc-empty>Nenhum documento anexado ainda.</li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                            {% else %}
+                                <p class="client-documents-hint">Salve o cadastro para poder anexar documentos.</p>
+                            {% endif %}
                         </section>
                     </div>
                 </div>

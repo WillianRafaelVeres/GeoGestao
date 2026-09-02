@@ -1277,6 +1277,8 @@ def init_db():
             nacionalidade TEXT,
             rg TEXT,
             orgao_expedidor_rg TEXT,
+            nome_pai TEXT,
+            nome_mae TEXT,
             uf_nascimento TEXT,
             cidade_nascimento TEXT,
             data_nascimento TEXT,
@@ -1412,6 +1414,20 @@ def init_db():
             criado_em TEXT,
             atualizado_em TEXT,
             FOREIGN KEY(imovel_id) REFERENCES imoveis(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS cliente_documentos (
+            id SERIAL PRIMARY KEY,
+            cliente_id INTEGER NOT NULL,
+            titulo TEXT NOT NULL,
+            caminho_dropbox TEXT NOT NULL,
+            nome_arquivo TEXT NOT NULL,
+            nome_original TEXT,
+            hash TEXT,
+            tamanho BIGINT,
+            criado_em TEXT,
+            usuario_id INTEGER,
+            FOREIGN KEY(cliente_id) REFERENCES clientes(id)
         );
 
         CREATE TABLE IF NOT EXISTS document_field_requirements (
@@ -9007,6 +9023,91 @@ def dropbox_upload_exigencia_attachment(project_caminho_pasta, attachment, reque
     }, None
 
 
+def dropbox_clientes_root():
+    """Caminho Dropbox da pasta compartilhada '_clientes' dentro de Novo (ex.: /SC/Novo/_clientes).
+
+    Essa pasta ja existe hoje no Dropbox da equipe; o sistema so entra nela.
+    """
+    novo_path = dropbox_path_from_raw(NOVO_WORK_BASE_PATH)
+    if not novo_path:
+        return None
+    return f"{novo_path}/_clientes"
+
+
+def dropbox_cliente_destination(cliente_nome):
+    """Acha a pasta do cliente dentro de '_clientes'; cria se ainda nao existir.
+
+    Reaproveita o mesmo casamento de nomes usado para pastas de proprietario
+    (match_owner_folder), para nao criar uma pasta duplicada por causa de
+    acento, caixa ou pequena variacao no nome ja cadastrado no Dropbox.
+    """
+    if not dropbox_enabled():
+        return None, "Integracao com o Dropbox nao esta configurada."
+    root = dropbox_clientes_root()
+    if not root:
+        return None, "Nao foi possivel determinar a pasta '_clientes' (verifique GEOGESTAO_NOVO_WORK_BASE/DROPBOX_PATH_ALIASES)."
+    ok, error = dropbox_ensure_folder(root)
+    if not ok:
+        return None, f"Nao foi possivel acessar a pasta '_clientes' no Dropbox: {error}"
+    entries, error = _dropbox_folder_entries(root)
+    if entries is None:
+        return None, f"Nao foi possivel verificar a pasta '_clientes': {error}"
+    folders = [entry.get("name") for entry in entries if entry.get(".tag") == "folder" and entry.get("name")]
+    match, score = match_owner_folder(cliente_nome, folders)
+    folder_name = match if match and score >= 85 else sanitize_folder_name(cliente_nome)
+    if not folder_name:
+        return None, "Nome do cliente invalido para criar a pasta."
+    destination = f"{root}/{folder_name}"
+    ok, error = dropbox_ensure_folder(destination)
+    if not ok:
+        return None, f"Nao foi possivel preparar a pasta do cliente no Dropbox: {error}"
+    return destination, None
+
+
+def read_cliente_documento_upload(upload, titulo):
+    """Valida um documento de cliente recebido pelo formulario (mesmas regras da nota de exigencia)."""
+    if not upload or not upload.filename:
+        return None, "Selecione um arquivo."
+    if not (titulo or "").strip():
+        return None, "Informe um titulo para o documento."
+    original_name = os.path.basename(upload.filename.replace("\\", "/")).strip()
+    extension = os.path.splitext(original_name)[1].lower()
+    if extension not in EXIGENCIA_ATTACHMENT_EXTENSIONS:
+        allowed = ", ".join(sorted(EXIGENCIA_ATTACHMENT_EXTENSIONS))
+        return None, f"Formato nao permitido. Use: {allowed}."
+    file_bytes = upload.read()
+    if not file_bytes:
+        return None, "O arquivo esta vazio."
+    if not exigencia_attachment_signature_matches(extension, file_bytes):
+        return None, "O conteudo do arquivo nao corresponde ao formato informado."
+    return {
+        "bytes": file_bytes,
+        "hash": hashlib.sha256(file_bytes).hexdigest(),
+        "extension": extension,
+        "original_name": original_name[:255],
+        "size": len(file_bytes),
+    }, None
+
+
+def dropbox_upload_cliente_documento(cliente_nome, titulo, attachment):
+    """Envia um documento do cliente para Novo/_clientes/<cliente>. Nunca sobrescreve: em caso de
+    nome repetido o Dropbox renomeia automaticamente (ex.: 'RG (1).pdf')."""
+    folder_path, error = dropbox_cliente_destination(cliente_nome)
+    if not folder_path:
+        return None, error
+    safe_title = re.sub(r'[\\/:*?"<>|]+', " ", str(titulo or "").strip())
+    safe_title = re.sub(r"\s+", " ", safe_title).strip(" _-") or "Documento"
+    filename = f"{safe_title}{attachment['extension']}"
+    upload_path = f"{folder_path}/{filename}"
+    metadata, error = _dropbox_upload(upload_path, attachment["bytes"])
+    if not metadata:
+        return None, f"Falha ao enviar o arquivo para o Dropbox: {error}"
+    return {
+        "path": metadata.get("path_display") or upload_path,
+        "name": metadata.get("name") or filename,
+    }, None
+
+
 def attach_exigencia_note(project, exigencia_id, attachment):
     """Deduplica, envia ao Dropbox e vincula a nota ao registro da exigencia."""
     duplicate = find_duplicate_exigencia_attachment(project["id"], attachment["hash"], exigencia_id)
@@ -12311,6 +12412,10 @@ def load_cliente_modal_context(cliente_id):
         "endereco": row["endereco"] or {},
         "procurador": procuradores[0] if procuradores else {},
         "procuradores": procuradores,
+        "documentos": query_db(
+            "SELECT * FROM cliente_documentos WHERE cliente_id = %s ORDER BY criado_em DESC, id DESC",
+            (cliente_id,),
+        ),
     }
     context["cliente_pendencias"] = get_cliente_pendencias(context)
     context["texto_qualificacao"] = build_qualificacao_completa(context)
@@ -12781,7 +12886,7 @@ def upsert_conjuge(pessoa_fisica_id, now):
         return None
     has_data = any(get_form_value(field) for field in [
         "conj_nome_completo", "conj_cpf", "conj_profissao_ocupacao", "conj_rg", "conj_data_nascimento",
-        "conj_email", "conj_telefone",
+        "conj_email", "conj_telefone", "conj_nome_pai", "conj_nome_mae",
     ])
     if not has_data:
         if existing:
@@ -12795,6 +12900,8 @@ def upsert_conjuge(pessoa_fisica_id, now):
         get_form_value("conj_nacionalidade") or None,
         get_form_value("conj_rg") or None,
         get_form_value("conj_orgao_expedidor_rg") or None,
+        get_form_value("conj_nome_pai") or None,
+        get_form_value("conj_nome_mae") or None,
         get_form_value("conj_uf_nascimento") or None,
         get_form_value("conj_cidade_nascimento") or None,
         get_form_value("conj_data_nascimento") or None,
@@ -12807,8 +12914,8 @@ def upsert_conjuge(pessoa_fisica_id, now):
             """
             UPDATE conjuges
             SET sexo = %s, nome_completo = %s, cpf = %s, profissao_ocupacao = %s, nacionalidade = %s, rg = %s,
-                orgao_expedidor_rg = %s, uf_nascimento = %s, cidade_nascimento = %s, data_nascimento = %s,
-                email = %s, telefone = %s, atualizado_em = %s
+                orgao_expedidor_rg = %s, nome_pai = %s, nome_mae = %s, uf_nascimento = %s, cidade_nascimento = %s,
+                data_nascimento = %s, email = %s, telefone = %s, atualizado_em = %s
             WHERE id = %s
             """,
             values + (existing["id"],),
@@ -12818,8 +12925,9 @@ def upsert_conjuge(pessoa_fisica_id, now):
         """
         INSERT INTO conjuges
             (sexo, nome_completo, cpf, profissao_ocupacao, nacionalidade, rg, orgao_expedidor_rg,
-             uf_nascimento, cidade_nascimento, data_nascimento, email, telefone, atualizado_em, pessoa_fisica_id, criado_em)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             nome_pai, nome_mae, uf_nascimento, cidade_nascimento, data_nascimento, email, telefone,
+             atualizado_em, pessoa_fisica_id, criado_em)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         values + (pessoa_fisica_id, now),
     )
@@ -13237,6 +13345,7 @@ def empty_cliente_context():
         "procuradores": [],
         "imoveis": [],
         "vertices_by_imovel": {},
+        "documentos": [],
     }
     context["completeness"] = get_cadastro_completeness(context)
     context["cliente_pendencias"] = get_cliente_pendencias(context)
@@ -13672,6 +13781,58 @@ def client_representacao_deactivate(client_id, representacao_id):
         return {"error": str(exc)}, 422
     invalidate_runtime_caches()
     return resultado, 200
+
+
+@app.route("/clients/<int:client_id>/documentos", methods=["POST"])
+@login_required
+def client_documento_upload(client_id):
+    """Anexa um documento (RG, comprovante etc.) ao cliente, salvo em Novo/_clientes/<cliente> no Dropbox."""
+    if not can_manage():
+        return {"error": "Permissao negada"}, 403
+    cliente = query_db("SELECT id, nome, nome_exibicao FROM clientes WHERE id = %s", (client_id,), one=True)
+    if not cliente:
+        return {"error": "Cliente nao encontrado."}, 404
+
+    titulo = (request.form.get("titulo") or "").strip()
+    attachment, error = read_cliente_documento_upload(request.files.get("arquivo"), titulo)
+    if error:
+        return {"error": error}, 400
+
+    cliente_nome = cliente["nome_exibicao"] or cliente["nome"]
+    uploaded, error = dropbox_upload_cliente_documento(cliente_nome, titulo, attachment)
+    if not uploaded:
+        return {"error": error}, 400
+
+    now = app_now_iso()
+    doc_id = execute_db(
+        """
+        INSERT INTO cliente_documentos
+            (cliente_id, titulo, caminho_dropbox, nome_arquivo, nome_original, hash, tamanho, criado_em, usuario_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            client_id,
+            titulo,
+            uploaded["path"],
+            uploaded["name"],
+            attachment["original_name"],
+            attachment["hash"],
+            attachment["size"],
+            now,
+            g.user["id"],
+        ),
+    )
+    return {
+        "ok": True,
+        "documento": {
+            "id": doc_id,
+            "titulo": titulo,
+            "nome_arquivo": uploaded["name"],
+            "caminho_dropbox": uploaded["path"],
+            "url": dropbox_web_url(uploaded["path"]),
+            "criado_em": now,
+        },
+    }, 201
 
 
 CNJ_JUSTICA_ABERTA_API = "https://justicaabertaapi.cnj.jus.br/v1/api"
