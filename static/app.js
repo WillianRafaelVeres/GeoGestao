@@ -167,6 +167,32 @@ window.addEventListener("DOMContentLoaded", () => {
         });
     });
 
+    // Abre a pasta de documentos do cliente (Novo/_clientes/<cliente>): acha ou cria no
+    // Dropbox e abre igual ao botao acima, so que sem exigir um caminho ja cadastrado.
+    document.querySelectorAll("[data-open-client-folder]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const url = button.dataset.openClientFolderUrl;
+            if (!url) return;
+            const originalText = button.textContent;
+            button.disabled = true;
+            button.textContent = "Abrindo...";
+            try {
+                const resp = await fetch(url, { method: "POST" });
+                const data = await resp.json();
+                if (data.url) {
+                    window.open(data.url, "_blank", "noopener");
+                } else if (data.error) {
+                    alert(data.error);
+                }
+            } catch {
+                alert("Nao foi possivel abrir a pasta do cliente.");
+            } finally {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        });
+    });
+
     initDocumentalClientForm();
     initRepresentativeManagers();
     initRepresentationManagers();

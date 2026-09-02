@@ -13835,6 +13835,37 @@ def client_documento_upload(client_id):
     }, 201
 
 
+@app.route("/clients/<int:client_id>/documentos/pasta", methods=["POST"])
+@login_required
+def client_documento_folder(client_id):
+    """Acha (ou cria, se ainda nao existir) a pasta do cliente em Novo/_clientes e abre.
+
+    Mesmo comportamento do 'Abrir pasta' dos projetos (/api/open-folder): Explorer
+    quando o app roda local com o Dropbox sincronizado, senao a URL do dropbox.com.
+    """
+    cliente = query_db("SELECT id, nome, nome_exibicao FROM clientes WHERE id = %s", (client_id,), one=True)
+    if not cliente:
+        return {"error": "Cliente nao encontrado."}, 404
+    cliente_nome = cliente["nome_exibicao"] or cliente["nome"]
+    dropbox_path, error = dropbox_cliente_destination(cliente_nome)
+    if not dropbox_path:
+        return {"error": error}, 400
+
+    if hasattr(os, "startfile"):
+        resolved_path = next(
+            (candidate for candidate in local_dropbox_candidates(dropbox_path) if os.path.isdir(candidate)),
+            None,
+        )
+        if resolved_path:
+            try:
+                os.startfile(resolved_path)  # type: ignore[attr-defined]
+                return {"ok": True, "path": resolved_path}
+            except Exception:
+                pass  # cai para o Dropbox web
+
+    return {"url": dropbox_web_url(dropbox_path)}
+
+
 CNJ_JUSTICA_ABERTA_API = "https://justicaabertaapi.cnj.jus.br/v1/api"
 CNJ_CARTORIO_CACHE_TTL_SECONDS = 24 * 60 * 60
 
