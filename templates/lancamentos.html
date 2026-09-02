@@ -35,12 +35,19 @@
         </div>
         <div class="lancamento-fila-list" data-lancamento-fila-list>
             {% for item in fila %}
-                <a class="lancamento-fila-item {{ 'is-active' if aberto and item.id == aberto.id else '' }}"
-                   href="{{ url_for('financeiro_lancamentos', despesa_id=item.id, lote_id=lote_id) }}"
-                   data-lancamento-fila-item="{{ item.id }}">
-                    <strong>{{ item.anexo_nome or item.descricao }}</strong>
-                    <small>{{ item.descricao }}</small>
-                </a>
+                <div class="lancamento-fila-row {{ 'is-active' if aberto and item.id == aberto.id else '' }}" data-lancamento-fila-item="{{ item.id }}">
+                    <a class="lancamento-fila-item"
+                       href="{{ url_for('financeiro_lancamentos', despesa_id=item.id, lote_id=lote_id) }}">
+                        <strong>{{ item.anexo_nome or item.descricao }}</strong>
+                        <small>{{ item.descricao }}</small>
+                    </a>
+                    <button type="button" class="lancamento-fila-trash" data-lancamento-fila-trash="{{ item.id }}"
+                            title="Descartar documento" aria-label="Descartar documento">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                            <path d="M2 4h12M6.5 4V2.5A1.5 1.5 0 0 1 8 1h0a1.5 1.5 0 0 1 1.5 1.5V4M3.5 4l.6 9.4A1.5 1.5 0 0 0 5.6 15h4.8a1.5 1.5 0 0 0 1.5-1.6L12.5 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                </div>
             {% endfor %}
             <div class="lancamento-fila-empty" data-lancamento-fila-empty {{ 'hidden' if fila else '' }}>Nenhum documento pendente.</div>
         </div>

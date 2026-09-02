@@ -8,6 +8,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initLancamentoProjetoAutocomplete();
     initLancamentoDesembolsoToggle();
     initLancamentoForm();
+    initLancamentoFilaTrash();
     initLancamentoAutoAi();
 });
 
@@ -319,6 +320,28 @@ function lancamentoUrl(action, currentId) {
     return `/financeiro/lancamentos/${currentId}/${action}${params.toString() ? `?${params}` : ""}`;
 }
 
+async function postLancamento(url, formData) {
+    // Sempre manda um body (mesmo vazio) no POST: alguns proxies/servidores
+    // tratam POST sem Content-Length de forma inconsistente. O header
+    // X-Requested-With e o que a rota usa pra devolver JSON em vez do
+    // fallback classico (flash + redirect).
+    const response = await fetch(url, {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        body: formData || new FormData(),
+    });
+    let data;
+    try {
+        data = await response.json();
+    } catch {
+        throw new Error(`O servidor respondeu de forma inesperada (HTTP ${response.status}). Recarregue a pagina e tente novamente.`);
+    }
+    if (!response.ok || !data.ok) {
+        throw new Error(data.error || "Nao foi possivel concluir a operacao.");
+    }
+    return data;
+}
+
 function applyLancamentoAdvance(currentId, data) {
     const savedItem = document.querySelector(`[data-lancamento-fila-item="${currentId}"]`);
     savedItem?.remove();
@@ -346,20 +369,10 @@ function initLancamentoForm() {
             submitButton.textContent = "Salvando...";
         }
         try {
-            const formData = new FormData(form);
-            const response = await fetch(lancamentoUrl("salvar-proximo", currentId), {
-                method: "POST",
-                headers: { "X-Requested-With": "XMLHttpRequest" },
-                body: formData,
-            });
-            const data = await response.json();
-            if (!response.ok || !data.ok) {
-                if (errorBox) errorBox.textContent = data.error || "Nao foi possivel salvar. Confira os campos.";
-                return;
-            }
+            const data = await postLancamento(lancamentoUrl("salvar-proximo", currentId), new FormData(form));
             applyLancamentoAdvance(currentId, data);
-        } catch {
-            if (errorBox) errorBox.textContent = "Nao foi possivel conectar para salvar. Tente novamente.";
+        } catch (error) {
+            if (errorBox) errorBox.textContent = error.message || "Nao foi possivel salvar. Tente novamente.";
         } finally {
             if (submitButton) {
                 submitButton.disabled = false;
@@ -377,21 +390,48 @@ function initLancamentoForm() {
         cancelButton.disabled = true;
         if (submitButton) submitButton.disabled = true;
         try {
-            const response = await fetch(lancamentoUrl("cancelar", currentId), {
-                method: "POST",
-                headers: { "X-Requested-With": "XMLHttpRequest" },
-            });
-            const data = await response.json();
-            if (!response.ok || !data.ok) {
-                if (errorBox) errorBox.textContent = data.error || "Nao foi possivel descartar este documento.";
-                return;
-            }
+            const data = await postLancamento(lancamentoUrl("cancelar", currentId));
             applyLancamentoAdvance(currentId, data);
-        } catch {
-            if (errorBox) errorBox.textContent = "Nao foi possivel conectar para descartar. Tente novamente.";
+        } catch (error) {
+            if (errorBox) errorBox.textContent = error.message || "Nao foi possivel descartar este documento.";
         } finally {
             cancelButton.disabled = false;
             if (submitButton) submitButton.disabled = false;
+        }
+    });
+}
+
+// --- Lixeira na lista de pendentes: descarta um item sem precisar abri-lo ---
+
+function initLancamentoFilaTrash() {
+    const list = document.querySelector("[data-lancamento-fila-list]");
+    if (!list) return;
+
+    list.addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-lancamento-fila-trash]");
+        if (!button) return;
+        event.preventDefault();
+        const id = button.dataset.lancamentoFilaTrash;
+        if (!confirm("Descartar este documento? Ele sai da fila sem virar despesa (fica preservado no historico como cancelado).")) return;
+
+        const row = button.closest("[data-lancamento-fila-item]");
+        row?.classList.add("is-busy");
+        try {
+            const data = await postLancamento(lancamentoUrl("cancelar", id));
+            row?.remove();
+            const countBadge = document.querySelector("[data-lancamento-fila-count]");
+            if (countBadge) countBadge.textContent = String(lancamentoFilaCount());
+            const filaEmpty = document.querySelector("[data-lancamento-fila-empty]");
+            if (filaEmpty) filaEmpty.hidden = lancamentoFilaCount() > 0;
+            // So troca o documento aberto se a lixeira clicada era a do
+            // proprio documento em edicao -- descartar outro item da lista
+            // nao deve tirar o usuario do que ele esta preenchendo agora.
+            if (String(window.lancamentoAberto?.id) === String(id)) {
+                updateLancamentoDoc(data.next);
+            }
+        } catch (error) {
+            alert(error.message || "Nao foi possivel descartar este documento.");
+            row?.classList.remove("is-busy");
         }
     });
 }
