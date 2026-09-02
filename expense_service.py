@@ -522,3 +522,96 @@ def migrate_pending_custos(db, custos, criado_em):
         migrate_custo(db, custo, criado_em)
         migrated += 1
     return migrated
+
+
+# --- Lancamento rapido (Financeiro -> Lancamentos) -------------------------
+
+def classificar_despesa_rapida(
+    db, despesa_id, *, descricao, valor_total, categoria, data_despesa, observacoes,
+    desembolsado_por_tipo, projeto_id, atualizado_em,
+    desembolsante_id=None, desembolsante_nome_novo=None, atualizado_por=None,
+):
+    """Mesma regra de classificar_despesa, mas para o fluxo simplificado de
+    Lancamentos: em vez de uma lista de alocacoes, recebe UM projeto e monta
+    sozinha a alocacao de 100% do valor para ele (item 4 do redesenho -- o
+    usuario nao preenche "divisao entre projetos" quando a despesa inteira e
+    de um projeto so). Divisao entre varios projetos continua disponivel na
+    tela completa de Despesas via classificar_despesa/set_alocacoes."""
+    if not projeto_id:
+        raise ExpenseServiceError("Selecione o projeto do lancamento.")
+    return classificar_despesa(
+        db, despesa_id,
+        descricao=descricao, valor_total=valor_total, categoria=categoria,
+        data_despesa=data_despesa, observacoes=observacoes,
+        desembolsado_por_tipo=desembolsado_por_tipo,
+        alocacoes=[{"projeto_id": projeto_id, "valor": valor_total}],
+        atualizado_em=atualizado_em,
+        desembolsante_id=desembolsante_id, desembolsante_nome_novo=desembolsante_nome_novo,
+        atualizado_por=atualizado_por,
+    )
+
+
+# --- Cobrancas (Financeiro -> Cobrancas) -----------------------------------
+
+def criar_cobranca(
+    db, *, cliente_id, despesa_ids, data_cobranca, criado_em, observacoes=None, criado_por=None,
+):
+    """Formaliza a cobranca de um conjunto de despesas 'prontas' de UM cliente
+    (item 9/10 do redesenho). Recusa qualquer despesa que nao esteja pronta,
+    que nao seja desse cliente ou que ja esteja em outra cobranca ativa --
+    tudo verificado ANTES de escrever, no mesmo espirito de
+    validate_allocations_sum (uma falha de regra nunca pode deixar escrita
+    parcial, porque o redirect de erro nao e status >=400)."""
+    if not despesa_ids:
+        raise ExpenseServiceError("Selecione ao menos uma despesa para cobrar.")
+    despesa_ids = list(dict.fromkeys(despesa_ids))  # remove duplicados, preserva ordem
+
+    elegiveis = {d["id"]: d for d in repo.list_despesas_a_cobrar_do_cliente(db, cliente_id)}
+    faltando = [despesa_id for despesa_id in despesa_ids if despesa_id not in elegiveis]
+    if faltando:
+        raise ExpenseServiceError(
+            "Alguma despesa selecionada nao esta mais disponivel para cobranca "
+            "(pode ja ter sido cobrada, cancelada ou pertencer a outro cliente)."
+        )
+
+    ja_cobradas = repo.find_despesas_com_cobranca_ativa(db, despesa_ids)
+    if ja_cobradas:
+        raise ExpenseServiceError("Alguma despesa selecionada ja esta em outra cobranca ativa.")
+
+    total = sum((to_currency(elegiveis[despesa_id]["valor_total"]) for despesa_id in despesa_ids), Decimal("0.00"))
+    if total <= 0:
+        raise ExpenseServiceError("O total da cobranca precisa ser maior que zero.")
+
+    cobranca_id = repo.insert_cobranca(
+        db, cliente_id, total, data_cobranca, criado_em,
+        observacoes=observacoes, criado_por=criado_por,
+    )
+    for despesa_id in despesa_ids:
+        valor = to_currency(elegiveis[despesa_id]["valor_total"])
+        repo.insert_cobranca_item(db, cobranca_id, despesa_id, valor)
+        repo.insert_evento(
+            db, despesa_id, "despesa_cobrada",
+            f"Despesa incluida na cobranca #{cobranca_id} (R$ {valor}).",
+            criado_em, usuario_id=criado_por,
+        )
+    return repo.get_cobranca(db, cobranca_id)
+
+
+def cancelar_cobranca(db, cobranca_id, motivo, cancelado_em, cancelado_por=None):
+    """Cancela uma cobranca por engano. Soft (nunca DELETE): as despesas que ela
+    incluia voltam a aparecer como 'a cobrar' automaticamente, porque toda
+    consulta de pendencia ja filtra por cobrancas.status='ativa'/itens.status='ativo'."""
+    cobranca = repo.get_cobranca(db, cobranca_id)
+    if not cobranca:
+        raise ExpenseServiceError("Cobranca nao encontrada.")
+    if cobranca["status"] == "cancelada":
+        raise ExpenseServiceError("Esta cobranca ja esta cancelada.")
+    itens = repo.list_cobranca_itens(db, cobranca_id)
+    repo.cancel_cobranca_and_itens(db, cobranca_id, motivo, cancelado_em, cancelado_por)
+    for item in itens:
+        repo.insert_evento(
+            db, item["despesa_id"], "despesa_cobranca_cancelada",
+            f"Cobranca #{cobranca_id} cancelada."
+            + (f" Motivo: {motivo}." if motivo else "") + " A despesa voltou a ficar 'a cobrar'.",
+            cancelado_em, usuario_id=cancelado_por,
+        )

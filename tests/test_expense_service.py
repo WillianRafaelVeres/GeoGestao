@@ -519,6 +519,175 @@ class ExpenseRepositoryQueryShapeTests(unittest.TestCase):
         self.assertIn("FROM despesas d", sql)
         self.assertEqual(params, ("2026-09-01", "2026-09-30") * 3)
 
+    def test_list_fila_lancamento_filters_pending_statuses(self):
+        db = self.FakeDb(rows=[{"id": 1, "status": "pendente_classificacao"}])
+        repo.list_fila_lancamento(db)
+        sql, params = db.executed[0]
+        self.assertIn("rascunho", sql)
+        self.assertIn("pendente_classificacao", sql)
+        self.assertEqual(params[-1], 200)
+
+    def test_list_fila_lancamento_can_scope_to_a_lote(self):
+        db = self.FakeDb(rows=[])
+        repo.list_fila_lancamento(db, lote_id=9)
+        sql, params = db.executed[0]
+        self.assertIn("d.lote_id = %s", sql)
+        self.assertEqual(params[0], 9)
+
+    def test_list_projetos_do_cliente_uses_owner_and_legacy_fallback(self):
+        db = self.FakeDb(rows=[{"id": 245, "codigo": "GEO-001", "nome": "Fazenda X"}])
+        result = repo.list_projetos_do_cliente(db, 7)
+        self.assertEqual(result[0]["codigo"], "GEO-001")
+        sql, params = db.executed[0]
+        self.assertIn("projeto_proprietarios", sql)
+        self.assertEqual(params, (7, 7))
+
+    def test_find_despesas_com_cobranca_ativa_short_circuits_on_empty_list(self):
+        db = self.FakeDb(rows=[{"despesa_id": 1}])
+        self.assertEqual(repo.find_despesas_com_cobranca_ativa(db, []), set())
+        self.assertEqual(db.executed, [])
+
+    def test_find_despesas_com_cobranca_ativa_returns_a_set(self):
+        db = self.FakeDb(rows=[{"despesa_id": 1}, {"despesa_id": 3}])
+        result = repo.find_despesas_com_cobranca_ativa(db, [1, 2, 3])
+        self.assertEqual(result, {1, 3})
+
+    def test_list_despesas_a_cobrar_por_cliente_only_considers_ready_despesas(self):
+        db = self.FakeDb(rows=[{"cliente_id": 7, "total_a_cobrar": 63.0}])
+        repo.list_despesas_a_cobrar_por_cliente(db)
+        sql, _ = db.executed[0]
+        self.assertIn("d.status = 'pronta'", sql)
+        self.assertIn("ci.status = 'ativo'", sql)
+
+
+class ClassificarDespesaRapidaTests(unittest.TestCase):
+    """Item 4 do redesenho de Lancamentos: proprietario -> projeto -> alocacao
+    de 100% montada sozinha, sem o usuario preencher divisao manualmente."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.repo.get_despesa.return_value = {
+            "id": 1, "status": "pendente_classificacao",
+            "desembolsado_por_tipo": "EMPRESA", "desembolsado_por_id": None,
+        }
+        self.repo.resolve_projeto_cliente.return_value = 42
+
+    def test_builds_single_full_allocation_from_project(self):
+        svc.classificar_despesa_rapida(
+            self.db, 1, descricao="Matricula", valor_total=300, categoria="MATRICULA",
+            data_despesa="2026-09-02", observacoes=None, desembolsado_por_tipo="EMPRESA",
+            projeto_id=245, atualizado_em="2026-09-02T11:00:00", atualizado_por=1,
+        )
+        self.repo.insert_alocacao.assert_called_once_with(
+            self.db, 1, 245, 42, Decimal("300.00"), "2026-09-02T11:00:00", percentual=None
+        )
+
+    def test_missing_project_is_rejected_before_any_write(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.classificar_despesa_rapida(
+                self.db, 1, descricao="Matricula", valor_total=300, categoria=None,
+                data_despesa="2026-09-02", observacoes=None, desembolsado_por_tipo="EMPRESA",
+                projeto_id=None, atualizado_em="2026-09-02T11:00:00",
+            )
+        self.repo.update_despesa_classificacao.assert_not_called()
+
+
+class CriarCobrancaTests(unittest.TestCase):
+    """Itens 9/10 do redesenho: agrupar despesas 'prontas' de um cliente numa
+    cobranca auditavel, nunca deixando a mesma despesa entrar em duas ativas."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.repo.find_despesas_com_cobranca_ativa.return_value = set()
+
+    def test_creates_cobranca_with_multiple_despesas(self):
+        self.repo.list_despesas_a_cobrar_do_cliente.return_value = [
+            {"id": 1, "valor_total": Decimal("45.00")},
+            {"id": 2, "valor_total": Decimal("18.00")},
+        ]
+        self.repo.insert_cobranca.return_value = 900
+        self.repo.get_cobranca.return_value = {"id": 900, "valor_total": Decimal("63.00")}
+
+        result = svc.criar_cobranca(
+            self.db, cliente_id=7, despesa_ids=[1, 2],
+            data_cobranca="2026-09-02", criado_em="2026-09-02T10:00:00", criado_por=1,
+        )
+
+        self.assertEqual(result, {"id": 900, "valor_total": Decimal("63.00")})
+        self.repo.insert_cobranca.assert_called_once_with(
+            self.db, 7, Decimal("63.00"), "2026-09-02", "2026-09-02T10:00:00",
+            observacoes=None, criado_por=1,
+        )
+        self.assertEqual(self.repo.insert_cobranca_item.call_count, 2)
+
+    def test_empty_selection_is_rejected(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.criar_cobranca(
+                self.db, cliente_id=7, despesa_ids=[],
+                data_cobranca="2026-09-02", criado_em="2026-09-02T10:00:00",
+            )
+        self.repo.insert_cobranca.assert_not_called()
+
+    def test_despesa_not_eligible_for_this_client_is_rejected(self):
+        self.repo.list_despesas_a_cobrar_do_cliente.return_value = [{"id": 1, "valor_total": Decimal("45.00")}]
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.criar_cobranca(
+                self.db, cliente_id=7, despesa_ids=[1, 999],
+                data_cobranca="2026-09-02", criado_em="2026-09-02T10:00:00",
+            )
+        self.repo.insert_cobranca.assert_not_called()
+
+    def test_despesa_already_in_active_cobranca_is_rejected(self):
+        self.repo.list_despesas_a_cobrar_do_cliente.return_value = [{"id": 1, "valor_total": Decimal("45.00")}]
+        self.repo.find_despesas_com_cobranca_ativa.return_value = {1}
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.criar_cobranca(
+                self.db, cliente_id=7, despesa_ids=[1],
+                data_cobranca="2026-09-02", criado_em="2026-09-02T10:00:00",
+            )
+        self.repo.insert_cobranca.assert_not_called()
+
+
+class CancelarCobrancaTests(unittest.TestCase):
+    """Item 10 do redesenho: cancelamento soft devolve as despesas para 'a cobrar'."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cancel_active_cobranca(self):
+        self.repo.get_cobranca.return_value = {"id": 900, "status": "ativa"}
+        self.repo.list_cobranca_itens.return_value = [
+            {"despesa_id": 1, "valor": Decimal("45.00")},
+            {"despesa_id": 2, "valor": Decimal("18.00")},
+        ]
+        svc.cancelar_cobranca(self.db, 900, "Lancado errado", "2026-09-03T09:00:00", cancelado_por=1)
+
+        self.repo.cancel_cobranca_and_itens.assert_called_once_with(
+            self.db, 900, "Lancado errado", "2026-09-03T09:00:00", 1
+        )
+        self.assertEqual(self.repo.insert_evento.call_count, 2)
+
+    def test_cannot_cancel_missing_cobranca(self):
+        self.repo.get_cobranca.return_value = None
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.cancelar_cobranca(self.db, 999, None, "2026-09-03T09:00:00")
+        self.repo.cancel_cobranca_and_itens.assert_not_called()
+
+    def test_cannot_cancel_already_cancelled_cobranca(self):
+        self.repo.get_cobranca.return_value = {"id": 900, "status": "cancelada"}
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.cancelar_cobranca(self.db, 900, None, "2026-09-03T09:00:00")
+        self.repo.cancel_cobranca_and_itens.assert_not_called()
+
 
 class ExpensePermissionsTests(unittest.TestCase):
     """Item 13 do pedido: view e sempre p/ logado; gerenciar e admin/coordenador;

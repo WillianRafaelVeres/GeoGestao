@@ -712,3 +712,257 @@ def mark_ia_analysis_applied(db, despesa_id, aplicado_em):
         "UPDATE despesa_documento_analises_ia SET status = 'aplicado', aplicado_em = %s WHERE despesa_id = %s",
         (aplicado_em, despesa_id),
     ).close()
+
+
+# --- Fila de lancamento (Financeiro -> Lancamentos) -----------------------
+
+def list_fila_lancamento(db, lote_id=None, limit=200):
+    """Documentos pendentes de classificacao (rascunho/pendente_classificacao),
+    mais antigos primeiro -- e a fila que a tela de Lancamentos consome, um
+    documento de cada vez. Traz o anexo principal junto (sem N+1) porque a
+    tela sempre precisa mostrar o comprovante do documento aberto."""
+    clauses = ["d.status IN ('rascunho', 'pendente_classificacao')"]
+    params = []
+    if lote_id:
+        clauses.append("d.lote_id = %s")
+        params.append(lote_id)
+    where_sql = " AND ".join(clauses)
+    params.append(limit)
+    return _fetchall(
+        db,
+        f"""
+        SELECT
+            d.*,
+            anexo.id AS anexo_id,
+            anexo.caminho_dropbox AS anexo_caminho_dropbox,
+            anexo.nome_original AS anexo_nome_original,
+            anexo.tamanho AS anexo_tamanho
+        FROM despesas d
+        LEFT JOIN LATERAL (
+            SELECT * FROM despesa_anexos
+            WHERE despesa_id = d.id
+            ORDER BY principal DESC, id
+            LIMIT 1
+        ) anexo ON TRUE
+        WHERE {where_sql}
+        ORDER BY d.criado_em, d.id
+        LIMIT %s
+        """,
+        params,
+    )
+
+
+def count_fila_lancamento(db):
+    row = _fetchone(
+        db,
+        "SELECT COUNT(*) AS total FROM despesas WHERE status IN ('rascunho', 'pendente_classificacao')",
+    )
+    return int(row["total"]) if row else 0
+
+
+# --- Projetos por proprietario (Financeiro -> Lancamentos) -----------------
+
+def list_projetos_do_cliente(db, cliente_id):
+    """Projetos de um cliente/proprietario, via projeto_proprietarios OU o
+    cliente_id legado do projeto (mesmo fallback de resolve_projeto_cliente),
+    para alimentar o segundo passo do lancamento rapido (proprietario -> so
+    os projetos dele). Consulta unica, indexada por cliente_id -- nao carrega
+    a lista inteira de projetos como o autocomplete administrativo antigo."""
+    return _fetchall(
+        db,
+        """
+        SELECT DISTINCT p.id, p.codigo, p.nome
+        FROM projetos p
+        LEFT JOIN projeto_proprietarios pp ON pp.projeto_id = p.id
+        WHERE (pp.cliente_id = %s OR p.cliente_id = %s)
+          AND COALESCE(p.arquivado, 0) = 0
+        ORDER BY p.codigo
+        """,
+        (cliente_id, cliente_id),
+    )
+
+
+# --- Cobrancas (Financeiro -> Cobrancas) -----------------------------------
+
+def insert_cobranca(db, cliente_id, valor_total, data_cobranca, criado_em, observacoes=None, criado_por=None):
+    return _insert_returning_id(
+        db,
+        """
+        INSERT INTO cobrancas (cliente_id, valor_total, data_cobranca, observacoes, criado_em, criado_por)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (cliente_id, valor_total, data_cobranca, observacoes, criado_em, criado_por),
+    )
+
+
+def get_cobranca(db, cobranca_id):
+    return _fetchone(db, "SELECT * FROM cobrancas WHERE id = %s", (cobranca_id,))
+
+
+def insert_cobranca_item(db, cobranca_id, despesa_id, valor):
+    return _insert_returning_id(
+        db,
+        "INSERT INTO cobranca_itens (cobranca_id, despesa_id, valor) VALUES (%s, %s, %s) RETURNING id",
+        (cobranca_id, despesa_id, valor),
+    )
+
+
+def list_cobranca_itens(db, cobranca_id):
+    return _fetchall(
+        db,
+        """
+        SELECT ci.*, d.descricao AS despesa_descricao, d.data_despesa
+        FROM cobranca_itens ci
+        JOIN despesas d ON d.id = ci.despesa_id
+        WHERE ci.cobranca_id = %s
+        ORDER BY ci.id
+        """,
+        (cobranca_id,),
+    )
+
+
+def cancel_cobranca_and_itens(db, cobranca_id, motivo, cancelado_em, cancelado_por=None):
+    """Cancelamento soft: marca a cobranca E espelha o mesmo status nos itens
+    (ver comentario da migration sobre por que o indice unico precisa desse
+    espelho). Nunca DELETE -- historico preservado."""
+    db.execute(
+        """
+        UPDATE cobrancas
+        SET status = 'cancelada', motivo_cancelamento = %s, cancelado_em = %s, cancelado_por = %s
+        WHERE id = %s
+        """,
+        (motivo, cancelado_em, cancelado_por, cobranca_id),
+    ).close()
+    db.execute(
+        "UPDATE cobranca_itens SET status = 'cancelado' WHERE cobranca_id = %s",
+        (cobranca_id,),
+    ).close()
+
+
+def find_despesas_com_cobranca_ativa(db, despesa_ids):
+    """Quais das despesas informadas ja estao presas a uma cobranca ainda
+    ativa -- usado para bloquear a mesma despesa entrando em duas cobrancas
+    simultaneas (a regra em si e reforcada no service, isto so consulta)."""
+    if not despesa_ids:
+        return set()
+    placeholders = ", ".join(["%s"] * len(despesa_ids))
+    rows = _fetchall(
+        db,
+        f"""
+        SELECT DISTINCT ci.despesa_id
+        FROM cobranca_itens ci
+        JOIN cobrancas c ON c.id = ci.cobranca_id
+        WHERE ci.status = 'ativo' AND c.status = 'ativa' AND ci.despesa_id IN ({placeholders})
+        """,
+        list(despesa_ids),
+    )
+    return {row["despesa_id"] for row in rows}
+
+
+def list_despesas_a_cobrar_por_cliente(db):
+    """Uma linha por cliente com saldo 'a cobrar' > 0, para 'Financeiro ->
+    Cobrancas' (mesmo formato de summarize_pendencias_reembolso). So entram
+    despesas 'pronta' (valor + divisao + desembolsante definidos), nao
+    canceladas, ainda sem cobranca ativa E cuja divisao aponte para um unico
+    cliente -- uma despesa dividida entre clientes diferentes fica de fora da
+    Fase 1 (ver docs/FINANCEIRO_DESPESAS.md), tratada manualmente por enquanto."""
+    return _fetchall(
+        db,
+        """
+        SELECT
+            cli.id AS cliente_id,
+            COALESCE(NULLIF(cli.nome_exibicao, ''), cli.nome) AS cliente_nome,
+            COUNT(*) AS despesas_a_cobrar,
+            SUM(elig.valor_total) AS total_a_cobrar
+        FROM (
+            SELECT d.id, d.valor_total, a.cliente_unico AS cliente_id
+            FROM despesas d
+            JOIN LATERAL (
+                SELECT MIN(a.cliente_id) AS cliente_unico
+                FROM despesa_alocacoes a
+                WHERE a.despesa_id = d.id
+                GROUP BY a.despesa_id
+                HAVING COUNT(*) = COUNT(a.cliente_id) AND COUNT(DISTINCT a.cliente_id) = 1
+            ) a ON TRUE
+            WHERE d.status = 'pronta'
+              AND NOT EXISTS (
+                  SELECT 1 FROM cobranca_itens ci
+                  JOIN cobrancas c ON c.id = ci.cobranca_id
+                  WHERE ci.despesa_id = d.id AND ci.status = 'ativo' AND c.status = 'ativa'
+              )
+        ) elig
+        JOIN clientes cli ON cli.id = elig.cliente_id
+        GROUP BY cli.id, cli.nome_exibicao, cli.nome
+        ORDER BY total_a_cobrar DESC
+        """,
+    )
+
+
+def list_despesas_a_cobrar_do_cliente(db, cliente_id):
+    """Despesas 'a cobrar' de UM cliente (expande o card em Cobrancas), com
+    projeto(s) e comprovante -- mesmo formato usado em
+    list_despesas_pendentes_por_desembolsante."""
+    return _fetchall(
+        db,
+        """
+        SELECT
+            d.*,
+            COALESCE(alloc.items, '[]'::json) AS alocacoes,
+            anexo.principal_path AS anexo_principal_path
+        FROM despesas d
+        JOIN LATERAL (
+            SELECT MIN(a.cliente_id) AS cliente_unico
+            FROM despesa_alocacoes a
+            WHERE a.despesa_id = d.id
+            GROUP BY a.despesa_id
+            HAVING COUNT(*) = COUNT(a.cliente_id) AND COUNT(DISTINCT a.cliente_id) = 1
+        ) uniq ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT json_agg(json_build_object(
+                'projeto_id', a.projeto_id, 'projeto_codigo', p.codigo, 'projeto_nome', p.nome
+            ) ORDER BY a.id) AS items
+            FROM despesa_alocacoes a
+            JOIN projetos p ON p.id = a.projeto_id
+            WHERE a.despesa_id = d.id
+        ) alloc ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT (ARRAY_AGG(caminho_dropbox ORDER BY principal DESC, id))[1] AS principal_path
+            FROM despesa_anexos WHERE despesa_id = d.id
+        ) anexo ON TRUE
+        WHERE d.status = 'pronta'
+          AND uniq.cliente_unico = %s
+          AND NOT EXISTS (
+              SELECT 1 FROM cobranca_itens ci
+              JOIN cobrancas c ON c.id = ci.cobranca_id
+              WHERE ci.despesa_id = d.id AND ci.status = 'ativo' AND c.status = 'ativa'
+          )
+        ORDER BY COALESCE(d.data_despesa, '') DESC, d.id DESC
+        """,
+        (cliente_id,),
+    )
+
+
+def list_cobrancas_recentes(db, limit=20):
+    return _fetchall(
+        db,
+        """
+        SELECT
+            c.*,
+            COALESCE(NULLIF(cli.nome_exibicao, ''), cli.nome) AS cliente_nome,
+            COALESCE(itens.despesas, '[]'::json) AS despesas
+        FROM cobrancas c
+        JOIN clientes cli ON cli.id = c.cliente_id
+        LEFT JOIN LATERAL (
+            SELECT json_agg(json_build_object(
+                'despesa_id', ci.despesa_id, 'descricao', d.descricao, 'valor', ci.valor
+            ) ORDER BY ci.id) AS despesas
+            FROM cobranca_itens ci
+            JOIN despesas d ON d.id = ci.despesa_id
+            WHERE ci.cobranca_id = c.id
+        ) itens ON TRUE
+        ORDER BY c.criado_em DESC, c.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
