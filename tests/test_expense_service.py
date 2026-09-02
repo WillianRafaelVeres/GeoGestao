@@ -1,0 +1,425 @@
+import unittest
+from decimal import Decimal
+from unittest import mock
+
+import app as appmod
+import expense_repository as repo
+import expense_service as svc
+
+
+class AllocationValidationTests(unittest.TestCase):
+    """Item 4 do pedido: soma das alocacoes tem que bater com o total, sempre."""
+
+    def test_single_project_matches_total(self):
+        svc.validate_allocations_sum(300, [{"projeto_id": 1, "valor": 300}])  # nao deve levantar
+
+    def test_two_projects_matching_total(self):
+        svc.validate_allocations_sum(500, [
+            {"projeto_id": 245, "valor": 300},
+            {"projeto_id": 251, "valor": 200},
+        ])  # nao deve levantar
+
+    def test_sum_different_from_total_is_rejected(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.validate_allocations_sum(300, [
+                {"projeto_id": 245, "valor": 180},
+                {"projeto_id": 251, "valor": 100},
+            ])
+
+    def test_rounding_tolerance_of_one_cent_is_accepted(self):
+        svc.validate_allocations_sum(Decimal("100.00"), [
+            {"projeto_id": 1, "valor": Decimal("33.34")},
+            {"projeto_id": 2, "valor": Decimal("33.33")},
+            {"projeto_id": 3, "valor": Decimal("33.34")},
+        ])  # soma 100.01, dentro da tolerancia de 1 centavo
+
+    def test_no_allocations_is_rejected(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.validate_allocations_sum(100, [])
+
+    def test_duplicate_project_is_rejected(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.validate_allocations_sum(200, [
+                {"projeto_id": 1, "valor": 100},
+                {"projeto_id": 1, "valor": 100},
+            ])
+
+    def test_zero_or_negative_allocation_is_rejected(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.validate_allocations_sum(100, [{"projeto_id": 1, "valor": 0}])
+
+
+class SplitByPercentualTests(unittest.TestCase):
+    def test_three_way_split_that_does_not_round_evenly_still_sums_to_total(self):
+        # Caso classico: 33% + 33% + 34% (ou 33.33 recorrente) precisa fechar em centavos.
+        result = svc.split_by_percentual(100, [(1, 33.33), (2, 33.33), (3, 33.34)])
+        self.assertEqual(sum(result.values()), Decimal("100.00"))
+        self.assertEqual(len(result), 3)
+
+    def test_percentuals_not_summing_100_are_rejected(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.split_by_percentual(100, [(1, 50), (2, 30)])
+
+
+class DisbursedByTests(unittest.TestCase):
+    """Itens 5/6 do pedido: nunca confundir desembolso da empresa com desembolso de pessoa."""
+
+    def test_company_disbursement_is_never_reimbursable(self):
+        despesa = {"desembolsado_por_tipo": "EMPRESA", "desembolsado_por_id": None}
+        self.assertFalse(svc.is_reembolsavel(despesa))
+
+    def test_person_disbursement_is_reimbursable(self):
+        despesa = {"desembolsado_por_tipo": "PESSOA", "desembolsado_por_id": 7}
+        self.assertTrue(svc.is_reembolsavel(despesa))
+
+    def test_status_becomes_pronta_only_with_allocations(self):
+        self.assertEqual(svc.compute_despesa_status(has_alocacoes=False, has_desembolso=True), "classificada")
+        self.assertEqual(svc.compute_despesa_status(has_alocacoes=True, has_desembolso=True), "pronta")
+
+
+class ResolveDesembolsanteTests(unittest.TestCase):
+    def test_empresa_never_creates_a_desembolsante_row(self):
+        db = mock.Mock()
+        result = svc.resolve_desembolsante(db, tipo="EMPRESA", criado_em="2026-09-02T10:00:00")
+        self.assertIsNone(result)
+        db.execute.assert_not_called()
+
+    def test_pessoa_requires_a_name_or_existing_id(self):
+        db = mock.Mock()
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.resolve_desembolsante(db, tipo="PESSOA", criado_em="2026-09-02T10:00:00")
+
+
+class CreateDespesaTests(unittest.TestCase):
+    """Item 1/2/4 do pedido, via camada de servico com o repositorio mockado."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.repo.find_despesa_by_registro_uid.return_value = None
+
+    def test_single_project_expense_is_ready_immediately(self):
+        self.repo.insert_despesa.return_value = 1
+        self.repo.get_despesa.return_value = {"id": 1, "status": "pronta"}
+        self.repo.resolve_projeto_cliente.return_value = 42
+
+        result = svc.create_despesa(
+            self.db, descricao="Matricula atualizada", valor_total=300,
+            desembolsado_por_tipo="EMPRESA", criado_em="2026-09-02T10:00:00",
+            alocacoes=[{"projeto_id": 245, "valor": 300}],
+        )
+
+        self.assertEqual(result, {"id": 1, "status": "pronta"})
+        self.repo.insert_despesa.assert_called_once()
+        self.assertEqual(self.repo.insert_despesa.call_args.kwargs["status"], "pronta")
+        self.repo.insert_alocacao.assert_called_once_with(self.db, 1, 245, 42, Decimal("300.00"), "2026-09-02T10:00:00", percentual=None)
+
+    def test_expense_split_across_projects_of_different_clients(self):
+        # Item 4/5 do pedido: mesma despesa, dois projetos, dois clientes diferentes.
+        self.repo.insert_despesa.return_value = 9
+        self.repo.get_despesa.return_value = {"id": 9}
+        self.repo.resolve_projeto_cliente.side_effect = lambda db, projeto_id: {245: 101, 251: 202}[projeto_id]
+
+        svc.create_despesa(
+            self.db, descricao="Matricula atualizada", valor_total=500,
+            desembolsado_por_tipo="EMPRESA", criado_em="2026-09-02T10:00:00",
+            alocacoes=[{"projeto_id": 245, "valor": 300}, {"projeto_id": 251, "valor": 200}],
+        )
+
+        calls = self.repo.insert_alocacao.call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].args[:4], (self.db, 9, 245, 101))
+        self.assertEqual(calls[1].args[:4], (self.db, 9, 251, 202))
+
+    def test_allocation_sum_mismatch_prevents_any_write(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.create_despesa(
+                self.db, descricao="Matricula", valor_total=300,
+                desembolsado_por_tipo="EMPRESA", criado_em="2026-09-02T10:00:00",
+                alocacoes=[{"projeto_id": 245, "valor": 180}, {"projeto_id": 251, "valor": 100}],
+            )
+        self.repo.insert_despesa.assert_not_called()
+
+    def test_company_disbursement_resolves_to_no_desembolsante_id(self):
+        self.repo.insert_despesa.return_value = 1
+        self.repo.get_despesa.return_value = {"id": 1}
+        self.repo.resolve_projeto_cliente.return_value = None
+
+        svc.create_despesa(
+            self.db, descricao="Taxa", valor_total=100,
+            desembolsado_por_tipo="EMPRESA", criado_em="2026-09-02T10:00:00",
+            alocacoes=[{"projeto_id": 1, "valor": 100}],
+        )
+        self.assertIsNone(self.repo.insert_despesa.call_args.kwargs["desembolsado_por_id"])
+
+    def test_person_disbursement_resolves_desembolsante_id(self):
+        self.repo.get_desembolsante.return_value = {"id": 7, "ativo": True}
+        self.repo.insert_despesa.return_value = 1
+        self.repo.get_despesa.return_value = {"id": 1}
+        self.repo.resolve_projeto_cliente.return_value = None
+
+        svc.create_despesa(
+            self.db, descricao="Taxa", valor_total=100,
+            desembolsado_por_tipo="PESSOA", desembolsante_id=7, criado_em="2026-09-02T10:00:00",
+            alocacoes=[{"projeto_id": 1, "valor": 100}],
+        )
+        self.assertEqual(self.repo.insert_despesa.call_args.kwargs["desembolsado_por_id"], 7)
+
+
+class CancelDespesaTests(unittest.TestCase):
+    """Item 8 do pedido: cancelamento e soft, auditado, nunca DELETE."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cancel_active_expense(self):
+        self.repo.get_despesa.return_value = {"id": 1, "status": "pronta", "descricao": "X", "valor_total": 100}
+        self.repo.sum_reembolsado_por_despesa.return_value = 0.0
+
+        svc.cancelar_despesa(self.db, 1, "Lancado por engano", "2026-09-02T10:00:00", cancelado_por=9)
+
+        self.repo.cancel_despesa.assert_called_once_with(self.db, 1, "Lancado por engano", "2026-09-02T10:00:00", 9)
+        self.repo.insert_evento.assert_called_once()
+
+    def test_cannot_cancel_already_cancelled(self):
+        self.repo.get_despesa.return_value = {"id": 1, "status": "cancelada"}
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.cancelar_despesa(self.db, 1, None, "2026-09-02T10:00:00")
+        self.repo.cancel_despesa.assert_not_called()
+
+    def test_cannot_cancel_already_reimbursed_expense(self):
+        self.repo.get_despesa.return_value = {"id": 1, "status": "pronta"}
+        self.repo.sum_reembolsado_por_despesa.return_value = 300.0
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.cancelar_despesa(self.db, 1, None, "2026-09-02T10:00:00")
+        self.repo.cancel_despesa.assert_not_called()
+
+
+class RegistrarReembolsoTests(unittest.TestCase):
+    """Itens 6/7 do pedido: desembolso de pessoa gera saldo; reembolso encerra a obrigacao."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.repo.find_reembolso_by_registro_uid.return_value = None
+        self.repo.get_desembolsante.return_value = {"id": 7, "nome": "Rafael"}
+
+    def test_reimburse_all_pending_expenses_of_a_person(self):
+        self.repo.list_despesas_pendentes_por_desembolsante.return_value = [
+            {"id": 1, "saldo_pendente": 180},
+            {"id": 2, "saldo_pendente": 120},
+        ]
+        self.repo.insert_reembolso.return_value = 50
+
+        result = svc.registrar_reembolso(
+            self.db, desembolsante_id=7, data_reembolso="2026-09-02",
+            criado_em="2026-09-02T10:00:00", criado_por=1,
+        )
+
+        self.assertEqual(result["valor"], Decimal("300.00"))
+        self.repo.insert_reembolso.assert_called_once()
+        self.assertEqual(self.repo.insert_reembolso.call_args.args[2], Decimal("300.00"))
+        self.assertEqual(self.repo.insert_reembolso_alocacao.call_count, 2)
+
+    def test_no_pending_expenses_raises(self):
+        self.repo.list_despesas_pendentes_por_desembolsante.return_value = []
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.registrar_reembolso(self.db, desembolsante_id=7, data_reembolso="2026-09-02", criado_em="2026-09-02T10:00:00")
+
+    def test_informed_value_must_match_pending_total(self):
+        self.repo.list_despesas_pendentes_por_desembolsante.return_value = [{"id": 1, "saldo_pendente": 180}]
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.registrar_reembolso(
+                self.db, desembolsante_id=7, data_reembolso="2026-09-02",
+                criado_em="2026-09-02T10:00:00", valor=999,
+            )
+
+    def test_duplicate_registro_uid_is_idempotent(self):
+        existing = {"id": 50, "valor": 300}
+        self.repo.find_reembolso_by_registro_uid.return_value = existing
+        result = svc.registrar_reembolso(
+            self.db, desembolsante_id=7, data_reembolso="2026-09-02",
+            criado_em="2026-09-02T10:00:00", registro_uid="abc-123",
+        )
+        self.assertIs(result, existing)
+        self.repo.insert_reembolso.assert_not_called()
+
+
+class DuplicateAttachmentTests(unittest.TestCase):
+    """Item 20 do pedido: hash identico e sinalizado, decisao fica com o usuario."""
+
+    def test_matching_hash_is_reported(self):
+        db = mock.Mock()
+        with mock.patch.object(svc, "repo", autospec=True) as repo_mock:
+            repo_mock.find_anexo_by_hash.return_value = {"id": 5, "despesa_descricao": "Matricula"}
+            result = svc.check_duplicate_anexo(db, "hash-abc", despesa_id=1)
+        self.assertEqual(result["despesa_descricao"], "Matricula")
+        repo_mock.find_anexo_by_hash.assert_called_once_with(db, "hash-abc", exclude_despesa_id=1)
+
+
+class MigrateCustoTests(unittest.TestCase):
+    """Item 11 do pedido: migracao dos custos existentes, idempotente."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_custo_without_value_is_rejected(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.migrate_custo(self.db, {"id": 1, "valor": 0, "descricao": "X"}, "2026-09-02T10:00:00")
+
+    def test_already_migrated_custo_returns_existing_without_duplicating(self):
+        existing = {"id": 99, "migrado_de_custo_id": 1}
+        self.repo.find_despesa_by_migrado_de_custo.return_value = existing
+        result = svc.migrate_custo(self.db, {"id": 1, "valor": 100, "descricao": "X"}, "2026-09-02T10:00:00")
+        self.assertIs(result, existing)
+        self.repo.insert_despesa.assert_not_called()
+
+    def test_new_custo_creates_despesa_with_full_allocation_and_attachment(self):
+        self.repo.find_despesa_by_migrado_de_custo.return_value = None
+        self.repo.insert_despesa.return_value = 10
+        self.repo.resolve_projeto_cliente.return_value = 42
+        self.repo.get_despesa.return_value = {"id": 10}
+
+        custo = {
+            "id": 1, "projeto_id": 245, "descricao": "Matricula", "categoria": "MATRICULA",
+            "valor": 100, "data_custo": "2026-09-01", "observacoes": None, "status": "a_cobrar",
+            "criado_em": "2026-09-01T09:00:00", "usuario_id": 3,
+            "anexo_path": "/SC/Pastas/x/Financeiro/comprovante.pdf", "anexo_nome": "comprovante.pdf",
+        }
+        svc.migrate_custo(self.db, custo, "2026-09-02T10:00:00")
+
+        self.assertEqual(self.repo.insert_despesa.call_args.kwargs["migrado_de_custo_id"], 1)
+        self.assertEqual(self.repo.insert_despesa.call_args.kwargs["origem"], "MIGRACAO")
+        self.assertEqual(self.repo.insert_despesa.call_args.kwargs["status"], "pronta")
+        self.repo.insert_alocacao.assert_called_once_with(self.db, 10, 245, 42, Decimal("100.00"), "2026-09-02T10:00:00")
+        self.repo.insert_anexo.assert_called_once()
+
+    def test_cancelled_custo_migrates_as_cancelled(self):
+        self.repo.find_despesa_by_migrado_de_custo.return_value = None
+        self.repo.insert_despesa.return_value = 11
+        self.repo.resolve_projeto_cliente.return_value = None
+        self.repo.get_despesa.return_value = {"id": 11}
+        custo = {
+            "id": 2, "projeto_id": 245, "descricao": "Certidao", "valor": 50,
+            "status": "cancelado", "criado_em": "2026-09-01T09:00:00",
+        }
+        svc.migrate_custo(self.db, custo, "2026-09-02T10:00:00")
+        self.assertEqual(self.repo.insert_despesa.call_args.kwargs["status"], "cancelada")
+
+    def test_migrate_pending_skips_already_migrated(self):
+        already = {"id": 200, "migrado_de_custo_id": 1}
+
+        def fake_find(db, custo_id):
+            return already if custo_id == 1 else None
+
+        self.repo.find_despesa_by_migrado_de_custo.side_effect = fake_find
+        self.repo.insert_despesa.return_value = 300
+        self.repo.resolve_projeto_cliente.return_value = None
+        self.repo.get_despesa.return_value = {"id": 300}
+
+        custos = [
+            {"id": 1, "projeto_id": 245, "descricao": "Ja migrado", "valor": 10, "status": "a_cobrar", "criado_em": "x"},
+            {"id": 2, "projeto_id": 245, "descricao": "Novo", "valor": 20, "status": "a_cobrar", "criado_em": "x"},
+        ]
+        migrated = svc.migrate_pending_custos(self.db, custos, "2026-09-02T10:00:00")
+        self.assertEqual(migrated, 1)
+        self.repo.insert_despesa.assert_called_once()
+
+
+class ExpenseRepositoryQueryShapeTests(unittest.TestCase):
+    """Confere que o repositorio monta SQL/params coerentes contra um FakeDb simples
+    (sem depender de banco real), no mesmo estilo de test_representation_service.py."""
+
+    class FakeCursor:
+        def __init__(self, rows):
+            self._rows = list(rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def fetchall(self):
+            return self._rows
+
+        def close(self):
+            pass
+
+    class FakeDb:
+        def __init__(self, rows=None):
+            self.rows = rows if rows is not None else []
+            self.executed = []
+
+        def execute(self, sql, params=()):
+            self.executed.append((sql, params))
+            return ExpenseRepositoryQueryShapeTests.FakeCursor(self.rows)
+
+    def test_insert_despesa_returns_new_id(self):
+        db = self.FakeDb(rows=[{"id": 42}])
+        despesa_id = repo.insert_despesa(
+            db, descricao="Matricula", valor_total=Decimal("300.00"),
+            desembolsado_por_tipo="EMPRESA", criado_em="2026-09-02T10:00:00",
+        )
+        self.assertEqual(despesa_id, 42)
+        sql, params = db.executed[0]
+        self.assertIn("INSERT INTO despesas", sql)
+        self.assertIn("RETURNING id", sql)
+
+    def test_resolve_projeto_cliente_returns_none_when_no_row(self):
+        db = self.FakeDb(rows=[])
+        self.assertIsNone(repo.resolve_projeto_cliente(db, 245))
+
+    def test_find_anexo_by_hash_returns_none_for_empty_hash(self):
+        db = self.FakeDb(rows=[{"id": 1}])
+        self.assertIsNone(repo.find_anexo_by_hash(db, ""))
+        self.assertEqual(db.executed, [])  # nao bate no banco sem hash
+
+
+class ExpensePermissionsTests(unittest.TestCase):
+    """Item 13 do pedido: view e sempre p/ logado; gerenciar e admin/coordenador;
+    registrar reembolso e exclusivo de admin -- mais conservador que o
+    /financeiro atual (que hoje nao verifica perfil algum), de proposito."""
+
+    def _with_user(self, perfil_acesso):
+        ctx = appmod.app.test_request_context("/")
+        ctx.push()
+        self.addCleanup(ctx.pop)
+        appmod.g.user = {"id": 1, "nome": "Teste", "perfil_acesso": perfil_acesso}
+
+    def test_no_user_cannot_view(self):
+        ctx = appmod.app.test_request_context("/")
+        ctx.push()
+        self.addCleanup(ctx.pop)
+        self.assertFalse(appmod.can_view_despesas())
+        self.assertFalse(appmod.can_manage_despesas())
+        self.assertFalse(appmod.can_register_reembolso())
+
+    def test_consulta_can_view_but_not_manage(self):
+        self._with_user("consulta")
+        self.assertTrue(appmod.can_view_despesas())
+        self.assertFalse(appmod.can_manage_despesas())
+        self.assertFalse(appmod.can_register_reembolso())
+
+    def test_coordenador_can_manage_but_not_register_reembolso(self):
+        self._with_user("coordenador")
+        self.assertTrue(appmod.can_view_despesas())
+        self.assertTrue(appmod.can_manage_despesas())
+        self.assertFalse(appmod.can_register_reembolso())
+
+    def test_admin_can_do_everything(self):
+        self._with_user("admin")
+        self.assertTrue(appmod.can_view_despesas())
+        self.assertTrue(appmod.can_manage_despesas())
+        self.assertTrue(appmod.can_register_reembolso())
+
+
+if __name__ == "__main__":
+    unittest.main()

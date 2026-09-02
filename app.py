@@ -70,6 +70,8 @@ from documental import (
 )
 import person_repository
 import representation_service
+import expense_repository
+import expense_service
 from process_types import PROCESS_TYPES, process_type_name, resolve_process_type_key
 from report_helpers import (
     calculate_stage_metrics_v2,
@@ -5726,6 +5728,23 @@ def can_manage():
 def can_admin():
     user = getattr(g, "user", None)
     return bool(user and user["perfil_acesso"] == "admin")
+
+
+# Permissoes do modulo de Despesas (Financeiro -> Despesas/Reembolsos). A tela
+# /financeiro atual continua sem gate de perfil (preservado de proposito, item
+# 18/15 do redesenho); as rotas novas usam estas funcoes desde o inicio para
+# nao precisar revisitar autorizacao espalhada pelo codigo quando o produto
+# decidir liberar "usuario comum envia comprovante, admin revisa".
+def can_view_despesas():
+    return bool(getattr(g, "user", None))
+
+
+def can_manage_despesas():
+    return can_manage()
+
+
+def can_register_reembolso():
+    return can_admin()
 
 
 def login_required(view):
