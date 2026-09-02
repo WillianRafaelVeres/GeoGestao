@@ -152,7 +152,8 @@
                                             data-despesa-classificar-descricao="{{ despesa.descricao }}"
                                             data-despesa-classificar-valor="{{ '%.2f'|format(despesa.valor_total)|replace('.', ',') if despesa.valor_total else '' }}"
                                             data-despesa-classificar-data="{{ despesa.data_despesa or '' }}"
-                                            data-despesa-classificar-categoria="{{ despesa.categoria or '' }}">
+                                            data-despesa-classificar-categoria="{{ despesa.categoria or '' }}"
+                                            data-despesa-ai-url="{{ url_for('api_despesa_ai_analysis', despesa_id=despesa.id) }}">
                                         Classificar
                                     </button>
                                 {% endif %}
@@ -188,6 +189,10 @@
             </div>
             <div class="modal-body">
                 <div class="row g-3">
+                    <div class="col-12 despesa-ai-suggest" data-despesa-ai-suggest hidden>
+                        <button class="btn btn-outline-primary btn-sm" type="button" data-despesa-ai-button>Sugerir com IA</button>
+                        <small class="despesa-ai-status" data-despesa-ai-status></small>
+                    </div>
                     <div class="col-md-7">
                         <label class="form-label">Descricao</label>
                         <input class="form-control" id="despesaDescricao" name="descricao" placeholder="Ex.: Matricula atualizada" autocomplete="off" required>

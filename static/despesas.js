@@ -10,6 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initDespesaDropzone();
     initDespesaModalReset();
     initImportarDocumentos();
+    initDespesaAiSuggest();
 
     document.getElementById("despesaValorTotal")?.addEventListener("input", () => {
         recomputeDespesaTotal(document.getElementById("despesaForm"));
@@ -283,6 +284,9 @@ function initDespesaModalReset() {
     const comprovanteLabel = modal.querySelector("[data-despesa-comprovante-label]");
     const registroUidInput = document.getElementById("despesaRegistroUid");
     const createUrl = form?.dataset.createUrl;
+    const aiSection = modal.querySelector("[data-despesa-ai-suggest]");
+    const aiButton = modal.querySelector("[data-despesa-ai-button]");
+    const aiStatus = modal.querySelector("[data-despesa-ai-status]");
     let submitDefaultText = submitButton?.textContent || "Salvar despesa";
 
     modal.addEventListener("show.bs.modal", (event) => {
@@ -293,6 +297,7 @@ function initDespesaModalReset() {
         if (pessoaNovaField) pessoaNovaField.hidden = true;
         if (filePill) filePill.hidden = true;
         dropzone?.classList.remove("has-file");
+        if (aiStatus) { aiStatus.textContent = ""; aiStatus.className = "despesa-ai-status"; }
 
         const botao = event.relatedTarget;
         const classificarUrl = botao?.dataset.despesaClassificarUrl;
@@ -311,6 +316,8 @@ function initDespesaModalReset() {
             if (categoriaSelect && botao.dataset.despesaClassificarCategoria) {
                 categoriaSelect.value = botao.dataset.despesaClassificarCategoria;
             }
+            if (aiSection) aiSection.hidden = false;
+            if (aiButton) aiButton.dataset.aiUrl = botao.dataset.despesaAiUrl || "";
         } else if (form) {
             form.action = createUrl;
             if (registroUidInput) registroUidInput.disabled = false;
@@ -318,6 +325,7 @@ function initDespesaModalReset() {
             if (titleEl) titleEl.textContent = "Registrar despesa";
             if (comprovanteLabel) comprovanteLabel.innerHTML = 'Comprovante <span class="text-muted">(opcional)</span>';
             submitDefaultText = "Salvar despesa";
+            if (aiSection) aiSection.hidden = true;
         }
         if (submitButton) submitButton.textContent = submitDefaultText;
 
@@ -403,4 +411,80 @@ function initImportarDocumentos() {
             submitButton.textContent = "Importar";
         }
     });
+}
+
+function initDespesaAiSuggest() {
+    // So aparece no modo "Classificar" (ver initDespesaModalReset). A IA so
+    // preenche os campos do formulario -- nunca envia nada sozinha; quem
+    // confirma a despesa (com os campos como estiverem na hora) e sempre a
+    // pessoa, clicando em "Classificar despesa".
+    const button = document.querySelector("[data-despesa-ai-button]");
+    const status = document.querySelector("[data-despesa-ai-status]");
+    if (!button) return;
+
+    button.addEventListener("click", async () => {
+        const url = button.dataset.aiUrl;
+        if (!url) return;
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = "Analisando...";
+        if (status) { status.textContent = ""; status.className = "despesa-ai-status"; }
+        try {
+            const response = await fetch(url, { method: "POST" });
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                if (status) {
+                    status.textContent = data.error || "Nao foi possivel gerar a sugestao.";
+                    status.classList.add("is-error");
+                }
+                return;
+            }
+            applyDespesaAiFields(data.analysis?.fields || {});
+            if (status) {
+                status.textContent = data.message || "Sugestao aplicada. Revise os campos antes de confirmar.";
+                status.classList.add("is-success");
+            }
+        } catch {
+            if (status) {
+                status.textContent = "Nao foi possivel conectar para gerar a sugestao.";
+                status.classList.add("is-error");
+            }
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    });
+}
+
+function applyDespesaAiFields(fields) {
+    // Preenche o MESMO formulario que o usuario ainda vai revisar e enviar --
+    // nao ha um "aplicar automaticamente". Projeto, cliente e quem desembolsou
+    // nunca vem da IA (item 11): esses campos ficam como o usuario deixar.
+    const form = document.getElementById("despesaForm");
+    const descricaoInput = document.getElementById("despesaDescricao");
+    const valorInput = document.getElementById("despesaValorTotal");
+    if (fields.descricao && descricaoInput) descricaoInput.value = fields.descricao;
+    if (fields.valor && valorInput) {
+        valorInput.value = Number(fields.valor).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    if (fields.data) {
+        const dataInput = form?.querySelector('[name="data_despesa"]');
+        if (dataInput) dataInput.value = fields.data;
+    }
+    if (fields.categoria_sugerida) {
+        const categoriaSelect = form?.querySelector('[name="categoria"]');
+        const opcaoValida = categoriaSelect && Array.from(categoriaSelect.options).some((opt) => opt.value === fields.categoria_sugerida);
+        if (opcaoValida) categoriaSelect.value = fields.categoria_sugerida;
+    }
+    // estabelecimento/numero_documento nao tem campo proprio no formulario;
+    // ficam guardados no rascunho (consultavel depois) e, se ainda nao houver
+    // observacao, viram uma sugestao de observacao editavel.
+    const observacoesInput = form?.querySelector('[name="observacoes"]');
+    if (observacoesInput && !observacoesInput.value) {
+        const extra = [];
+        if (fields.estabelecimento) extra.push(fields.estabelecimento);
+        if (fields.numero_documento) extra.push(`Doc. ${fields.numero_documento}`);
+        if (extra.length) observacoesInput.value = extra.join(" - ");
+    }
+    recomputeDespesaTotal(form);
 }
