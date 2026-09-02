@@ -215,6 +215,39 @@ CATEGORIAS_CUSTO = {
     "OUTRO": "Outro custo",
 }
 
+# Categorias do modulo de Despesas (Financeiro -> Despesas). Superset de
+# CATEGORIAS_CUSTO (as chaves antigas continuam validas nas despesas
+# migradas de projeto_custos) mais categorias de despesa geral da empresa,
+# que nao existiam no modelo antigo por so admitir custo preso a projeto.
+CATEGORIAS_DESPESA = {
+    "MATRICULA": "Matricula",
+    "CERTIDAO": "Certidao",
+    "TAXA": "Taxa / emolumento",
+    "DESLOCAMENTO": "Deslocamento",
+    "IMPRESSAO": "Impressao / copia",
+    "COMBUSTIVEL": "Combustivel",
+    "ALIMENTACAO": "Alimentacao",
+    "ESCRITORIO": "Material de escritorio",
+    "SOFTWARE": "Software / assinatura",
+    "OUTRO": "Outro",
+}
+
+DESPESA_STATUS_LABELS = {
+    "rascunho": "Rascunho",
+    "pendente_classificacao": "Pendente de classificacao",
+    "classificada": "Classificada",
+    "pronta": "Pronta",
+    "cancelada": "Cancelada",
+}
+
+DESPESA_STATUS_BADGE = {
+    "rascunho": "secondary",
+    "pendente_classificacao": "warning",
+    "classificada": "info",
+    "pronta": "success",
+    "cancelada": "danger",
+}
+
 FINANCEIRO_QUASE_PRONTO_PCT = 75
 
 PRIORITY_WEIGHT = {"Alta": 0, "Media": 1, "Baixa": 2, "": 3, None: 3}
@@ -5989,6 +6022,34 @@ def fetch_cliente_autocomplete_options():
     return get_cached_lookup("cliente_autocomplete_options", _fetch_cliente_autocomplete_options_uncached)
 
 
+def _fetch_despesa_projeto_options_uncached():
+    """Projetos ativos para a busca local de 'a quem dividir a despesa'.
+
+    Local-preload igual ao autocomplete de cliente (ver initProjectClientAutocompletes):
+    a lista inteira vai pro HTML e o filtro roda no navegador, sem round trip.
+    """
+    rows = query_db(
+        "SELECT id, codigo, nome FROM projetos WHERE COALESCE(arquivado, 0) = 0 ORDER BY codigo"
+    )
+    attach_project_owner_names(rows)
+    options = []
+    for row in rows:
+        owners = row.get("proprietarios_nomes") or ""
+        options.append({
+            "id": row["id"],
+            "codigo": row["codigo"],
+            "nome": row["nome"],
+            "proprietarios": owners,
+            "label": f"{row['codigo']} - {row['nome']}",
+            "search": " ".join(filter(None, [row["codigo"], row["nome"], owners])),
+        })
+    return options
+
+
+def fetch_despesa_projeto_options():
+    return get_cached_lookup("despesa_projeto_options", _fetch_despesa_projeto_options_uncached)
+
+
 def get_active_stage_models():
     return get_cached_lookup(
         "active_stage_models",
@@ -9124,6 +9185,82 @@ def dropbox_upload_cliente_documento(cliente_nome, titulo, attachment):
     return {
         "path": metadata.get("path_display") or upload_path,
         "name": metadata.get("name") or filename,
+    }, None
+
+
+def dropbox_despesas_root():
+    """Caminho Dropbox da pasta compartilhada '_despesas' dentro de Novo (ex.: /SC/Novo/_despesas)."""
+    novo_path = dropbox_path_from_raw(NOVO_WORK_BASE_PATH)
+    if not novo_path:
+        return None
+    return f"{novo_path}/_despesas"
+
+
+def dropbox_despesa_destination(data_despesa):
+    """Acha/cria Novo/_despesas/<ano>/<mes> -- pasta compartilhada para o comprovante
+    principal de QUALQUER despesa, tenha ela 1 ou N projetos.
+
+    Uma despesa dividida entre projetos de pastas diferentes nao tem uma pasta
+    de projeto "certa" para guardar o comprovante; guardar aqui evita duplicar
+    o arquivo ou escolher um projeto arbitrariamente como dono do documento
+    (item 12 do redesenho do Financeiro).
+    """
+    if not dropbox_enabled():
+        return None, "Integracao com o Dropbox nao esta configurada."
+    root = dropbox_despesas_root()
+    if not root:
+        return None, "Nao foi possivel determinar a pasta '_despesas' (verifique GEOGESTAO_NOVO_WORK_BASE)."
+    try:
+        referencia = datetime.fromisoformat(data_despesa).date() if data_despesa else app_today()
+    except ValueError:
+        referencia = app_today()
+    subpath = f"{root}/{referencia.year:04d}/{referencia.month:02d}"
+    ok, error = dropbox_ensure_folder(subpath)
+    if not ok:
+        return None, f"Nao foi possivel preparar a pasta de despesas no Dropbox: {error}"
+    return subpath, None
+
+
+def dropbox_upload_despesa_attachment(data_despesa, titulo, attachment):
+    """Envia o comprovante principal de uma despesa. Nunca sobrescreve: em caso de
+    nome repetido o Dropbox renomeia automaticamente (ex.: 'Matricula (1).pdf')."""
+    folder_path, error = dropbox_despesa_destination(data_despesa)
+    if not folder_path:
+        return None, error
+    safe_title = re.sub(r'[\\/:*?"<>|]+', " ", str(titulo or "").strip())
+    safe_title = re.sub(r"\s+", " ", safe_title).strip(" _-") or "Despesa"
+    filename = f"{safe_title}{attachment['extension']}"
+    upload_path = f"{folder_path}/{filename}"
+    metadata, error = _dropbox_upload(upload_path, attachment["bytes"])
+    if not metadata:
+        return None, f"Falha ao enviar o arquivo para o Dropbox: {error}"
+    return {
+        "path": metadata.get("path_display") or upload_path,
+        "name": metadata.get("name") or filename,
+    }, None
+
+
+def read_despesa_attachment(upload):
+    """Valida um comprovante de despesa (mesmas regras de formato da nota de exigencia).
+    Sem arquivo enviado nao e erro -- o comprovante e opcional no lancamento manual."""
+    if not upload or not upload.filename:
+        return None, None
+    original_name = os.path.basename(upload.filename.replace("\\", "/")).strip()
+    extension = os.path.splitext(original_name)[1].lower()
+    if extension not in EXIGENCIA_ATTACHMENT_EXTENSIONS:
+        allowed = ", ".join(sorted(EXIGENCIA_ATTACHMENT_EXTENSIONS))
+        return None, f"Formato nao permitido. Use: {allowed}."
+    file_bytes = upload.read()
+    if not file_bytes:
+        return None, "O arquivo esta vazio."
+    if not exigencia_attachment_signature_matches(extension, file_bytes):
+        return None, "O conteudo do arquivo nao corresponde ao formato informado."
+    return {
+        "bytes": file_bytes,
+        "hash": hashlib.sha256(file_bytes).hexdigest(),
+        "extension": extension,
+        "original_name": original_name[:255],
+        "size": len(file_bytes),
     }, None
 
 
@@ -15342,6 +15479,146 @@ def financeiro_definir_valor(project_id):
     execute_db("UPDATE projetos SET valor = %s WHERE id = %s", (valor, project_id))
     flash(f"Valor do projeto atualizado para {format_currency(valor)}.", "success")
     return redirect(url_for("financeiro"))
+
+
+@app.route("/financeiro/despesas")
+@login_required
+def financeiro_despesas():
+    """Financeiro -> Despesas: lancamento manual, divisao entre projetos, quem desembolsou."""
+    if not can_view_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro"))
+
+    filtros = {
+        "status": (request.args.get("status") or "").strip() or None,
+        "categoria": (request.args.get("categoria") or "").strip() or None,
+        "desembolsado_por_id": request.args.get("desembolsado_por_id", type=int),
+        "desembolso_tipo": (request.args.get("desembolso_tipo") or "").strip() or None,
+        "projeto_id": request.args.get("projeto_id", type=int),
+        "cliente_id": None,
+        "data_de": (request.args.get("data_de") or "").strip() or None,
+        "data_ate": (request.args.get("data_ate") or "").strip() or None,
+    }
+    db = get_db()
+    despesas = expense_repository.list_despesas(db, **filtros)
+
+    return render_template(
+        "despesas.html",
+        despesas=despesas,
+        filtros=filtros,
+        categorias_despesa=CATEGORIAS_DESPESA,
+        status_labels=DESPESA_STATUS_LABELS,
+        status_badges=DESPESA_STATUS_BADGE,
+        desembolsantes=expense_repository.list_desembolsantes(db),
+        projetos_json=fetch_despesa_projeto_options(),
+        can_manage_despesas_flag=can_manage_despesas(),
+    )
+
+
+@app.route("/financeiro/despesas", methods=["POST"])
+@login_required
+def financeiro_despesas_criar():
+    if not can_manage_despesas():
+        flash("Permissao negada para registrar despesas.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    db = get_db()
+    now = app_now_iso()
+    descricao = (request.form.get("descricao") or "").strip()
+    valor_total = parse_currency_value((request.form.get("valor_total") or "").strip())
+    categoria = request.form.get("categoria", "")
+    if categoria not in CATEGORIAS_DESPESA:
+        categoria = "OUTRO"
+    data_despesa = parse_payment_date(request.form.get("data_despesa"))
+    observacoes = (request.form.get("observacoes") or "").strip() or None
+    desembolso_tipo = "PESSOA" if request.form.get("desembolso_tipo") == "PESSOA" else "EMPRESA"
+    desembolsante_id = request.form.get("desembolsante_id", type=int)
+    desembolsante_nome_novo = (request.form.get("desembolsante_nome_novo") or "").strip() or None
+    registro_uid = (request.form.get("registro_uid") or "").strip()[:64] or secrets.token_hex(16)
+
+    projeto_ids = request.form.getlist("alocacao_projeto_id")
+    valores_alocacao = request.form.getlist("alocacao_valor")
+    alocacoes = []
+    for projeto_id_raw, valor_raw in zip(projeto_ids, valores_alocacao):
+        projeto_id_raw = (projeto_id_raw or "").strip()
+        valor_parsed = parse_currency_value((valor_raw or "").strip())
+        if not projeto_id_raw or not valor_parsed:
+            continue
+        try:
+            alocacoes.append({"projeto_id": int(projeto_id_raw), "valor": valor_parsed})
+        except ValueError:
+            continue
+
+    if not valor_total or valor_total <= 0:
+        flash("Informe um valor de despesa maior que zero.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+    if not alocacoes:
+        # No lancamento manual (diferente do futuro fluxo de importacao, que
+        # pode nascer sem alocacao ainda), projeto(s) e divisao sao obrigatorios.
+        flash("Adicione ao menos um projeto e informe o valor de cada divisao.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    try:
+        despesa = expense_service.create_despesa(
+            db,
+            descricao=descricao,
+            valor_total=valor_total,
+            desembolsado_por_tipo=desembolso_tipo,
+            criado_em=now,
+            categoria=categoria,
+            data_despesa=data_despesa,
+            observacoes=observacoes,
+            desembolsante_id=desembolsante_id,
+            desembolsante_nome_novo=desembolsante_nome_novo,
+            alocacoes=alocacoes,
+            registro_uid=registro_uid,
+            criado_por=g.user["id"],
+        )
+    except expense_service.ExpenseServiceError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    attachment, attachment_error = read_despesa_attachment(request.files.get("comprovante"))
+    if attachment_error:
+        flash(f"Despesa registrada, mas o comprovante nao pode ser anexado: {attachment_error}", "warning")
+    elif attachment:
+        duplicate = expense_service.check_duplicate_anexo(db, attachment["hash"], despesa_id=despesa["id"])
+        uploaded, upload_error = dropbox_upload_despesa_attachment(
+            despesa["data_despesa"], despesa["descricao"], attachment
+        )
+        if not uploaded:
+            flash(f"Despesa registrada, mas o comprovante nao pode ser enviado ao Dropbox: {upload_error}", "warning")
+        else:
+            expense_repository.insert_anexo(
+                db, despesa["id"], uploaded["path"], uploaded["name"], now,
+                nome_original=attachment["original_name"], file_hash=attachment["hash"],
+                tamanho=attachment["size"], principal=True, criado_por=g.user["id"],
+            )
+            if duplicate:
+                flash(
+                    f"Atencao: este comprovante parece igual ao ja anexado na despesa "
+                    f"\"{duplicate['despesa_descricao']}\". Confira se nao e duplicidade.",
+                    "warning",
+                )
+
+    flash(f"Despesa registrada: {despesa['descricao']} - {format_currency(despesa['valor_total'])}.", "success")
+    return redirect(url_for("financeiro_despesas"))
+
+
+@app.route("/financeiro/despesas/<int:despesa_id>/cancelar", methods=["POST"])
+@login_required
+def financeiro_despesas_cancelar(despesa_id):
+    if not can_manage_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+    motivo = (request.form.get("motivo") or "").strip() or None
+    try:
+        expense_service.cancelar_despesa(get_db(), despesa_id, motivo, app_now_iso(), cancelado_por=g.user["id"])
+    except expense_service.ExpenseServiceError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("financeiro_despesas"))
+    flash("Despesa cancelada.", "success")
+    return redirect(url_for("financeiro_despesas"))
 
 
 @app.route("/cartorio")

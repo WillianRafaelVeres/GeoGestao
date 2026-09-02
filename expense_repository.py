@@ -135,8 +135,14 @@ def cancel_despesa(db, despesa_id, motivo, cancelado_em, cancelado_por=None):
     ).close()
 
 
-def list_despesas(db, status=None, desembolsado_por_id=None, projeto_id=None, cliente_id=None, limit=200):
-    """Listagem com filtros simples, usada pela futura tela Despesas.
+def list_despesas(
+    db, status=None, desembolsado_por_id=None, desembolso_tipo=None, projeto_id=None, cliente_id=None,
+    categoria=None, data_de=None, data_ate=None, limit=300,
+):
+    """Listagem para a tela Financeiro -> Despesas, em uma unica query (sem N+1):
+    nome do desembolsante e as alocacoes (projeto/cliente/valor) ja vem
+    agregadas em JSON por despesa, prontas para o template expandir "N
+    projetos" sem outra consulta por linha.
 
     Usa EXISTS (nao JOIN) quando filtra por projeto/cliente para nao duplicar
     a despesa por alocacao na listagem principal.
@@ -149,6 +155,18 @@ def list_despesas(db, status=None, desembolsado_por_id=None, projeto_id=None, cl
     if desembolsado_por_id:
         clauses.append("d.desembolsado_por_id = %s")
         params.append(desembolsado_por_id)
+    if desembolso_tipo:
+        clauses.append("d.desembolsado_por_tipo = %s")
+        params.append(desembolso_tipo)
+    if categoria:
+        clauses.append("d.categoria = %s")
+        params.append(categoria)
+    if data_de:
+        clauses.append("COALESCE(d.data_despesa, '') >= %s")
+        params.append(data_de)
+    if data_ate:
+        clauses.append("COALESCE(d.data_despesa, '9999-12-31') <= %s")
+        params.append(data_ate)
     if projeto_id:
         clauses.append("EXISTS (SELECT 1 FROM despesa_alocacoes a WHERE a.despesa_id = d.id AND a.projeto_id = %s)")
         params.append(projeto_id)
@@ -160,8 +178,35 @@ def list_despesas(db, status=None, desembolsado_por_id=None, projeto_id=None, cl
     return _fetchall(
         db,
         f"""
-        SELECT d.*
+        SELECT
+            d.*,
+            ds.nome AS desembolsante_nome,
+            COALESCE(alloc.items, '[]'::json) AS alocacoes,
+            COALESCE(alloc.projeto_count, 0) AS projeto_count,
+            COALESCE(anexo.total, 0) AS anexo_count,
+            anexo.principal_path AS anexo_principal_path
         FROM despesas d
+        LEFT JOIN desembolsantes ds ON ds.id = d.desembolsado_por_id
+        LEFT JOIN LATERAL (
+            SELECT
+                json_agg(json_build_object(
+                    'projeto_id', a.projeto_id,
+                    'projeto_codigo', p.codigo,
+                    'projeto_nome', p.nome,
+                    'cliente_id', a.cliente_id,
+                    'cliente_nome', COALESCE(c.nome_exibicao, c.nome),
+                    'valor', a.valor
+                ) ORDER BY a.id) AS items,
+                COUNT(*) AS projeto_count
+            FROM despesa_alocacoes a
+            JOIN projetos p ON p.id = a.projeto_id
+            LEFT JOIN clientes c ON c.id = a.cliente_id
+            WHERE a.despesa_id = d.id
+        ) alloc ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS total, (ARRAY_AGG(caminho_dropbox ORDER BY principal DESC, id))[1] AS principal_path
+            FROM despesa_anexos WHERE despesa_id = d.id
+        ) anexo ON TRUE
         {where_sql}
         ORDER BY COALESCE(d.data_despesa, '') DESC, d.id DESC
         LIMIT %s

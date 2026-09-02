@@ -1,0 +1,261 @@
+{% extends 'base.html' %}
+{% from '_financeiro_tabs.html' import financeiro_tabs %}
+{% block title %}Despesas - Financeiro - GeoGestao{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Financeiro</h1>
+        <p>Despesas registradas, divididas entre projetos e clientes, com quem realizou o desembolso.</p>
+    </div>
+    {% if can_manage_despesas_flag %}
+        <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#modalNovaDespesa">+ Nova despesa</button>
+    {% endif %}
+</div>
+
+{{ financeiro_tabs('despesas') }}
+
+<section class="panel finance-filter-panel">
+    <form class="finance-filter-toolbar" method="get" action="{{ url_for('financeiro_despesas') }}">
+        <strong class="finance-filter-toolbar__title">Filtrar despesas</strong>
+        <label class="finance-filter-field">
+            <input class="form-control" type="date" name="data_de" value="{{ filtros.data_de or '' }}" aria-label="De">
+        </label>
+        <label class="finance-filter-field">
+            <input class="form-control" type="date" name="data_ate" value="{{ filtros.data_ate or '' }}" aria-label="Ate">
+        </label>
+        <label class="finance-filter-field">
+            <select class="form-select" name="status" aria-label="Filtrar por status">
+                <option value="">Status: todos</option>
+                {% for chave, nome in status_labels.items() %}
+                    <option value="{{ chave }}" {{ 'selected' if filtros.status == chave else '' }}>{{ nome }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="finance-filter-field">
+            <select class="form-select" name="categoria" aria-label="Filtrar por categoria">
+                <option value="">Categoria: todas</option>
+                {% for chave, nome in categorias_despesa.items() %}
+                    <option value="{{ chave }}" {{ 'selected' if filtros.categoria == chave else '' }}>{{ nome }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="finance-filter-field">
+            <select class="form-select" name="desembolso_tipo" aria-label="Filtrar por quem desembolsou">
+                <option value="">Desembolsou: todos</option>
+                <option value="EMPRESA" {{ 'selected' if filtros.desembolso_tipo == 'EMPRESA' else '' }}>Empresa</option>
+                <option value="PESSOA" {{ 'selected' if filtros.desembolso_tipo == 'PESSOA' else '' }}>Pessoa</option>
+            </select>
+        </label>
+        <label class="finance-filter-field">
+            <select class="form-select" name="desembolsado_por_id" aria-label="Filtrar por pessoa">
+                <option value="">Pessoa: todas</option>
+                {% for pessoa in desembolsantes %}
+                    <option value="{{ pessoa.id }}" {{ 'selected' if filtros.desembolsado_por_id == pessoa.id else '' }}>{{ pessoa.nome }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="finance-filter-field">
+            <select class="form-select" name="projeto_id" aria-label="Filtrar por projeto">
+                <option value="">Projeto: todos</option>
+                {% for projeto in projetos_json %}
+                    <option value="{{ projeto.id }}" {{ 'selected' if filtros.projeto_id == projeto.id else '' }}>{{ projeto.label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button class="btn btn-outline-primary btn-sm" type="submit">Filtrar</button>
+        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('financeiro_despesas') }}">Limpar</a>
+        <span class="finance-filter-toolbar__summary">{{ despesas|length }} despesa(s) encontrada(s)</span>
+    </form>
+</section>
+
+<section class="panel">
+    <div class="table-responsive">
+        <table class="table compact-table despesas-table">
+            <thead>
+                <tr>
+                    <th>Data</th>
+                    <th>Descricao</th>
+                    <th>Projeto(s)</th>
+                    <th>Cliente(s)</th>
+                    <th>Quem desembolsou</th>
+                    <th>Valor</th>
+                    <th>Status</th>
+                    <th>Comprovante</th>
+                    <th>Acoes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for despesa in despesas %}
+                    {% set clientes = despesa.alocacoes|map(attribute='cliente_nome')|select|unique|list %}
+                    <tr>
+                        <td>{{ format_date(despesa.data_despesa) }}</td>
+                        <td>
+                            <strong>{{ despesa.descricao }}</strong>
+                            {% if despesa.observacoes %}<br><small class="text-muted">{{ despesa.observacoes }}</small>{% endif %}
+                        </td>
+                        <td>
+                            {% if despesa.projeto_count == 1 %}
+                                {% set unico = despesa.alocacoes[0] %}
+                                {{ unico.projeto_codigo }} - {{ unico.projeto_nome }}
+                            {% elif despesa.projeto_count > 1 %}
+                                <details class="despesa-alloc-details">
+                                    <summary>{{ despesa.projeto_count }} projetos</summary>
+                                    <ul class="despesa-alloc-list">
+                                        {% for alocacao in despesa.alocacoes %}
+                                            <li>{{ alocacao.projeto_codigo }} / {{ alocacao.cliente_nome or 'Sem cliente' }} &mdash; {{ format_currency(alocacao.valor) }}</li>
+                                        {% endfor %}
+                                    </ul>
+                                </details>
+                            {% else %}
+                                <span class="text-muted">Sem projeto</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ clientes|join(' / ') if clientes else '-' }}</td>
+                        <td>{{ 'Empresa' if despesa.desembolsado_por_tipo == 'EMPRESA' else (despesa.desembolsante_nome or '-') }}</td>
+                        <td>{{ format_currency(despesa.valor_total) }}</td>
+                        <td><span class="badge bg-{{ status_badges.get(despesa.status, 'secondary') }}">{{ status_labels.get(despesa.status, despesa.status) }}</span></td>
+                        <td>
+                            {% if despesa.anexo_principal_path %}
+                                <a href="{{ dropbox_web_url(despesa.anexo_principal_path) }}" target="_blank" rel="noopener">Ver{% if despesa.anexo_count > 1 %} (+{{ despesa.anexo_count - 1 }}){% endif %}</a>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if can_manage_despesas_flag and despesa.status != 'cancelada' %}
+                                <form method="post" action="{{ url_for('financeiro_despesas_cancelar', despesa_id=despesa.id) }}" onsubmit="return confirm('Cancelar esta despesa? Ela sai do controle de custos/reembolso, mas fica preservada no historico.');">
+                                    <button class="btn btn-outline-danger btn-sm" type="submit">Cancelar</button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="9" class="text-muted">Nenhuma despesa encontrada com os filtros atuais.</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+{% if can_manage_despesas_flag %}
+<div class="modal fade" id="modalNovaDespesa" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <form method="post" action="{{ url_for('financeiro_despesas_criar') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form id="despesaForm">
+            <input type="hidden" name="registro_uid" id="despesaRegistroUid">
+            <div class="modal-header">
+                <div>
+                    <span class="module-label">Nova despesa</span>
+                    <h2 class="modal-title">Registrar despesa</h2>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-7">
+                        <label class="form-label">Descricao</label>
+                        <input class="form-control" id="despesaDescricao" name="descricao" placeholder="Ex.: Matricula atualizada" autocomplete="off" required>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label">Categoria</label>
+                        <select class="form-select" name="categoria">
+                            {% for chave, nome in categorias_despesa.items() %}
+                                <option value="{{ chave }}" {{ 'selected' if chave == 'OUTRO' else '' }}>{{ nome }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Valor total</label>
+                        <input class="form-control" id="despesaValorTotal" name="valor_total" placeholder="0,00" inputmode="decimal" autocomplete="off" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Data</label>
+                        <input class="form-control" type="date" name="data_despesa" value="{{ today_iso }}">
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label">Quem pagou esta despesa?</label>
+                        <div class="despesa-desembolso-toggle">
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="desembolso_tipo" value="EMPRESA" id="despesaTipoEmpresa" checked data-despesa-tipo-radio>
+                                <label class="form-check-label" for="despesaTipoEmpresa">A propria empresa</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="desembolso_tipo" value="PESSOA" id="despesaTipoPessoa" data-despesa-tipo-radio>
+                                <label class="form-check-label" for="despesaTipoPessoa">Uma pessoa (gera reembolso)</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6" data-despesa-pessoa-field hidden>
+                        <label class="form-label">Pessoa</label>
+                        <select class="form-select" name="desembolsante_id" id="despesaDesembolsanteSelect">
+                            <option value="">+ Nova pessoa...</option>
+                            {% for pessoa in desembolsantes %}
+                                <option value="{{ pessoa.id }}">{{ pessoa.nome }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6" data-despesa-pessoa-nova-field hidden>
+                        <label class="form-label">Nome da pessoa</label>
+                        <input class="form-control" name="desembolsante_nome_novo" placeholder="Ex.: Rafael" autocomplete="off">
+                    </div>
+
+                    <div class="col-12">
+                        <div class="despesa-alocacoes-heading">
+                            <div>
+                                <label class="form-label mb-0">Dividir entre projetos</label>
+                                <small>A soma precisa fechar com o valor total da despesa. O cliente e resolvido automaticamente pelo projeto.</small>
+                            </div>
+                            <button class="btn btn-outline-primary btn-sm" type="button" data-despesa-add-alocacao>+ Adicionar projeto</button>
+                        </div>
+                        <div class="despesa-alocacoes-list" data-despesa-alocacoes-list></div>
+                        <template data-despesa-alocacao-template>
+                            <div class="despesa-alocacao-row" data-despesa-alocacao-row>
+                                <div class="ac-wrapper" data-despesa-projeto-autocomplete>
+                                    <input class="form-control" type="text" placeholder="Buscar projeto por codigo ou nome..." autocomplete="off" data-despesa-projeto-input>
+                                    <input type="hidden" name="alocacao_projeto_id" data-despesa-projeto-id>
+                                    <div class="ac-list" data-despesa-projeto-list></div>
+                                </div>
+                                <input class="form-control" name="alocacao_valor" placeholder="0,00" inputmode="decimal" autocomplete="off" data-despesa-alocacao-valor>
+                                <button class="btn btn-outline-danger despesa-alocacao-remove" type="button" data-despesa-remove-alocacao title="Remover">&times;</button>
+                            </div>
+                        </template>
+                        <div class="despesa-alocacoes-total" data-despesa-alocacoes-total>
+                            Total dividido: <strong data-despesa-total-alocado>R$ 0,00</strong> de <strong data-despesa-total-esperado>R$ 0,00</strong>
+                        </div>
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label">Observacoes</label>
+                        <input class="form-control" name="observacoes" placeholder="Observacoes internas" autocomplete="off">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Comprovante <span class="text-muted">(opcional)</span></label>
+                        <div class="finance-dropzone" data-despesa-dropzone tabindex="0" role="button" aria-controls="despesaComprovanteInput">
+                            <input class="visually-hidden" id="despesaComprovanteInput" type="file" name="comprovante" data-despesa-file-input>
+                            <div class="finance-dropzone__copy">
+                                <strong>Arraste e solte o comprovante aqui</strong>
+                                <span>ou clique para escolher o arquivo da despesa</span>
+                                <small>Ao salvar, ele vai para a pasta compartilhada de despesas no Dropbox.</small>
+                            </div>
+                            <div class="finance-dropzone__file" data-despesa-file-pill hidden>Nenhum arquivo selecionado</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary" type="submit">Salvar despesa</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
+
+<script>
+window.despesaProjetosOptions = {{ projetos_json|tojson }};
+</script>
+<script src="{{ url_for('static', filename='despesas.js') }}"></script>
+{% endblock %}

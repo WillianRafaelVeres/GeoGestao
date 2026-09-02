@@ -1,0 +1,10 @@
+{% macro financeiro_tabs(active) -%}
+<ul class="nav nav-pills detail-tabs financeiro-tabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <a class="nav-link {{ 'active' if active == 'visao_geral' else '' }}" href="{{ url_for('financeiro') }}">Visao geral</a>
+    </li>
+    <li class="nav-item" role="presentation">
+        <a class="nav-link {{ 'active' if active == 'despesas' else '' }}" href="{{ url_for('financeiro_despesas') }}">Despesas</a>
+    </li>
+</ul>
+{%- endmacro %}

@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from '_financeiro_tabs.html' import financeiro_tabs %}
 {% block title %}Financeiro - GeoGestao{% endblock %}
 
 {% macro historico_botao(item, target_id) -%}
@@ -197,6 +198,8 @@
         <p>Controle de recebimentos e custos reembolsaveis por projeto. Visivel somente para administradores.</p>
     </div>
 </div>
+
+{{ financeiro_tabs('visao_geral') }}
 
 <section class="dash-kpi-row finance-summary-grid">
     <div class="dash-kpi finance-summary-card finance-summary-card--primary">
