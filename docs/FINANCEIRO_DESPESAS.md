@@ -31,9 +31,17 @@ clara entre:
 `with context` -- ver nota tecnica na secao 9):
 
 - **Visao geral** (`/financeiro`, rota `financeiro`) -- tela antiga,
-  preservada, mais o painel "Despesas" com os indicadores da Fase 6.
+  preservada, mais o painel "Despesas" com os indicadores da Fase 6 e os
+  5 cards clicaveis da Fase 5/redesenho (Documentos para lancar, Total a
+  cobrar, Proprietarios pendentes, Total cobrado, Reembolsos pendentes).
+- **Lancamentos** (`/financeiro/lancamentos`, rota `financeiro_lancamentos`)
+  -- tela principal de entrada de documentos, ver secao 10.
 - **Despesas** (`/financeiro/despesas`, rota `financeiro_despesas`) --
-  lancamento manual, importacao em lote, classificacao.
+  visao administrativa completa: lancamento manual, importacao em lote,
+  classificacao, filtros, cancelamento.
+- **Cobrancas** (`/financeiro/cobrancas`, rota `financeiro_cobrancas`) --
+  agrupamento por proprietario das despesas prontas ainda nao cobradas, ver
+  secao 11.
 - **Reembolsos** (`/financeiro/reembolsos`, rota `financeiro_reembolsos`) --
   so aparece para quem tem `can_manage_despesas()`.
 
@@ -188,18 +196,20 @@ direto em templates.
 
 ## 8. O que fica para depois
 
-Nao implementado nesta fase, de proposito:
+Nao implementado ainda, de proposito:
 
-- **Cobrancas**: transformar `despesa_alocacoes` (com `cliente_id` ja
-  resolvido) em valor formalmente cobrado ao cliente. O dado ja existe
-  (`custos_atribuidos_clientes` na Visao Geral mostra o total elegivel), mas
-  a decisao de "isso virou cobranca" e um passo separado e consciente, nao
-  automatico.
-- **Recebimentos** e conciliacao avancada.
+- **Recebimentos** e conciliacao avancada (o quarto status visual,
+  "Resolvido", esta reservado para isso -- ver secao 11).
 - Relatorio/PDF de cobranca.
 - Historico de reembolsos com acao de cancelar na interface (a rota existe
   e e testada -- `financeiro_reembolsos_cancelar` -- so nao tem botao na
   tela ainda).
+- Cobranca de uma despesa cujas alocacoes apontem para clientes diferentes
+  (ver secao 11 -- fica de fora da Fase 1 do fluxo de cobrancas, tratada
+  manualmente por enquanto).
+
+**Cobrancas foi implementado** (ver secao 11) -- esta secao descrevia isso
+como pendente antes do redesenho "caixa de entrada de documentos".
 
 ## 9. Notas tecnicas
 
@@ -223,3 +233,79 @@ Nao implementado nesta fase, de proposito:
   `migrate_pending_custos` permitem rodar o mesmo backfill de novo para
   custos lancados depois pela tela antiga (que continua existindo e **nao**
   espelha automaticamente em `despesas`).
+
+## 10. Lancamentos -- caixa de entrada de documentos
+
+`/financeiro/lancamentos` e a tela principal para o caso de uso real da
+empresa: funcionario volta do cartorio com varios comprovantes pequenos
+(matricula, reconhecimento de firma, certidao, taxa) e precisa lancar todos
+rapido. Nao e uma tela nova de dados -- e uma camada de UX sobre a mesma
+`despesas`/`despesa_alocacoes`/importacao em lote/IA ja descritas acima.
+
+- **Fila**: `expense_repository.list_fila_lancamento` lista despesas em
+  `rascunho`/`pendente_classificacao` (a mesma importacao em lote da secao 5
+  alimenta essa fila -- o dropzone da tela posta pro mesmo
+  `financeiro_despesas_importar`, so com `destino=lancamentos` redirecionando
+  de volta pra ca em vez de para Despesas).
+- **Proprietario -> projeto**: o formulario pede o cliente primeiro
+  (`fetch_cliente_autocomplete_options`, o mesmo autocomplete generico de
+  cliente ja usado em outras telas via `initProjectClientAutocompletes`) e so
+  entao mostra os projetos dele (`GET /api/clientes/<id>/projetos`, que usa
+  `expense_repository.list_projetos_do_cliente` -- indexado por cliente, nao
+  carrega todos os projetos). Buscar qualquer projeto diretamente continua
+  possivel: a mesma caixa de busca mistura os projetos do proprietario
+  (primeiro) com o restante (`window.despesaProjetosOptions`, o preload ja
+  usado em Despesas).
+- **Alocacao automatica de 100%**: `expense_service.classificar_despesa_rapida`
+  chama `classificar_despesa` (a mesma funcao de sempre) montando sozinha
+  `alocacoes=[{"projeto_id": ..., "valor": valor_total}]`. Dividir entre
+  varios projetos continua so na tela completa de Despesas.
+- **IA automatica**: ao abrir um documento, o JS chama o MESMO endpoint
+  `api_despesa_ai_analysis` de Despesas (GET pra ver se ja tem rascunho,
+  senao POST pra analisar) -- nao existe uma segunda leitura por IA nem um
+  segundo prompt. Falha da IA nunca bloqueia: o endpoint sempre devolve um
+  `analysis` aplicavel (mesmo que com campos vazios), e o formulario continua
+  editavel manualmente.
+- **"Salvar e proximo" sem reload**: `POST /financeiro/lancamentos/<id>/salvar-proximo`
+  chama `classificar_despesa_rapida` e devolve o proximo item da fila em
+  JSON. A rota distingue o pedido via header `X-Requested-With: XMLHttpRequest`
+  (mandado pelo `fetch` do JS): sem esse header, cai no comportamento
+  classico do resto do modulo -- `flash` + redirect de volta pra
+  `/financeiro/lancamentos` -- caso o JS falhe em anexar o listener de
+  submit (fallback seguro, item 15 do pedido original).
+
+## 11. Cobrancas -- formalizar a divida do proprietario
+
+`/financeiro/cobrancas` fecha o ciclo que a secao 8 (versao anterior deste
+documento) descrevia como pendente: transformar despesas `pronta` (valor +
+divisao + desembolsante definidos) em uma cobranca formal ao cliente.
+
+- **Elegibilidade**: so entra despesa com status `pronta`, nao cancelada,
+  cujas alocacoes apontem para um UNICO cliente (`HAVING COUNT(*) =
+  COUNT(a.cliente_id) AND COUNT(DISTINCT a.cliente_id) = 1` em
+  `list_despesas_a_cobrar_por_cliente`/`list_despesas_a_cobrar_do_cliente`) e
+  que ainda nao esteja numa cobranca ativa. Uma despesa dividida entre
+  clientes diferentes fica de fora por enquanto (ver secao 8).
+- **Modelo**: `cobrancas` (cabecalho: cliente, valor total, data, status
+  `ativa`/`cancelada`, auditoria) e `cobranca_itens` (quais despesas, com um
+  `status` proprio `ativo`/`cancelado` que espelha o status da cobranca-pai
+  no momento -- existe so para viabilizar o indice unico parcial
+  `idx_cobranca_itens_despesa_ativa` (`WHERE status = 'ativo'`), ja que
+  Postgres nao aceita subquery entre tabelas num predicado de indice.
+  Migrations `docs/migrations/20260902_despesas_fase7_cobrancas.sql`
+  (tabelas) e `..._fase8_cobranca_registro_uid.sql` (dedup de duplo-envio,
+  mesmo padrao de `despesas.registro_uid`).
+- **Criar**: `expense_service.criar_cobranca` reconfere elegibilidade e
+  ausencia de cobranca ativa ANTES de escrever (mesmo motivo de sempre: um
+  erro de validacao vira redirect 302, que o `after_request` nao reverte).
+  `registro_uid` torna reenvio idempotente.
+- **Cancelar**: `cancelar_cobranca` e soft -- `cancel_cobranca_and_itens`
+  atualiza `cobrancas.status` E `cobranca_itens.status` na mesma chamada. As
+  despesas reaparecem em "a cobrar" automaticamente (nenhuma consulta
+  precisa saber que houve um cancelamento; ela so filtra por
+  `status = 'ativo'`/`'ativa'`).
+- **Camadas de apresentacao** (item 11 do pedido original, so visual --
+  nenhum status novo de `despesas` foi criado): "Para lancar" =
+  `rascunho`/`pendente_classificacao`; "A cobrar" = `pronta` sem cobranca
+  ativa; "Cobrado" = tem `cobranca_itens` ativo; "Resolvido" fica reservado
+  para quando houver recebimento/baixa (secao 8).

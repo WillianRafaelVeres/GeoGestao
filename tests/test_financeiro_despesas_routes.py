@@ -365,6 +365,66 @@ class SalvarProximoRouteTests(RouteTestCase):
         classificar_mock.assert_not_called()
 
 
+class FinanceiroLancamentosRouteTests(RouteTestCase):
+    """Item 2 do redesenho: a pagina monta a fila e abre o primeiro documento
+    (ou o pedido via ?despesa_id=) automaticamente."""
+
+    def test_opens_first_pending_document_by_default(self):
+        fila = [
+            {"id": 8, "descricao": "recibo_1.jpg", "categoria": None, "valor_total": None,
+             "data_despesa": None, "observacoes": None, "anexo_nome_original": "recibo_1.jpg",
+             "anexo_caminho_dropbox": None},
+            {"id": 9, "descricao": "recibo_2.jpg", "categoria": None, "valor_total": None,
+             "data_despesa": None, "observacoes": None, "anexo_nome_original": "recibo_2.jpg",
+             "anexo_caminho_dropbox": None},
+        ]
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=fila), \
+             mock.patch.object(appmod.expense_repository, "list_desembolsantes", return_value=[]), \
+             mock.patch.object(appmod, "fetch_cliente_autocomplete_options", return_value=[]), \
+             mock.patch.object(appmod, "fetch_despesa_projeto_options", return_value=[]), \
+             mock.patch.object(appmod, "render_template") as render_mock:
+            render_mock.return_value = "ok"
+            self._run(appmod.financeiro_lancamentos, "/financeiro/lancamentos", method="GET")
+
+        kwargs = render_mock.call_args.kwargs
+        self.assertEqual(len(kwargs["fila"]), 2)
+        self.assertEqual(kwargs["aberto"]["id"], 8)
+
+    def test_opens_requested_document_when_given(self):
+        fila = [
+            {"id": 8, "descricao": "a", "categoria": None, "valor_total": None,
+             "data_despesa": None, "observacoes": None, "anexo_nome_original": "a", "anexo_caminho_dropbox": None},
+            {"id": 9, "descricao": "b", "categoria": None, "valor_total": None,
+             "data_despesa": None, "observacoes": None, "anexo_nome_original": "b", "anexo_caminho_dropbox": None},
+        ]
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=fila), \
+             mock.patch.object(appmod.expense_repository, "list_desembolsantes", return_value=[]), \
+             mock.patch.object(appmod, "fetch_cliente_autocomplete_options", return_value=[]), \
+             mock.patch.object(appmod, "fetch_despesa_projeto_options", return_value=[]), \
+             mock.patch.object(appmod, "render_template") as render_mock:
+            render_mock.return_value = "ok"
+            self._run(appmod.financeiro_lancamentos, "/financeiro/lancamentos?despesa_id=9", method="GET")
+
+        kwargs = render_mock.call_args.kwargs
+        self.assertEqual(kwargs["aberto"]["id"], 9)
+
+    def test_empty_fila_has_no_open_document(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=[]), \
+             mock.patch.object(appmod.expense_repository, "list_desembolsantes", return_value=[]), \
+             mock.patch.object(appmod, "fetch_cliente_autocomplete_options", return_value=[]), \
+             mock.patch.object(appmod, "fetch_despesa_projeto_options", return_value=[]), \
+             mock.patch.object(appmod, "render_template") as render_mock:
+            render_mock.return_value = "ok"
+            self._run(appmod.financeiro_lancamentos, "/financeiro/lancamentos", method="GET")
+
+        kwargs = render_mock.call_args.kwargs
+        self.assertEqual(kwargs["fila"], [])
+        self.assertIsNone(kwargs["aberto"])
+
+
 class ApiClienteProjetosRouteTests(RouteTestCase):
     def test_returns_projects_for_client(self):
         with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \

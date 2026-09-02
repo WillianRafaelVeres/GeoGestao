@@ -559,6 +559,22 @@ class ExpenseRepositoryQueryShapeTests(unittest.TestCase):
         self.assertIn("d.status = 'pronta'", sql)
         self.assertIn("ci.status = 'ativo'", sql)
 
+    def test_cancel_cobranca_and_itens_updates_both_tables(self):
+        # Item 13 do redesenho: cancelar precisa espelhar o status nos itens,
+        # nao so na cobranca-pai, porque o indice unico e as consultas de "a
+        # cobrar" olham para cobranca_itens.status (ver migration fase7).
+        db = self.FakeDb(rows=[])
+        repo.cancel_cobranca_and_itens(db, 900, "Lancado errado", "2026-09-03T09:00:00", 1)
+        self.assertEqual(len(db.executed), 2)
+        sql_cobranca, params_cobranca = db.executed[0]
+        sql_itens, params_itens = db.executed[1]
+        self.assertIn("UPDATE cobrancas", sql_cobranca)
+        self.assertIn("'cancelada'", sql_cobranca)
+        self.assertEqual(params_cobranca, ("Lancado errado", "2026-09-03T09:00:00", 1, 900))
+        self.assertIn("UPDATE cobranca_itens", sql_itens)
+        self.assertIn("'cancelado'", sql_itens)
+        self.assertEqual(params_itens, (900,))
+
 
 class ClassificarDespesaRapidaTests(unittest.TestCase):
     """Item 4 do redesenho de Lancamentos: proprietario -> projeto -> alocacao
