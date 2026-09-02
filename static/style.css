@@ -1037,6 +1037,30 @@ a:hover { color: #1d4ed8; }
 .despesa-ai-status.is-success { color: #1e7d3a; }
 .despesa-ai-status.is-error { color: #b42318; }
 
+.finance-despesas-panel { margin-bottom: 14px; }
+.finance-despesas-panel .finance-summary-grid { margin-top: 4px; }
+.finance-despesas-alerts {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.finance-despesas-alerts li {
+    font-size: 12.5px;
+    color: #7a4b00;
+    background: #fff9ea;
+    border: 1px solid #ead39a;
+    border-radius: 4px;
+    padding: 6px 9px;
+}
+.finance-despesas-note {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
 @media (max-width: 1180px) {
     .finance-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .finance-filter-toolbar {

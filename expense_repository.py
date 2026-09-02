@@ -431,6 +431,46 @@ def list_despesas_pendentes_por_desembolsante(db, desembolsante_id):
     )
 
 
+def get_despesas_indicadores(db, data_inicio_mes, data_fim_mes):
+    """Indicadores de despesas para a Visao Geral do Financeiro (item 14 do
+    pedido). Uma unica query de agregacao (sem N+1) cobrindo: total lancado no
+    mes, pago pela empresa vs. por pessoas no mes, documentos aguardando
+    classificacao, despesas com valor confirmado mas sem divisao completa, e
+    despesas 'prontas' sem nenhum projeto vinculado.
+    """
+    return _fetchone(
+        db,
+        """
+        SELECT
+            COALESCE(SUM(d.valor_total) FILTER (
+                WHERE d.status != 'cancelada' AND d.data_despesa BETWEEN %s AND %s
+            ), 0) AS total_mes,
+            COALESCE(SUM(d.valor_total) FILTER (
+                WHERE d.status != 'cancelada' AND d.data_despesa BETWEEN %s AND %s
+                  AND d.desembolsado_por_tipo = 'EMPRESA'
+            ), 0) AS pago_empresa_mes,
+            COALESCE(SUM(d.valor_total) FILTER (
+                WHERE d.status != 'cancelada' AND d.data_despesa BETWEEN %s AND %s
+                  AND d.desembolsado_por_tipo = 'PESSOA'
+            ), 0) AS pago_pessoas_mes,
+            COUNT(*) FILTER (WHERE d.status IN ('rascunho', 'pendente_classificacao')) AS documentos_pendentes,
+            COUNT(*) FILTER (WHERE d.status = 'classificada') AS despesas_sem_divisao,
+            COUNT(*) FILTER (
+                WHERE d.status NOT IN ('rascunho', 'pendente_classificacao', 'cancelada')
+                  AND NOT EXISTS (SELECT 1 FROM despesa_alocacoes a WHERE a.despesa_id = d.id)
+            ) AS despesas_sem_projeto,
+            COALESCE((
+                SELECT SUM(a.valor)
+                FROM despesa_alocacoes a
+                JOIN despesas d2 ON d2.id = a.despesa_id
+                WHERE d2.status != 'cancelada' AND a.cliente_id IS NOT NULL
+            ), 0) AS custos_atribuidos_clientes
+        FROM despesas d
+        """,
+        (data_inicio_mes, data_fim_mes, data_inicio_mes, data_fim_mes, data_inicio_mes, data_fim_mes),
+    )
+
+
 def summarize_pendencias_reembolso(db):
     """Uma linha por desembolsante com saldo pendente > 0, para 'Financeiro -> Reembolsos'.
 

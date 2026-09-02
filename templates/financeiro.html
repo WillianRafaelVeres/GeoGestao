@@ -229,6 +229,60 @@
     </div>
 </section>
 
+<section class="panel finance-despesas-panel">
+    <div class="panel-header">
+        <h2>Despesas</h2>
+        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('financeiro_despesas') }}">Ver despesas</a>
+    </div>
+    <div class="dash-kpi-row finance-summary-grid">
+        <div class="dash-kpi finance-summary-card finance-summary-card--primary">
+            <span class="dash-kpi-label">Total lancado no mes</span>
+            <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.total_mes) }}</strong>
+            <span class="dash-kpi-sub">{{ hoje_mes_label }}</span>
+        </div>
+        <div class="dash-kpi finance-summary-card">
+            <span class="dash-kpi-label">Pago pela empresa</span>
+            <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.pago_empresa_mes) }}</strong>
+            <span class="dash-kpi-sub">no mes</span>
+        </div>
+        <div class="dash-kpi finance-summary-card">
+            <span class="dash-kpi-label">Pago por colaboradores</span>
+            <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.pago_pessoas_mes) }}</strong>
+            <span class="dash-kpi-sub">no mes</span>
+        </div>
+        <div class="dash-kpi finance-summary-card {{ 'dash-kpi--warn' if total_a_reembolsar and total_a_reembolsar > 0.005 else '' }}">
+            <span class="dash-kpi-label">A reembolsar</span>
+            <strong class="dash-kpi-value">{{ format_currency(total_a_reembolsar) }}</strong>
+            <span class="dash-kpi-sub">{{ pendencias_reembolso|length }} pessoa(s) com saldo</span>
+        </div>
+        <div class="dash-kpi finance-summary-card {{ 'dash-kpi--danger' if despesas_indicadores.documentos_pendentes else '' }}">
+            <span class="dash-kpi-label">Aguardando classificacao</span>
+            <strong class="dash-kpi-value">{{ despesas_indicadores.documentos_pendentes }}</strong>
+            <span class="dash-kpi-sub">documento(s) importado(s)</span>
+        </div>
+    </div>
+    {% set alertas_despesa = [] %}
+    {% for pendencia in pendencias_reembolso %}
+        {% set _ = alertas_despesa.append(pendencia.nome ~ " - " ~ format_currency(pendencia.total_pendente) ~ " a reembolsar") %}
+    {% endfor %}
+    {% if despesas_indicadores.despesas_sem_divisao %}
+        {% set _ = alertas_despesa.append(despesas_indicadores.despesas_sem_divisao ~ " despesa(s) com valor confirmado mas sem divisao entre projetos") %}
+    {% endif %}
+    {% if despesas_indicadores.despesas_sem_projeto %}
+        {% set _ = alertas_despesa.append(despesas_indicadores.despesas_sem_projeto ~ " despesa(s) pronta(s) sem nenhum projeto vinculado") %}
+    {% endif %}
+    {% if alertas_despesa %}
+        <ul class="finance-despesas-alerts">
+            {% for alerta in alertas_despesa %}
+                <li>{{ alerta }}</li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+    <div class="finance-despesas-note">
+        {{ format_currency(despesas_indicadores.custos_atribuidos_clientes) }} em custos ja atribuidos a clientes atraves de despesas -- ainda nao e cobranca formal.
+    </div>
+</section>
+
 <section class="panel finance-filter-panel">
     <div class="finance-filter-toolbar">
         <strong class="finance-filter-toolbar__title">Localizar projetos</strong>

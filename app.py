@@ -15451,6 +15451,24 @@ def financeiro():
         key=normalize_lookup,
     )
 
+    # Item 14 do redesenho: indicadores de despesas na Visao Geral, sem virar
+    # dashboard visual exagerado -- so os numeros que ajudam a decidir.
+    hoje = app_today()
+    mes_inicio = hoje.replace(day=1)
+    proximo_mes = (hoje.replace(day=28) + timedelta(days=4)).replace(day=1)
+    mes_fim = proximo_mes - timedelta(days=1)
+    despesas_db = get_db()
+    despesas_indicadores = expense_repository.get_despesas_indicadores(
+        despesas_db, mes_inicio.isoformat(), mes_fim.isoformat()
+    )
+    pendencias_reembolso = expense_repository.summarize_pendencias_reembolso(despesas_db)
+    total_a_reembolsar = sum(float(item["total_pendente"] or 0) for item in pendencias_reembolso)
+    meses_label = [
+        "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
+        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+    ]
+    hoje_mes_label = f"{meses_label[hoje.month - 1]}/{hoje.year}"
+
     recebido = query_db(
         """
         SELECT
@@ -15512,6 +15530,10 @@ def financeiro():
         quase_pronto_pct=FINANCEIRO_QUASE_PRONTO_PCT,
         etapa_options=etapa_options,
         total_financeiro_count=len(em_aberto) + len(concluidos_pendentes),
+        despesas_indicadores=despesas_indicadores,
+        pendencias_reembolso=pendencias_reembolso,
+        total_a_reembolsar=total_a_reembolsar,
+        hoje_mes_label=hoje_mes_label,
         resumo={
             "total_a_receber": a_receber_ativos + a_receber_concluidos,
             "a_receber_ativos": a_receber_ativos,

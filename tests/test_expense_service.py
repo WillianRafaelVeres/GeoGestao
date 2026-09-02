@@ -510,6 +510,15 @@ class ExpenseRepositoryQueryShapeTests(unittest.TestCase):
         self.assertIsNone(repo.find_anexo_by_hash(db, ""))
         self.assertEqual(db.executed, [])  # nao bate no banco sem hash
 
+    def test_get_despesas_indicadores_passes_month_range_six_times(self):
+        # Item 14 do pedido: total do mes, pago empresa/pessoas no mes usam o
+        # mesmo intervalo de datas (inicio/fim), 3 filtros = 6 parametros.
+        db = self.FakeDb(rows=[{"total_mes": 8450.0}])
+        repo.get_despesas_indicadores(db, "2026-09-01", "2026-09-30")
+        sql, params = db.executed[0]
+        self.assertIn("FROM despesas d", sql)
+        self.assertEqual(params, ("2026-09-01", "2026-09-30") * 3)
+
 
 class ExpensePermissionsTests(unittest.TestCase):
     """Item 13 do pedido: view e sempre p/ logado; gerenciar e admin/coordenador;
