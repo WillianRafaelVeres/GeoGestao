@@ -15541,14 +15541,17 @@ def financeiro_despesas():
         "cliente_id": None,
         "data_de": (request.args.get("data_de") or "").strip() or None,
         "data_ate": (request.args.get("data_ate") or "").strip() or None,
+        "lote_id": request.args.get("lote_id", type=int),
     }
     db = get_db()
     despesas = expense_repository.list_despesas(db, **filtros)
+    lotes_recentes = expense_repository.list_lotes(db)
 
     return render_template(
         "despesas.html",
         despesas=despesas,
         filtros=filtros,
+        lotes_recentes=lotes_recentes,
         categorias_despesa=CATEGORIAS_DESPESA,
         status_labels=DESPESA_STATUS_LABELS,
         status_badges=DESPESA_STATUS_BADGE,
@@ -15646,6 +15649,147 @@ def financeiro_despesas_criar():
 
     flash(f"Despesa registrada: {despesa['descricao']} - {format_currency(despesa['valor_total'])}.", "success")
     return redirect(url_for("financeiro_despesas"))
+
+
+@app.route("/financeiro/despesas/<int:despesa_id>/classificar", methods=["POST"])
+@login_required
+def financeiro_despesas_classificar(despesa_id):
+    """Completa um rascunho (importado em lote ou manual incompleto): confirma valor,
+    quem desembolsou e a divisao entre projetos. So o usuario decide isso -- nunca a
+    importacao/IA sozinha (item 11 do redesenho)."""
+    if not can_manage_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    db = get_db()
+    now = app_now_iso()
+    descricao = (request.form.get("descricao") or "").strip()
+    valor_total = parse_currency_value((request.form.get("valor_total") or "").strip())
+    categoria = request.form.get("categoria", "")
+    if categoria not in CATEGORIAS_DESPESA:
+        categoria = "OUTRO"
+    data_despesa = parse_payment_date(request.form.get("data_despesa"))
+    observacoes = (request.form.get("observacoes") or "").strip() or None
+    desembolso_tipo = "PESSOA" if request.form.get("desembolso_tipo") == "PESSOA" else "EMPRESA"
+    desembolsante_id = request.form.get("desembolsante_id", type=int)
+    desembolsante_nome_novo = (request.form.get("desembolsante_nome_novo") or "").strip() or None
+
+    projeto_ids = request.form.getlist("alocacao_projeto_id")
+    valores_alocacao = request.form.getlist("alocacao_valor")
+    alocacoes = []
+    for projeto_id_raw, valor_raw in zip(projeto_ids, valores_alocacao):
+        projeto_id_raw = (projeto_id_raw or "").strip()
+        valor_parsed = parse_currency_value((valor_raw or "").strip())
+        if not projeto_id_raw or not valor_parsed:
+            continue
+        try:
+            alocacoes.append({"projeto_id": int(projeto_id_raw), "valor": valor_parsed})
+        except ValueError:
+            continue
+
+    if not valor_total or valor_total <= 0:
+        flash("Informe um valor de despesa maior que zero.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+    if not alocacoes:
+        flash("Adicione ao menos um projeto e informe o valor de cada divisao.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    try:
+        despesa = expense_service.classificar_despesa(
+            db, despesa_id,
+            descricao=descricao, valor_total=valor_total, categoria=categoria,
+            data_despesa=data_despesa, observacoes=observacoes,
+            desembolsado_por_tipo=desembolso_tipo, desembolsante_id=desembolsante_id,
+            desembolsante_nome_novo=desembolsante_nome_novo, alocacoes=alocacoes,
+            atualizado_em=now, atualizado_por=g.user["id"],
+        )
+    except expense_service.ExpenseServiceError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    attachment, attachment_error = read_despesa_attachment(request.files.get("comprovante"))
+    if attachment_error:
+        flash(f"Despesa classificada, mas o comprovante adicional nao pode ser anexado: {attachment_error}", "warning")
+    elif attachment:
+        duplicate = expense_service.check_duplicate_anexo(db, attachment["hash"], despesa_id=despesa["id"])
+        uploaded, upload_error = dropbox_upload_despesa_attachment(
+            despesa["data_despesa"], despesa["descricao"], attachment
+        )
+        if not uploaded:
+            flash(f"Despesa classificada, mas o comprovante adicional nao pode ser enviado ao Dropbox: {upload_error}", "warning")
+        else:
+            expense_repository.insert_anexo(
+                db, despesa["id"], uploaded["path"], uploaded["name"], now,
+                nome_original=attachment["original_name"], file_hash=attachment["hash"],
+                tamanho=attachment["size"], principal=False, criado_por=g.user["id"],
+            )
+            if duplicate:
+                flash(
+                    f"Atencao: este comprovante parece igual ao ja anexado na despesa "
+                    f"\"{duplicate['despesa_descricao']}\". Confira se nao e duplicidade.",
+                    "warning",
+                )
+
+    flash(f"Despesa classificada: {despesa['descricao']} - {format_currency(despesa['valor_total'])}.", "success")
+    return redirect(url_for("financeiro_despesas"))
+
+
+@app.route("/financeiro/despesas/importar", methods=["POST"])
+@login_required
+def financeiro_despesas_importar():
+    """Financeiro -> Despesas -> Importar documentos: varios arquivos de uma vez
+    (ex.: baixados de um grupo de WhatsApp) viram rascunhos pendentes de
+    classificacao, agrupados num lote so para acompanhar o progresso."""
+    if not can_manage_despesas():
+        flash("Permissao negada.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    uploads = [item for item in request.files.getlist("arquivos") if item and item.filename]
+    if not uploads:
+        flash("Selecione ao menos um arquivo para importar.", "danger")
+        return redirect(url_for("financeiro_despesas"))
+
+    db = get_db()
+    now = app_now_iso()
+    lote_id = expense_repository.insert_lote(
+        db, now, titulo=f"Lote {format_datetime(now)}", criado_por=g.user["id"]
+    )
+
+    importados = 0
+    duplicados = 0
+    falhas = []
+    for upload in uploads:
+        attachment, error = read_despesa_attachment(upload)
+        if error or not attachment:
+            falhas.append(f"{upload.filename}: {error or 'arquivo vazio'}")
+            continue
+        duplicate = expense_service.check_duplicate_anexo(db, attachment["hash"])
+        if duplicate:
+            duplicados += 1
+            continue
+        descricao = os.path.splitext(attachment["original_name"])[0].strip()[:200] or "Documento importado"
+        uploaded, upload_error = dropbox_upload_despesa_attachment(now, descricao, attachment)
+        if not uploaded:
+            falhas.append(f"{upload.filename}: {upload_error}")
+            continue
+        expense_service.import_documento(
+            db, lote_id=lote_id, descricao=descricao,
+            caminho_dropbox=uploaded["path"], nome_arquivo=uploaded["name"],
+            nome_original=attachment["original_name"], file_hash=attachment["hash"],
+            tamanho=attachment["size"], criado_em=now, criado_por=g.user["id"],
+        )
+        importados += 1
+
+    expense_repository.update_lote_total(db, lote_id, importados)
+
+    partes = [f"{importados} documento(s) importado(s) como rascunho, pendente(s) de classificacao."]
+    if duplicados:
+        partes.append(f"{duplicados} ja existiam (mesmo comprovante ja lancado) e foram ignorados.")
+    if falhas:
+        resumo_falhas = "; ".join(falhas[:3]) + ("..." if len(falhas) > 3 else "")
+        partes.append(f"{len(falhas)} falharam: {resumo_falhas}")
+    flash(" ".join(partes), "success" if importados else "warning")
+    return redirect(url_for("financeiro_despesas", lote_id=lote_id, status="pendente_classificacao"))
 
 
 @app.route("/financeiro/despesas/<int:despesa_id>/cancelar", methods=["POST"])

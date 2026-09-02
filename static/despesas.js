@@ -9,6 +9,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initDespesaDesembolsoToggle();
     initDespesaDropzone();
     initDespesaModalReset();
+    initImportarDocumentos();
 
     document.getElementById("despesaValorTotal")?.addEventListener("input", () => {
         recomputeDespesaTotal(document.getElementById("despesaForm"));
@@ -263,6 +264,10 @@ function novoDespesaRegistroUid() {
 }
 
 function initDespesaModalReset() {
+    // O mesmo modal serve para "Nova despesa" (cria do zero) e "Classificar"
+    // (completa um rascunho ja existente, importado em lote ou nao). O botao
+    // que abre o modal decide o modo: se tiver data-despesa-classificar-url,
+    // troca o action do form e pre-preenche os campos que ja se sabe.
     const modal = document.getElementById("modalNovaDespesa");
     if (!modal) return;
     const form = document.getElementById("despesaForm");
@@ -272,8 +277,15 @@ function initDespesaModalReset() {
     const pessoaNovaField = document.querySelector("[data-despesa-pessoa-nova-field]");
     const filePill = document.querySelector("[data-despesa-file-pill]");
     const dropzone = document.querySelector("[data-despesa-dropzone]");
+    const kicker = modal.querySelector("[data-despesa-modal-kicker]");
+    const titleEl = modal.querySelector("[data-despesa-modal-title]");
+    const submitButton = modal.querySelector("[data-despesa-submit]");
+    const comprovanteLabel = modal.querySelector("[data-despesa-comprovante-label]");
+    const registroUidInput = document.getElementById("despesaRegistroUid");
+    const createUrl = form?.dataset.createUrl;
+    let submitDefaultText = submitButton?.textContent || "Salvar despesa";
 
-    modal.addEventListener("show.bs.modal", () => {
+    modal.addEventListener("show.bs.modal", (event) => {
         form?.reset();
         if (list) list.innerHTML = "";
         if (registroUidField) registroUidField.value = novoDespesaRegistroUid();
@@ -281,17 +293,114 @@ function initDespesaModalReset() {
         if (pessoaNovaField) pessoaNovaField.hidden = true;
         if (filePill) filePill.hidden = true;
         dropzone?.classList.remove("has-file");
+
+        const botao = event.relatedTarget;
+        const classificarUrl = botao?.dataset.despesaClassificarUrl;
+        if (classificarUrl && form) {
+            form.action = classificarUrl;
+            if (registroUidInput) registroUidInput.disabled = true;
+            if (kicker) kicker.textContent = "Classificar despesa";
+            if (titleEl) titleEl.textContent = botao.dataset.despesaClassificarDescricao || "Despesa importada";
+            if (comprovanteLabel) comprovanteLabel.innerHTML = 'Comprovante adicional <span class="text-muted">(opcional -- o original ja esta anexado)</span>';
+            submitDefaultText = "Classificar despesa";
+            document.getElementById("despesaDescricao").value = botao.dataset.despesaClassificarDescricao || "";
+            document.getElementById("despesaValorTotal").value = botao.dataset.despesaClassificarValor || "";
+            const dataInput = form.querySelector('[name="data_despesa"]');
+            if (dataInput) dataInput.value = botao.dataset.despesaClassificarData || dataInput.value;
+            const categoriaSelect = form.querySelector('[name="categoria"]');
+            if (categoriaSelect && botao.dataset.despesaClassificarCategoria) {
+                categoriaSelect.value = botao.dataset.despesaClassificarCategoria;
+            }
+        } else if (form) {
+            form.action = createUrl;
+            if (registroUidInput) registroUidInput.disabled = false;
+            if (kicker) kicker.textContent = "Nova despesa";
+            if (titleEl) titleEl.textContent = "Registrar despesa";
+            if (comprovanteLabel) comprovanteLabel.innerHTML = 'Comprovante <span class="text-muted">(opcional)</span>';
+            submitDefaultText = "Salvar despesa";
+        }
+        if (submitButton) submitButton.textContent = submitDefaultText;
+
         // Comeca ja com uma linha de divisao pronta: a maioria das despesas
         // tem 1 projeto so, e o usuario nao devia precisar clicar "+" pra isso.
         document.querySelector("[data-despesa-add-alocacao]")?.click();
         recomputeDespesaTotal(form);
     });
 
-    const submitButton = modal.querySelector("button[type='submit']");
     modal.addEventListener("hidden.bs.modal", () => {
         if (submitButton) {
             submitButton.disabled = false;
-            submitButton.textContent = "Salvar despesa";
+            submitButton.textContent = submitDefaultText;
+        }
+    });
+}
+
+function initImportarDocumentos() {
+    const dropzone = document.querySelector("[data-import-dropzone]");
+    const fileInput = document.getElementById("importarArquivosInput");
+    const fileList = document.querySelector("[data-import-file-list]");
+    const submitButton = document.querySelector("[data-import-submit]");
+    const modal = document.getElementById("modalImportarDocumentos");
+    if (!dropzone || !fileInput) return;
+
+    function updateUi() {
+        const arquivos = Array.from(fileInput.files || []);
+        dropzone.classList.toggle("has-file", arquivos.length > 0);
+        if (fileList) {
+            fileList.innerHTML = "";
+            arquivos.forEach((arquivo) => {
+                const item = document.createElement("li");
+                item.textContent = arquivo.name;
+                fileList.appendChild(item);
+            });
+        }
+        if (submitButton) submitButton.disabled = arquivos.length === 0;
+    }
+
+    function assignFiles(files) {
+        if (!files || !files.length || !window.DataTransfer) return false;
+        const transfer = new DataTransfer();
+        Array.from(files).forEach((file) => transfer.items.add(file));
+        fileInput.files = transfer.files;
+        return true;
+    }
+
+    fileInput.addEventListener("change", updateUi);
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            fileInput.click();
+        }
+    });
+    ["dragenter", "dragover"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            dropzone.classList.add("is-dragover");
+        });
+    });
+    ["dragleave", "dragend", "drop"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            if (eventName !== "drop" || !dropzone.contains(event.relatedTarget)) {
+                dropzone.classList.remove("is-dragover");
+            }
+        });
+    });
+    dropzone.addEventListener("drop", (event) => {
+        const arquivos = event.dataTransfer?.files;
+        if (!arquivos?.length || !assignFiles(arquivos)) return;
+        updateUi();
+    });
+
+    modal?.addEventListener("show.bs.modal", () => {
+        fileInput.value = "";
+        updateUi();
+    });
+    modal?.addEventListener("hidden.bs.modal", () => {
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.textContent = "Importar";
         }
     });
 }

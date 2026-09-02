@@ -168,6 +168,98 @@ class CreateDespesaTests(unittest.TestCase):
         self.assertEqual(self.repo.insert_despesa.call_args.kwargs["desembolsado_por_id"], 7)
 
 
+class ImportDocumentoTests(unittest.TestCase):
+    """Item 9 do pedido: cada arquivo importado vira um rascunho, nunca uma
+    despesa pronta -- projeto, cliente e desembolsante ficam por definir."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_imported_document_becomes_pending_draft_without_value(self):
+        self.repo.insert_despesa.return_value = 55
+        self.repo.get_despesa.return_value = {"id": 55, "status": "pendente_classificacao"}
+
+        svc.import_documento(
+            self.db, lote_id=3, descricao="recibo_1928",
+            caminho_dropbox="/SC/Novo/_despesas/2026/09/recibo_1928.jpg",
+            nome_arquivo="recibo_1928.jpg", nome_original="recibo_1928.jpg",
+            file_hash="abc123", tamanho=1024, criado_em="2026-09-02T10:00:00", criado_por=1,
+        )
+
+        kwargs = self.repo.insert_despesa.call_args.kwargs
+        self.assertIsNone(kwargs["valor_total"])
+        self.assertEqual(kwargs["status"], "pendente_classificacao")
+        self.assertEqual(kwargs["desembolsado_por_tipo"], "EMPRESA")
+        self.assertEqual(kwargs["origem"], "IMPORTACAO")
+        self.assertEqual(kwargs["lote_id"], 3)
+        self.repo.insert_alocacao.assert_not_called()
+        self.repo.insert_anexo.assert_called_once()
+
+
+class ClassificarDespesaTests(unittest.TestCase):
+    """Item 9/11 do pedido: so o usuario completa valor/projeto/desembolsante
+    de um rascunho -- nunca a importacao sozinha."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        patcher = mock.patch.object(svc, "repo", autospec=True)
+        self.repo = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.repo.get_despesa.return_value = {
+            "id": 1, "status": "pendente_classificacao", "desembolsado_por_tipo": "EMPRESA",
+            "desembolsado_por_id": None,
+        }
+
+    def test_classifying_a_draft_completes_it_and_makes_it_ready(self):
+        self.repo.resolve_projeto_cliente.return_value = 42
+
+        svc.classificar_despesa(
+            self.db, 1, descricao="Matricula atualizada", valor_total=300,
+            categoria="MATRICULA", data_despesa="2026-09-02", observacoes=None,
+            desembolsado_por_tipo="EMPRESA", alocacoes=[{"projeto_id": 245, "valor": 300}],
+            atualizado_em="2026-09-02T11:00:00", atualizado_por=1,
+        )
+
+        self.repo.update_despesa_classificacao.assert_called_once()
+        self.assertEqual(self.repo.update_despesa_classificacao.call_args.kwargs["valor_total"], Decimal("300.00"))
+        self.repo.delete_alocacoes.assert_called_once_with(self.db, 1)
+        self.repo.insert_alocacao.assert_called_once()
+        self.repo.update_despesa_status.assert_called_once_with(self.db, 1, "pronta", "2026-09-02T11:00:00", 1)
+
+    def test_missing_allocation_is_rejected_before_any_write(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.classificar_despesa(
+                self.db, 1, descricao="Matricula", valor_total=300, categoria=None,
+                data_despesa="2026-09-02", observacoes=None, desembolsado_por_tipo="EMPRESA",
+                alocacoes=[], atualizado_em="2026-09-02T11:00:00",
+            )
+        # Nada pode ter sido escrito: um redirect de erro (302) nao e status
+        # >=400, entao uma escrita parcial seria commitada mesmo assim.
+        self.repo.update_despesa_classificacao.assert_not_called()
+        self.repo.delete_alocacoes.assert_not_called()
+
+    def test_allocation_sum_mismatch_is_rejected_before_any_write(self):
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.classificar_despesa(
+                self.db, 1, descricao="Matricula", valor_total=300, categoria=None,
+                data_despesa="2026-09-02", observacoes=None, desembolsado_por_tipo="EMPRESA",
+                alocacoes=[{"projeto_id": 1, "valor": 100}], atualizado_em="2026-09-02T11:00:00",
+            )
+        self.repo.update_despesa_classificacao.assert_not_called()
+
+    def test_cannot_classify_cancelled_expense(self):
+        self.repo.get_despesa.return_value = {"id": 1, "status": "cancelada"}
+        with self.assertRaises(svc.ExpenseServiceError):
+            svc.classificar_despesa(
+                self.db, 1, descricao="Matricula", valor_total=300, categoria=None,
+                data_despesa="2026-09-02", observacoes=None, desembolsado_por_tipo="EMPRESA",
+                alocacoes=[{"projeto_id": 1, "valor": 300}], atualizado_em="2026-09-02T11:00:00",
+            )
+
+
 class CancelDespesaTests(unittest.TestCase):
     """Item 8 do pedido: cancelamento e soft, auditado, nunca DELETE."""
 

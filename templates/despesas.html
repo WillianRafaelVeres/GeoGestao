@@ -9,11 +9,33 @@
         <p>Despesas registradas, divididas entre projetos e clientes, com quem realizou o desembolso.</p>
     </div>
     {% if can_manage_despesas_flag %}
-        <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#modalNovaDespesa">+ Nova despesa</button>
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-primary" type="button" data-bs-toggle="modal" data-bs-target="#modalImportarDocumentos">Importar documentos</button>
+            <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#modalNovaDespesa" data-despesa-nova>+ Nova despesa</button>
+        </div>
     {% endif %}
 </div>
 
 {{ financeiro_tabs('despesas') }}
+
+{% if lotes_recentes %}
+<section class="panel despesa-lotes-panel">
+    <div class="panel-header">
+        <h2>Lotes recentes</h2>
+    </div>
+    <div class="despesa-lotes-list">
+        {% for lote in lotes_recentes %}
+            {% set pendentes = lote.pendentes or 0 %}
+            {% set total = lote.total_documentos or 0 %}
+            <a class="despesa-lote-chip {{ 'is-pending' if pendentes else '' }}"
+               href="{{ url_for('financeiro_despesas', lote_id=lote.id) }}">
+                <strong>{{ lote.titulo or ('Lote #' ~ lote.id) }}</strong>
+                <span>{{ total }} documento(s) &middot; {{ lote.classificados or 0 }} classificado(s) &middot; {{ pendentes }} pendente(s)</span>
+            </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
 
 <section class="panel finance-filter-panel">
     <form class="finance-filter-toolbar" method="get" action="{{ url_for('financeiro_despesas') }}">
@@ -122,11 +144,23 @@
                                 <span class="text-muted">-</span>
                             {% endif %}
                         </td>
-                        <td>
-                            {% if can_manage_despesas_flag and despesa.status != 'cancelada' %}
-                                <form method="post" action="{{ url_for('financeiro_despesas_cancelar', despesa_id=despesa.id) }}" onsubmit="return confirm('Cancelar esta despesa? Ela sai do controle de custos/reembolso, mas fica preservada no historico.');">
-                                    <button class="btn btn-outline-danger btn-sm" type="submit">Cancelar</button>
-                                </form>
+                        <td class="despesa-acoes">
+                            {% if can_manage_despesas_flag %}
+                                {% if despesa.status in ('rascunho', 'pendente_classificacao') %}
+                                    <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#modalNovaDespesa"
+                                            data-despesa-classificar-url="{{ url_for('financeiro_despesas_classificar', despesa_id=despesa.id) }}"
+                                            data-despesa-classificar-descricao="{{ despesa.descricao }}"
+                                            data-despesa-classificar-valor="{{ '%.2f'|format(despesa.valor_total)|replace('.', ',') if despesa.valor_total else '' }}"
+                                            data-despesa-classificar-data="{{ despesa.data_despesa or '' }}"
+                                            data-despesa-classificar-categoria="{{ despesa.categoria or '' }}">
+                                        Classificar
+                                    </button>
+                                {% endif %}
+                                {% if despesa.status != 'cancelada' %}
+                                    <form method="post" action="{{ url_for('financeiro_despesas_cancelar', despesa_id=despesa.id) }}" onsubmit="return confirm('Cancelar esta despesa? Ela sai do controle de custos/reembolso, mas fica preservada no historico.');">
+                                        <button class="btn btn-outline-danger btn-sm" type="submit">Cancelar</button>
+                                    </form>
+                                {% endif %}
                             {% endif %}
                         </td>
                     </tr>
@@ -143,12 +177,12 @@
 {% if can_manage_despesas_flag %}
 <div class="modal fade" id="modalNovaDespesa" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
-        <form method="post" action="{{ url_for('financeiro_despesas_criar') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form id="despesaForm">
+        <form method="post" action="{{ url_for('financeiro_despesas_criar') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form id="despesaForm" data-create-url="{{ url_for('financeiro_despesas_criar') }}">
             <input type="hidden" name="registro_uid" id="despesaRegistroUid">
             <div class="modal-header">
                 <div>
-                    <span class="module-label">Nova despesa</span>
-                    <h2 class="modal-title">Registrar despesa</h2>
+                    <span class="module-label" data-despesa-modal-kicker>Nova despesa</span>
+                    <h2 class="modal-title" data-despesa-modal-title>Registrar despesa</h2>
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
             </div>
@@ -232,7 +266,7 @@
                         <input class="form-control" name="observacoes" placeholder="Observacoes internas" autocomplete="off">
                     </div>
                     <div class="col-12">
-                        <label class="form-label">Comprovante <span class="text-muted">(opcional)</span></label>
+                        <label class="form-label" data-despesa-comprovante-label>Comprovante <span class="text-muted">(opcional)</span></label>
                         <div class="finance-dropzone" data-despesa-dropzone tabindex="0" role="button" aria-controls="despesaComprovanteInput">
                             <input class="visually-hidden" id="despesaComprovanteInput" type="file" name="comprovante" data-despesa-file-input>
                             <div class="finance-dropzone__copy">
@@ -247,7 +281,36 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
-                <button class="btn btn-primary" type="submit">Salvar despesa</button>
+                <button class="btn btn-primary" type="submit" data-despesa-submit>Salvar despesa</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="modalImportarDocumentos" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <form method="post" action="{{ url_for('financeiro_despesas_importar') }}" class="modal-content" enctype="multipart/form-data" data-modal-finance-form id="importarForm">
+            <div class="modal-header">
+                <div>
+                    <span class="module-label">Importar documentos</span>
+                    <h2 class="modal-title">Varios comprovantes de uma vez</h2>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted">Selecione ou arraste varios arquivos (fotos, PDFs) baixados de um grupo de WhatsApp ou de onde tiver. Cada um vira um rascunho pendente de classificacao -- nenhum vira despesa "pronta" sozinho, e comprovantes identicos a um ja lancado sao ignorados automaticamente.</p>
+                <div class="finance-dropzone despesa-import-dropzone" data-import-dropzone tabindex="0" role="button" aria-controls="importarArquivosInput">
+                    <input class="visually-hidden" id="importarArquivosInput" type="file" name="arquivos" multiple data-import-file-input>
+                    <div class="finance-dropzone__copy">
+                        <strong>Arraste e solte os arquivos aqui</strong>
+                        <span>ou clique para escolher varios de uma vez</span>
+                    </div>
+                </div>
+                <ul class="despesa-import-file-list" data-import-file-list></ul>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary" type="submit" data-import-submit disabled>Importar</button>
             </div>
         </form>
     </div>

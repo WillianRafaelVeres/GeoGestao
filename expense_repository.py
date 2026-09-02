@@ -137,7 +137,7 @@ def cancel_despesa(db, despesa_id, motivo, cancelado_em, cancelado_por=None):
 
 def list_despesas(
     db, status=None, desembolsado_por_id=None, desembolso_tipo=None, projeto_id=None, cliente_id=None,
-    categoria=None, data_de=None, data_ate=None, limit=300,
+    categoria=None, data_de=None, data_ate=None, lote_id=None, limit=300,
 ):
     """Listagem para a tela Financeiro -> Despesas, em uma unica query (sem N+1):
     nome do desembolsante e as alocacoes (projeto/cliente/valor) ja vem
@@ -173,6 +173,9 @@ def list_despesas(
     if cliente_id:
         clauses.append("EXISTS (SELECT 1 FROM despesa_alocacoes a WHERE a.despesa_id = d.id AND a.cliente_id = %s)")
         params.append(cliente_id)
+    if lote_id:
+        clauses.append("d.lote_id = %s")
+        params.append(lote_id)
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
     return _fetchall(
@@ -529,6 +532,50 @@ def get_lote_progresso(db, lote_id):
         (lote_id,),
     )
     return row
+
+
+def list_lotes(db, limit=10):
+    """Lotes recentes com progresso, para o painel 'Lotes recentes' em Financeiro -> Despesas."""
+    return _fetchall(
+        db,
+        """
+        SELECT
+            l.id, l.titulo, l.status, l.total_documentos, l.criado_em,
+            COUNT(d.id) FILTER (WHERE d.status NOT IN ('rascunho', 'pendente_classificacao')) AS classificados,
+            COUNT(d.id) FILTER (WHERE d.status IN ('rascunho', 'pendente_classificacao')) AS pendentes
+        FROM despesa_lotes l
+        LEFT JOIN despesas d ON d.lote_id = l.id
+        GROUP BY l.id
+        ORDER BY l.criado_em DESC, l.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+
+
+def update_lote_total(db, lote_id, total_documentos):
+    db.execute(
+        "UPDATE despesa_lotes SET total_documentos = %s WHERE id = %s",
+        (total_documentos, lote_id),
+    ).close()
+
+
+def update_despesa_classificacao(
+    db, despesa_id, *, descricao, categoria, valor_total, data_despesa, observacoes,
+    desembolsado_por_tipo, desembolsado_por_id, atualizado_em, atualizado_por=None,
+):
+    """Preenche/corrige os dados de uma despesa em rascunho (importada ou manual
+    incompleta). A divisao entre projetos e feita a parte via set_alocacoes."""
+    db.execute(
+        """
+        UPDATE despesas
+        SET descricao = %s, categoria = %s, valor_total = %s, data_despesa = %s, observacoes = %s,
+            desembolsado_por_tipo = %s, desembolsado_por_id = %s, atualizado_em = %s, atualizado_por = %s
+        WHERE id = %s
+        """,
+        (descricao, categoria, valor_total, data_despesa, observacoes,
+         desembolsado_por_tipo, desembolsado_por_id, atualizado_em, atualizado_por, despesa_id),
+    ).close()
 
 
 # --- Auditoria (despesa_eventos) ----------------------------------------

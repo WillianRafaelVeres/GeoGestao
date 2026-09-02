@@ -168,6 +168,13 @@ def create_despesa(
         if existing:
             return existing
 
+    # Valida ANTES de qualquer escrita (inclusive antes de resolver/criar o
+    # desembolsante): como o request so commita no fim (after_request) e um
+    # erro de validacao vira redirect (302, nao >=400), uma escrita feita
+    # antes do raise seria salva mesmo com a despesa nao sendo criada.
+    if alocacoes:
+        validate_allocations_sum(valor_total, alocacoes)
+
     desembolsado_por_id = resolve_desembolsante(
         db,
         tipo=desembolsado_por_tipo,
@@ -176,9 +183,6 @@ def create_despesa(
         criado_em=criado_em,
         criado_por=criado_por,
     )
-
-    if alocacoes:
-        validate_allocations_sum(valor_total, alocacoes)
 
     status = compute_despesa_status(bool(alocacoes), desembolsado_por_tipo == "EMPRESA" or bool(desembolsado_por_id))
 
@@ -243,6 +247,86 @@ def set_alocacoes(db, despesa_id, valor_total, alocacoes, criado_em, criado_por=
         f"Divisao entre projetos atualizada ({len(alocacoes)} projeto(s)).",
         criado_em, usuario_id=criado_por,
     )
+
+
+def import_documento(
+    db, *, lote_id, descricao, caminho_dropbox, nome_arquivo, criado_em,
+    nome_original=None, file_hash=None, tamanho=None, data_despesa=None, criado_por=None,
+):
+    """Transforma UM arquivo importado em lote num rascunho de despesa (item 9 do
+    pedido). Nasce em 'pendente_classificacao': sem valor, sem projeto, sem
+    desembolsante definido -- nada disso e decidido automaticamente (item 11).
+    O usuario classifica depois com classificar_despesa().
+    """
+    despesa_id = repo.insert_despesa(
+        db,
+        descricao=descricao,
+        valor_total=None,
+        desembolsado_por_tipo="EMPRESA",
+        criado_em=criado_em,
+        data_despesa=data_despesa,
+        status="pendente_classificacao",
+        lote_id=lote_id,
+        origem="IMPORTACAO",
+        criado_por=criado_por,
+    )
+    repo.insert_anexo(
+        db, despesa_id, caminho_dropbox, nome_arquivo, criado_em,
+        nome_original=nome_original, file_hash=file_hash, tamanho=tamanho,
+        principal=True, criado_por=criado_por,
+    )
+    repo.insert_evento(
+        db, despesa_id, "despesa_importada",
+        f"Documento importado: {nome_original or nome_arquivo}.",
+        criado_em, usuario_id=criado_por,
+    )
+    return repo.get_despesa(db, despesa_id)
+
+
+def classificar_despesa(
+    db, despesa_id, *, descricao, valor_total, categoria, data_despesa, observacoes,
+    desembolsado_por_tipo, alocacoes, atualizado_em,
+    desembolsante_id=None, desembolsante_nome_novo=None, atualizado_por=None,
+):
+    """Completa um rascunho (importado ou manual incompleto) com os dados que a
+    IA/importacao nunca decide sozinha: valor confirmado, quem desembolsou e a
+    divisao entre projetos. Ao final a despesa fica 'pronta' (via set_alocacoes)."""
+    despesa = repo.get_despesa(db, despesa_id)
+    if not despesa:
+        raise ExpenseServiceError("Despesa nao encontrada.")
+    if despesa["status"] == "cancelada":
+        raise ExpenseServiceError("Esta despesa esta cancelada e nao pode ser classificada.")
+
+    descricao = (descricao or "").strip()
+    if not descricao:
+        raise ExpenseServiceError("Informe a descricao da despesa.")
+    valor_total = to_currency(valor_total)
+    if valor_total <= 0:
+        raise ExpenseServiceError("O valor da despesa precisa ser maior que zero.")
+    # Valida a soma ANTES de escrever qualquer coisa: como o request inteiro so
+    # commita no fim (after_request), um raise depois de um UPDATE parcial
+    # ainda seria salvo (o redirect de erro nao e status >=400). Ver
+    # set_alocacoes, que faz a mesma validacao de novo antes de aplicar.
+    validate_allocations_sum(valor_total, alocacoes)
+
+    desembolsado_por_id = resolve_desembolsante(
+        db, tipo=desembolsado_por_tipo, desembolsante_id=desembolsante_id,
+        nome_novo=desembolsante_nome_novo, criado_em=atualizado_em, criado_por=atualizado_por,
+    )
+    repo.update_despesa_classificacao(
+        db, despesa_id,
+        descricao=descricao, categoria=categoria, valor_total=valor_total,
+        data_despesa=data_despesa, observacoes=observacoes,
+        desembolsado_por_tipo=desembolsado_por_tipo, desembolsado_por_id=desembolsado_por_id,
+        atualizado_em=atualizado_em, atualizado_por=atualizado_por,
+    )
+    set_alocacoes(db, despesa_id, valor_total, alocacoes, atualizado_em, criado_por=atualizado_por)
+    repo.insert_evento(
+        db, despesa_id, "despesa_classificada",
+        f"Despesa classificada: {descricao} - R$ {valor_total}.",
+        atualizado_em, usuario_id=atualizado_por,
+    )
+    return repo.get_despesa(db, despesa_id)
 
 
 def cancelar_despesa(db, despesa_id, motivo, cancelado_em, cancelado_por=None):
