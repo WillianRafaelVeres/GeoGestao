@@ -35,7 +35,7 @@
             <div class="table-responsive">
                 <table class="table compact-table">
                     <thead>
-                        <tr><th>Data</th><th>Descricao</th><th>Projeto(s)</th><th>Valor</th><th>Comprovante</th></tr>
+                        <tr><th>Data</th><th>Descricao</th><th>Projeto(s)</th><th>Valor</th><th>Comprovante</th><th></th></tr>
                     </thead>
                     <tbody>
                         {% for despesa in despesas %}
@@ -50,6 +50,13 @@
                                     {% else %}
                                         <span class="text-muted">-</span>
                                     {% endif %}
+                                </td>
+                                <td class="text-end">
+                                    <form method="post" action="{{ url_for('financeiro_despesas_cancelar', despesa_id=despesa.id) }}"
+                                          onsubmit="return confirm('Excluir esta despesa? Ela sai do controle de custos/cobranca, mas fica preservada no historico como cancelada.');">
+                                        <input type="hidden" name="next" value="{{ url_for('financeiro_cobrancas') }}">
+                                        <button class="btn btn-outline-danger btn-sm" type="submit">Excluir</button>
+                                    </form>
                                 </td>
                             </tr>
                         {% endfor %}

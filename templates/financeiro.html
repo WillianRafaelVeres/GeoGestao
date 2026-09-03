@@ -201,40 +201,36 @@
 
 {{ financeiro_tabs('visao_geral') }}
 
-<section class="dash-kpi-row finance-summary-grid">
-    <div class="dash-kpi finance-summary-card finance-summary-card--primary">
-        <span class="dash-kpi-label">Total a receber</span>
-        <strong class="dash-kpi-value">{{ format_currency(resumo.total_a_receber) }}</strong>
-        <span class="dash-kpi-sub">contratos + custos - pagamentos</span>
+<section class="panel finance-overview-panel">
+    <div class="panel-header">
+        <h2>Projetos</h2>
     </div>
-    <div class="dash-kpi finance-summary-card">
-        <span class="dash-kpi-label">Custos a cobrar</span>
-        <strong class="dash-kpi-value">{{ format_currency(resumo.custos_a_cobrar) }}</strong>
-        <span class="dash-kpi-sub">despesas lancadas para reembolso</span>
-    </div>
-    <div class="dash-kpi finance-summary-card finance-summary-card--received">
-        <span class="dash-kpi-label">Ja recebido</span>
-        <strong class="dash-kpi-value">{{ format_currency(resumo.recebido_total) }}</strong>
-        <span class="dash-kpi-sub">{{ format_currency(resumo.recebido_30d) }} nos ultimos 30 dias</span>
-    </div>
-    <div class="dash-kpi finance-summary-card {{ 'dash-kpi--warn' if resumo.quase_prontos_count else '' }}">
-        <span class="dash-kpi-label">Proximos de terminar</span>
-        <strong class="dash-kpi-value">{{ resumo.quase_prontos_count }}</strong>
-        <span class="dash-kpi-sub">{{ format_currency(resumo.quase_prontos_saldo) }} a receber em breve</span>
-    </div>
-    <div class="dash-kpi finance-summary-card {{ 'dash-kpi--danger' if resumo.sem_valor_count else '' }}">
-        <span class="dash-kpi-label">Sem valor definido</span>
-        <strong class="dash-kpi-value">{{ resumo.sem_valor_count }}</strong>
-        <span class="dash-kpi-sub">projetos ativos sem valor de contrato</span>
+    <div class="dash-kpi-row finance-summary-grid finance-summary-grid--compact">
+        <div class="dash-kpi finance-summary-card finance-summary-card--primary">
+            <span class="dash-kpi-label">Total a receber</span>
+            <strong class="dash-kpi-value">{{ format_currency(resumo.total_a_receber) }}</strong>
+            <span class="dash-kpi-sub">contratos + custos - pagamentos</span>
+        </div>
+        <div class="dash-kpi finance-summary-card finance-summary-card--received">
+            <span class="dash-kpi-label">Ja recebido</span>
+            <strong class="dash-kpi-value">{{ format_currency(resumo.recebido_total) }}</strong>
+            <span class="dash-kpi-sub">{{ format_currency(resumo.recebido_30d) }} nos ultimos 30 dias</span>
+        </div>
+        {% if quase_prontos %}
+        <a class="dash-kpi finance-summary-card dash-kpi--warn" href="#quase-prontos">
+            <span class="dash-kpi-label">Proximos de terminar</span>
+            <strong class="dash-kpi-value">{{ resumo.quase_prontos_count }}</strong>
+            <span class="dash-kpi-sub">{{ format_currency(resumo.quase_prontos_saldo) }} a receber em breve</span>
+        </a>
+        {% endif %}
     </div>
 </section>
 
-<section class="panel finance-despesas-panel">
+<section class="panel finance-overview-panel">
     <div class="panel-header">
         <h2>Despesas</h2>
-        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('financeiro_despesas') }}">Ver despesas</a>
     </div>
-    <div class="dash-kpi-row finance-summary-grid">
+    <div class="dash-kpi-row finance-summary-grid finance-summary-grid--compact">
         <a class="dash-kpi finance-summary-card {{ 'dash-kpi--danger' if despesas_indicadores.documentos_pendentes else '' }}"
            href="{{ url_for('financeiro_lancamentos') }}">
             <span class="dash-kpi-label">Documentos para lancar</span>
@@ -245,12 +241,7 @@
            href="{{ url_for('financeiro_cobrancas') }}">
             <span class="dash-kpi-label">Total a cobrar</span>
             <strong class="dash-kpi-value">{{ format_currency(total_a_cobrar) }}</strong>
-            <span class="dash-kpi-sub">dos proprietarios</span>
-        </a>
-        <a class="dash-kpi finance-summary-card" href="{{ url_for('financeiro_cobrancas') }}">
-            <span class="dash-kpi-label">Proprietarios pendentes</span>
-            <strong class="dash-kpi-value">{{ pendencias_cobranca|length }}</strong>
-            <span class="dash-kpi-sub">com valores a cobrar</span>
+            <span class="dash-kpi-sub">{{ pendencias_cobranca|length }} proprietario(s)</span>
         </a>
         <a class="dash-kpi finance-summary-card finance-summary-card--received" href="{{ url_for('financeiro_cobrancas') }}">
             <span class="dash-kpi-label">Total cobrado</span>
@@ -261,45 +252,8 @@
            href="{{ url_for('financeiro_reembolsos') }}">
             <span class="dash-kpi-label">Reembolsos pendentes</span>
             <strong class="dash-kpi-value">{{ format_currency(total_a_reembolsar) }}</strong>
-            <span class="dash-kpi-sub">{{ pendencias_reembolso|length }} pessoa(s) com saldo</span>
+            <span class="dash-kpi-sub">{{ pendencias_reembolso|length }} pessoa(s)</span>
         </a>
-    </div>
-    <div class="dash-kpi-row finance-summary-grid finance-summary-grid--secondary">
-        <div class="dash-kpi finance-summary-card finance-summary-card--primary">
-            <span class="dash-kpi-label">Total lancado no mes</span>
-            <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.total_mes) }}</strong>
-            <span class="dash-kpi-sub">{{ hoje_mes_label }}</span>
-        </div>
-        <div class="dash-kpi finance-summary-card">
-            <span class="dash-kpi-label">Pago pela empresa</span>
-            <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.pago_empresa_mes) }}</strong>
-            <span class="dash-kpi-sub">no mes</span>
-        </div>
-        <div class="dash-kpi finance-summary-card">
-            <span class="dash-kpi-label">Pago por colaboradores</span>
-            <strong class="dash-kpi-value">{{ format_currency(despesas_indicadores.pago_pessoas_mes) }}</strong>
-            <span class="dash-kpi-sub">no mes</span>
-        </div>
-    </div>
-    {% set alertas_despesa = [] %}
-    {% for pendencia in pendencias_reembolso %}
-        {% set _ = alertas_despesa.append(pendencia.nome ~ " - " ~ format_currency(pendencia.total_pendente) ~ " a reembolsar") %}
-    {% endfor %}
-    {% if despesas_indicadores.despesas_sem_divisao %}
-        {% set _ = alertas_despesa.append(despesas_indicadores.despesas_sem_divisao ~ " despesa(s) com valor confirmado mas sem divisao entre projetos") %}
-    {% endif %}
-    {% if despesas_indicadores.despesas_sem_projeto %}
-        {% set _ = alertas_despesa.append(despesas_indicadores.despesas_sem_projeto ~ " despesa(s) pronta(s) sem nenhum projeto vinculado") %}
-    {% endif %}
-    {% if alertas_despesa %}
-        <ul class="finance-despesas-alerts">
-            {% for alerta in alertas_despesa %}
-                <li>{{ alerta }}</li>
-            {% endfor %}
-        </ul>
-    {% endif %}
-    <div class="finance-despesas-note">
-        {{ format_currency(despesas_indicadores.custos_atribuidos_clientes) }} em custos ja atribuidos a clientes atraves de despesas -- ainda nao e cobranca formal.
     </div>
 </section>
 
@@ -348,7 +302,7 @@
 </div>
 
 {% if quase_prontos %}
-<section class="panel" data-finance-panel="quase_prontos">
+<section class="panel" id="quase-prontos" data-finance-panel="quase_prontos">
     <div class="panel-header">
         <h2>Proximos de terminar ({{ quase_pronto_pct }}%+ das etapas concluidas)</h2>
     </div>

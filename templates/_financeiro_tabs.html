@@ -8,9 +8,6 @@
             <a class="nav-link {{ 'active' if active == 'lancamentos' else '' }}" href="{{ url_for('financeiro_lancamentos') }}">Lancamentos</a>
         </li>
     {% endif %}
-    <li class="nav-item" role="presentation">
-        <a class="nav-link {{ 'active' if active == 'despesas' else '' }}" href="{{ url_for('financeiro_despesas') }}">Despesas</a>
-    </li>
     {% if can_manage_despesas() %}
         <li class="nav-item" role="presentation">
             <a class="nav-link {{ 'active' if active == 'cobrancas' else '' }}" href="{{ url_for('financeiro_cobrancas') }}">Cobrancas</a>

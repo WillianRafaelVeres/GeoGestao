@@ -15334,11 +15334,13 @@ def parse_payment_date(raw):
     return app_today().isoformat()
 
 
-@app.route("/financeiro")
-@login_required
-def financeiro():
-    ensure_financeiro_schema()
-
+def build_financeiro_context():
+    """Reune todos os dados da Visao Geral do Financeiro numa unica chamada,
+    para poder ser cacheada por poucos segundos (get_financeiro_context_cached)
+    -- a pagina combina uma consulta pesada (todos os projetos ativos, com
+    LATERAL joins de progresso/pagamentos/custos) com varias consultas de
+    despesas/cobrancas/reembolsos; sem cache, cada abertura da aba refaz tudo
+    isso do zero, o que deixava a pagina lenta para abrir."""
     rows = query_db(
         """
         SELECT
@@ -15520,27 +15522,26 @@ def financeiro():
         ):
             costs_by_project.setdefault(cost["projeto_id"], []).append(cost)
 
-    return render_template(
-        "financeiro.html",
-        em_aberto=em_aberto,
-        concluidos_pendentes=concluidos_pendentes,
-        quase_prontos=quase_prontos,
-        payments_by_project=payments_by_project,
-        costs_by_project=costs_by_project,
-        formas_pagamento=FORMAS_PAGAMENTO,
-        categorias_custo=CATEGORIAS_CUSTO,
-        history_project_ids=history_project_ids,
-        quase_pronto_pct=FINANCEIRO_QUASE_PRONTO_PCT,
-        etapa_options=etapa_options,
-        total_financeiro_count=len(em_aberto) + len(concluidos_pendentes),
-        despesas_indicadores=despesas_indicadores,
-        pendencias_reembolso=pendencias_reembolso,
-        total_a_reembolsar=total_a_reembolsar,
-        pendencias_cobranca=pendencias_cobranca,
-        total_a_cobrar=total_a_cobrar,
-        total_cobrado=total_cobrado,
-        hoje_mes_label=hoje_mes_label,
-        resumo={
+    return {
+        "em_aberto": em_aberto,
+        "concluidos_pendentes": concluidos_pendentes,
+        "quase_prontos": quase_prontos,
+        "payments_by_project": payments_by_project,
+        "costs_by_project": costs_by_project,
+        "formas_pagamento": FORMAS_PAGAMENTO,
+        "categorias_custo": CATEGORIAS_CUSTO,
+        "history_project_ids": history_project_ids,
+        "quase_pronto_pct": FINANCEIRO_QUASE_PRONTO_PCT,
+        "etapa_options": etapa_options,
+        "total_financeiro_count": len(em_aberto) + len(concluidos_pendentes),
+        "despesas_indicadores": despesas_indicadores,
+        "pendencias_reembolso": pendencias_reembolso,
+        "total_a_reembolsar": total_a_reembolsar,
+        "pendencias_cobranca": pendencias_cobranca,
+        "total_a_cobrar": total_a_cobrar,
+        "total_cobrado": total_cobrado,
+        "hoje_mes_label": hoje_mes_label,
+        "resumo": {
             "total_a_receber": a_receber_ativos + a_receber_concluidos,
             "a_receber_ativos": a_receber_ativos,
             "a_receber_concluidos": a_receber_concluidos,
@@ -15552,7 +15553,18 @@ def financeiro():
             "quase_prontos_saldo": quase_prontos_saldo,
             "sem_valor_count": sem_valor_count,
         },
-    )
+    }
+
+
+def get_financeiro_context_cached():
+    return get_cached_lookup("route_financeiro", build_financeiro_context, ttl_seconds=ROUTE_CACHE_TTL_SECONDS)
+
+
+@app.route("/financeiro")
+@login_required
+def financeiro():
+    ensure_financeiro_schema()
+    return render_template("financeiro.html", **get_financeiro_context_cached())
 
 
 @app.route("/financeiro/pagamento", methods=["POST"])
@@ -16192,17 +16204,24 @@ def financeiro_despesas_importar():
 @app.route("/financeiro/despesas/<int:despesa_id>/cancelar", methods=["POST"])
 @login_required
 def financeiro_despesas_cancelar(despesa_id):
+    # Usado tambem a partir de Financeiro -> Cobrancas (excluir uma despesa
+    # errada direto da lista "a cobrar"), que quer voltar pra la em vez de
+    # para a tela administrativa de Despesas -- mesmo cuidado de validacao
+    # de "next" ja usado em outras telas (nunca redireciona pra fora do app).
+    next_url = request.form.get("next") or ""
+    if not next_url.startswith("/financeiro/") or next_url.startswith("//"):
+        next_url = url_for("financeiro_despesas")
     if not can_manage_despesas():
         flash("Permissao negada.", "danger")
-        return redirect(url_for("financeiro_despesas"))
+        return redirect(next_url)
     motivo = (request.form.get("motivo") or "").strip() or None
     try:
         expense_service.cancelar_despesa(get_db(), despesa_id, motivo, app_now_iso(), cancelado_por=g.user["id"])
     except expense_service.ExpenseServiceError as exc:
         flash(str(exc), "danger")
-        return redirect(url_for("financeiro_despesas"))
+        return redirect(next_url)
     flash("Despesa cancelada.", "success")
-    return redirect(url_for("financeiro_despesas"))
+    return redirect(next_url)
 
 
 def _lancamento_fila_item_payload(row):

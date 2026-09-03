@@ -210,6 +210,64 @@ class ImportarDocumentosRouteTests(RouteTestCase):
         self.assertTrue(any(categoria == "danger" for categoria, _ in flashes))
 
 
+class CancelarDespesaRouteTests(RouteTestCase):
+    """O botao Excluir de Financeiro > Cobrancas reaproveita esta mesma rota,
+    so pedindo pra voltar para /financeiro/cobrancas em vez da tela de
+    Despesas -- ver o campo "next"."""
+
+    def test_default_redirect_is_despesas(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_despesa") as cancelar_mock:
+            response, flashes = self._run(
+                appmod.financeiro_despesas_cancelar, "/financeiro/despesas/7/cancelar",
+                form={"motivo": "Lancado errado"}, despesa_id=7,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/financeiro/despesas", response.location)
+        cancelar_mock.assert_called_once()
+        self.assertTrue(any(categoria == "success" for categoria, _ in flashes))
+
+    def test_next_redirects_to_cobrancas_when_called_from_there(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_despesa"):
+            response, _ = self._run(
+                appmod.financeiro_despesas_cancelar, "/financeiro/despesas/7/cancelar",
+                form={"next": "/financeiro/cobrancas"}, despesa_id=7,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/financeiro/cobrancas", response.location)
+
+    def test_unsafe_next_is_ignored(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_despesa"):
+            response, _ = self._run(
+                appmod.financeiro_despesas_cancelar, "/financeiro/despesas/7/cancelar",
+                form={"next": "//evil.example.com"}, despesa_id=7,
+            )
+        self.assertIn("/financeiro/despesas", response.location)
+        self.assertNotIn("evil.example.com", response.location)
+
+    def test_service_error_keeps_next_redirect(self):
+        with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
+             mock.patch.object(appmod.expense_service, "cancelar_despesa",
+                                side_effect=appmod.expense_service.ExpenseServiceError("Ja esta cancelada.")):
+            response, flashes = self._run(
+                appmod.financeiro_despesas_cancelar, "/financeiro/despesas/7/cancelar",
+                form={"next": "/financeiro/cobrancas"}, despesa_id=7,
+            )
+        self.assertIn("/financeiro/cobrancas", response.location)
+        self.assertIn(("danger", "Ja esta cancelada."), flashes)
+
+    def test_non_manager_cannot_cancel(self):
+        with mock.patch.object(appmod.expense_service, "cancelar_despesa") as cancelar_mock:
+            response, flashes = self._run(
+                appmod.financeiro_despesas_cancelar, "/financeiro/despesas/7/cancelar",
+                form={}, despesa_id=7, user={"id": 2, "nome": "Tecnico", "perfil_acesso": "tecnico"},
+            )
+        cancelar_mock.assert_not_called()
+        self.assertTrue(any(categoria == "danger" for categoria, _ in flashes))
+
+
 class RegistrarReembolsoRouteTests(RouteTestCase):
     def test_valid_submission_calls_service(self):
         with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
