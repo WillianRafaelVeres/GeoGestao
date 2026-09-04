@@ -110,9 +110,13 @@ def resolve_desembolsante(db, *, tipo, desembolsante_id=None, nome_novo=None, us
     """Resolve o `desembolsado_por_id` a gravar na despesa.
 
     tipo='EMPRESA' -> sempre None (empresa nunca vira linha em desembolsantes).
-    tipo='PESSOA' -> usa desembolsante_id existente, ou cria um novo a partir
-    de nome_novo (alta rapida direto no formulario, sem tela cadastral
-    separada obrigatoria).
+    tipo='PESSOA' -> usa desembolsante_id existente; ou, se usuario_id foi
+    informado (pessoa escolhida a partir da lista de usuarios do sistema, nao
+    digitada a mao), reaproveita o desembolsante ja ligado aquele usuario se
+    existir; senao cria um novo a partir de nome_novo (alta rapida direto no
+    formulario, sem tela cadastral separada obrigatoria) -- ligando ao
+    usuario_id quando ele foi informado, pra proxima vez a mesma pessoa ja
+    aparecer pronta em vez de duplicar o cadastro.
     """
     if tipo not in ("EMPRESA", "PESSOA"):
         raise ExpenseServiceError("Tipo de desembolso invalido.")
@@ -123,6 +127,10 @@ def resolve_desembolsante(db, *, tipo, desembolsante_id=None, nome_novo=None, us
         if not desembolsante or not desembolsante["ativo"]:
             raise ExpenseServiceError("Pessoa selecionada para o desembolso nao encontrada ou inativa.")
         return desembolsante_id
+    if usuario_id:
+        existing = repo.find_desembolsante_by_usuario(db, usuario_id)
+        if existing:
+            return existing["id"]
     nome = (nome_novo or "").strip()
     if not nome:
         raise ExpenseServiceError("Informe quem realizou o desembolso.")
@@ -143,6 +151,7 @@ def create_despesa(
     observacoes=None,
     desembolsante_id=None,
     desembolsante_nome_novo=None,
+    desembolsante_usuario_id=None,
     alocacoes=None,
     registro_uid=None,
     lote_id=None,
@@ -180,6 +189,7 @@ def create_despesa(
         tipo=desembolsado_por_tipo,
         desembolsante_id=desembolsante_id,
         nome_novo=desembolsante_nome_novo,
+        usuario_id=desembolsante_usuario_id,
         criado_em=criado_em,
         criado_por=criado_por,
     )
@@ -286,7 +296,7 @@ def import_documento(
 def classificar_despesa(
     db, despesa_id, *, descricao, valor_total, categoria, data_despesa, observacoes,
     desembolsado_por_tipo, alocacoes, atualizado_em,
-    desembolsante_id=None, desembolsante_nome_novo=None, atualizado_por=None,
+    desembolsante_id=None, desembolsante_nome_novo=None, desembolsante_usuario_id=None, atualizado_por=None,
 ):
     """Completa um rascunho (importado ou manual incompleto) com os dados que a
     IA/importacao nunca decide sozinha: valor confirmado, quem desembolsou e a
@@ -311,7 +321,8 @@ def classificar_despesa(
 
     desembolsado_por_id = resolve_desembolsante(
         db, tipo=desembolsado_por_tipo, desembolsante_id=desembolsante_id,
-        nome_novo=desembolsante_nome_novo, criado_em=atualizado_em, criado_por=atualizado_por,
+        nome_novo=desembolsante_nome_novo, usuario_id=desembolsante_usuario_id,
+        criado_em=atualizado_em, criado_por=atualizado_por,
     )
     repo.update_despesa_classificacao(
         db, despesa_id,
@@ -529,7 +540,7 @@ def migrate_pending_custos(db, custos, criado_em):
 def classificar_despesa_rapida(
     db, despesa_id, *, descricao, valor_total, categoria, data_despesa, observacoes,
     desembolsado_por_tipo, projeto_id, atualizado_em,
-    desembolsante_id=None, desembolsante_nome_novo=None, atualizado_por=None,
+    desembolsante_id=None, desembolsante_nome_novo=None, desembolsante_usuario_id=None, atualizado_por=None,
 ):
     """Mesma regra de classificar_despesa, mas para o fluxo simplificado de
     Lancamentos: em vez de uma lista de alocacoes, recebe UM projeto e monta
@@ -547,6 +558,7 @@ def classificar_despesa_rapida(
         alocacoes=[{"projeto_id": projeto_id, "valor": valor_total}],
         atualizado_em=atualizado_em,
         desembolsante_id=desembolsante_id, desembolsante_nome_novo=desembolsante_nome_novo,
+        desembolsante_usuario_id=desembolsante_usuario_id,
         atualizado_por=atualizado_por,
     )
 

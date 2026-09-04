@@ -89,6 +89,33 @@ class ResolveDesembolsanteTests(unittest.TestCase):
         with self.assertRaises(svc.ExpenseServiceError):
             svc.resolve_desembolsante(db, tipo="PESSOA", criado_em="2026-09-02T10:00:00")
 
+    def test_usuario_id_reuses_existing_desembolsante_instead_of_duplicating(self):
+        # Pessoa escolhida a partir da lista de usuarios do sistema (em vez de
+        # digitada a mao): se ja existe um desembolsante ligado a esse
+        # usuario, reaproveita em vez de criar outro cadastro pra mesma pessoa.
+        db = mock.Mock()
+        with mock.patch.object(svc, "repo", autospec=True) as repo:
+            repo.find_desembolsante_by_usuario.return_value = {"id": 42}
+            result = svc.resolve_desembolsante(
+                db, tipo="PESSOA", usuario_id=7, nome_novo="Aureo Gaspar", criado_em="2026-09-02T10:00:00",
+            )
+        self.assertEqual(result, 42)
+        repo.insert_desembolsante.assert_not_called()
+
+    def test_usuario_id_creates_new_desembolsante_linked_to_user_when_none_exists(self):
+        db = mock.Mock()
+        with mock.patch.object(svc, "repo", autospec=True) as repo:
+            repo.find_desembolsante_by_usuario.return_value = None
+            repo.insert_desembolsante.return_value = 55
+            result = svc.resolve_desembolsante(
+                db, tipo="PESSOA", usuario_id=7, nome_novo="Aureo Gaspar",
+                criado_em="2026-09-02T10:00:00", criado_por=1,
+            )
+        self.assertEqual(result, 55)
+        repo.insert_desembolsante.assert_called_once_with(
+            db, "Aureo Gaspar", usuario_id=7, criado_em="2026-09-02T10:00:00", criado_por=1,
+        )
+
 
 class CreateDespesaTests(unittest.TestCase):
     """Item 1/2/4 do pedido, via camada de servico com o repositorio mockado."""
@@ -728,6 +755,46 @@ class CancelarCobrancaTests(unittest.TestCase):
         with self.assertRaises(svc.ExpenseServiceError):
             svc.cancelar_cobranca(self.db, 900, None, "2026-09-03T09:00:00")
         self.repo.cancel_cobranca_and_itens.assert_not_called()
+
+
+class ParseDesembolsanteFormTests(unittest.TestCase):
+    """O seletor 'Pessoa' aceita tanto um desembolsante ja cadastrado (valor
+    numerico) quanto um usuario do sistema (valor 'user:<id>', sem precisar
+    digitar o nome na mao) -- parse_desembolsante_form distingue os dois."""
+
+    def _parse(self, form):
+        ctx = appmod.app.test_request_context("/financeiro/despesas", method="POST", data=form)
+        ctx.push()
+        self.addCleanup(ctx.pop)
+        return appmod.parse_desembolsante_form()
+
+    def test_numeric_value_is_an_existing_desembolsante(self):
+        desembolsante_id, nome_novo, usuario_id = self._parse({"desembolsante_id": "12"})
+        self.assertEqual(desembolsante_id, 12)
+        self.assertIsNone(usuario_id)
+        self.assertIsNone(nome_novo)
+
+    def test_user_prefixed_value_resolves_name_from_active_users(self):
+        with mock.patch.object(appmod, "get_active_users",
+                                return_value=[{"id": 7, "nome": "Aureo Gaspar"}, {"id": 9, "nome": "Outro"}]):
+            desembolsante_id, nome_novo, usuario_id = self._parse({"desembolsante_id": "user:7"})
+        self.assertIsNone(desembolsante_id)
+        self.assertEqual(usuario_id, 7)
+        self.assertEqual(nome_novo, "Aureo Gaspar")
+
+    def test_explicit_nome_novo_is_not_overridden_by_user_lookup(self):
+        with mock.patch.object(appmod, "get_active_users", return_value=[{"id": 7, "nome": "Aureo Gaspar"}]):
+            _id, nome_novo, usuario_id = self._parse(
+                {"desembolsante_id": "user:7", "desembolsante_nome_novo": "Nome digitado"}
+            )
+        self.assertEqual(usuario_id, 7)
+        self.assertEqual(nome_novo, "Nome digitado")
+
+    def test_empty_value_falls_back_to_manual_entry(self):
+        desembolsante_id, nome_novo, usuario_id = self._parse({"desembolsante_nome_novo": "Rafael"})
+        self.assertIsNone(desembolsante_id)
+        self.assertIsNone(usuario_id)
+        self.assertEqual(nome_novo, "Rafael")
 
 
 class ExpensePermissionsTests(unittest.TestCase):

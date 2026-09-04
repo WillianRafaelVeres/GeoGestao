@@ -6073,6 +6073,36 @@ def get_active_users():
     )
 
 
+def despesa_usuarios_sem_desembolsante(desembolsantes):
+    """Usuarios do sistema que ainda nao tem um desembolsante ligado -- para
+    nao duplicar a mesma pessoa no seletor 'Pessoa' (uma vez com o cadastro
+    manual antigo, outra vez com a opcao de usuario)."""
+    ja_ligados = {d["usuario_id"] for d in desembolsantes if d.get("usuario_id")}
+    return [usuario for usuario in get_active_users() if usuario["id"] not in ja_ligados]
+
+
+def parse_desembolsante_form():
+    """Le desembolsante_id/desembolsante_nome_novo do formulario, aceitando
+    tambem a opcao 'user:<id>' (pessoa escolhida direto da lista de usuarios
+    do sistema, sem precisar digitar o nome). Resolve o nome automaticamente
+    a partir do usuario quando for esse o caso."""
+    raw = (request.form.get("desembolsante_id") or "").strip()
+    desembolsante_id = None
+    desembolsante_usuario_id = None
+    if raw.startswith("user:"):
+        candidate = raw[len("user:"):]
+        if candidate.isdigit():
+            desembolsante_usuario_id = int(candidate)
+    elif raw.isdigit():
+        desembolsante_id = int(raw)
+    nome_novo = (request.form.get("desembolsante_nome_novo") or "").strip() or None
+    if desembolsante_usuario_id and not nome_novo:
+        usuario = next((u for u in get_active_users() if u["id"] == desembolsante_usuario_id), None)
+        if usuario:
+            nome_novo = usuario["nome"]
+    return desembolsante_id, nome_novo, desembolsante_usuario_id
+
+
 def get_cartorio_options():
     return get_cached_lookup(
         "cartorio_options",
@@ -15858,6 +15888,7 @@ def financeiro_despesas():
     db = get_db()
     despesas = expense_repository.list_despesas(db, **filtros)
     lotes_recentes = expense_repository.list_lotes(db)
+    desembolsantes = expense_repository.list_desembolsantes(db)
 
     return render_template(
         "despesas.html",
@@ -15867,7 +15898,8 @@ def financeiro_despesas():
         categorias_despesa=CATEGORIAS_DESPESA,
         status_labels=DESPESA_STATUS_LABELS,
         status_badges=DESPESA_STATUS_BADGE,
-        desembolsantes=expense_repository.list_desembolsantes(db),
+        desembolsantes=desembolsantes,
+        usuarios_sem_desembolsante=despesa_usuarios_sem_desembolsante(desembolsantes),
         projetos_json=fetch_despesa_projeto_options(),
         can_manage_despesas_flag=can_manage_despesas(),
     )
@@ -15890,8 +15922,7 @@ def financeiro_despesas_criar():
     data_despesa = parse_payment_date(request.form.get("data_despesa"))
     observacoes = (request.form.get("observacoes") or "").strip() or None
     desembolso_tipo = "PESSOA" if request.form.get("desembolso_tipo") == "PESSOA" else "EMPRESA"
-    desembolsante_id = request.form.get("desembolsante_id", type=int)
-    desembolsante_nome_novo = (request.form.get("desembolsante_nome_novo") or "").strip() or None
+    desembolsante_id, desembolsante_nome_novo, desembolsante_usuario_id = parse_desembolsante_form()
     registro_uid = (request.form.get("registro_uid") or "").strip()[:64] or secrets.token_hex(16)
 
     projeto_ids = request.form.getlist("alocacao_projeto_id")
@@ -15928,6 +15959,7 @@ def financeiro_despesas_criar():
             observacoes=observacoes,
             desembolsante_id=desembolsante_id,
             desembolsante_nome_novo=desembolsante_nome_novo,
+            desembolsante_usuario_id=desembolsante_usuario_id,
             alocacoes=alocacoes,
             registro_uid=registro_uid,
             criado_por=g.user["id"],
@@ -15983,8 +16015,7 @@ def financeiro_despesas_classificar(despesa_id):
     data_despesa = parse_payment_date(request.form.get("data_despesa"))
     observacoes = (request.form.get("observacoes") or "").strip() or None
     desembolso_tipo = "PESSOA" if request.form.get("desembolso_tipo") == "PESSOA" else "EMPRESA"
-    desembolsante_id = request.form.get("desembolsante_id", type=int)
-    desembolsante_nome_novo = (request.form.get("desembolsante_nome_novo") or "").strip() or None
+    desembolsante_id, desembolsante_nome_novo, desembolsante_usuario_id = parse_desembolsante_form()
 
     projeto_ids = request.form.getlist("alocacao_projeto_id")
     valores_alocacao = request.form.getlist("alocacao_valor")
@@ -16012,7 +16043,8 @@ def financeiro_despesas_classificar(despesa_id):
             descricao=descricao, valor_total=valor_total, categoria=categoria,
             data_despesa=data_despesa, observacoes=observacoes,
             desembolsado_por_tipo=desembolso_tipo, desembolsante_id=desembolsante_id,
-            desembolsante_nome_novo=desembolsante_nome_novo, alocacoes=alocacoes,
+            desembolsante_nome_novo=desembolsante_nome_novo, desembolsante_usuario_id=desembolsante_usuario_id,
+            alocacoes=alocacoes,
             atualizado_em=now, atualizado_por=g.user["id"],
         )
     except expense_service.ExpenseServiceError as exc:
@@ -16256,6 +16288,7 @@ def financeiro_lancamentos():
     fila = expense_repository.list_fila_lancamento(db, lote_id=lote_id)
     despesa_id = request.args.get("despesa_id", type=int)
     aberto = next((item for item in fila if item["id"] == despesa_id), fila[0] if fila else None)
+    desembolsantes = expense_repository.list_desembolsantes(db)
 
     return render_template(
         "lancamentos.html",
@@ -16263,7 +16296,8 @@ def financeiro_lancamentos():
         aberto=_lancamento_fila_item_payload(aberto) if aberto else None,
         lote_id=lote_id,
         categorias_despesa=CATEGORIAS_DESPESA,
-        desembolsantes=expense_repository.list_desembolsantes(db),
+        desembolsantes=desembolsantes,
+        usuarios_sem_desembolsante=despesa_usuarios_sem_desembolsante(desembolsantes),
         clientes_json=fetch_cliente_autocomplete_options(),
         projetos_json=fetch_despesa_projeto_options(),
         can_manage_despesas_flag=can_manage_despesas(),
@@ -16303,8 +16337,7 @@ def financeiro_lancamentos_salvar_proximo(despesa_id):
     data_despesa = parse_payment_date(request.form.get("data_despesa"))
     observacoes = (request.form.get("observacoes") or "").strip() or None
     desembolso_tipo = "PESSOA" if request.form.get("desembolso_tipo") == "PESSOA" else "EMPRESA"
-    desembolsante_id = request.form.get("desembolsante_id", type=int)
-    desembolsante_nome_novo = (request.form.get("desembolsante_nome_novo") or "").strip() or None
+    desembolsante_id, desembolsante_nome_novo, desembolsante_usuario_id = parse_desembolsante_form()
     projeto_id = request.form.get("projeto_id", type=int)
 
     if not valor_total or valor_total <= 0:
@@ -16317,6 +16350,7 @@ def financeiro_lancamentos_salvar_proximo(despesa_id):
             data_despesa=data_despesa, observacoes=observacoes,
             desembolsado_por_tipo=desembolso_tipo, projeto_id=projeto_id,
             desembolsante_id=desembolsante_id, desembolsante_nome_novo=desembolsante_nome_novo,
+            desembolsante_usuario_id=desembolsante_usuario_id,
             atualizado_em=now, atualizado_por=g.user["id"],
         )
     except expense_service.ExpenseServiceError as exc:

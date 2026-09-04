@@ -439,6 +439,7 @@ class FinanceiroLancamentosRouteTests(RouteTestCase):
         with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
              mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=fila), \
              mock.patch.object(appmod.expense_repository, "list_desembolsantes", return_value=[]), \
+             mock.patch.object(appmod, "get_active_users", return_value=[]), \
              mock.patch.object(appmod, "fetch_cliente_autocomplete_options", return_value=[]), \
              mock.patch.object(appmod, "fetch_despesa_projeto_options", return_value=[]), \
              mock.patch.object(appmod, "render_template") as render_mock:
@@ -459,6 +460,7 @@ class FinanceiroLancamentosRouteTests(RouteTestCase):
         with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
              mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=fila), \
              mock.patch.object(appmod.expense_repository, "list_desembolsantes", return_value=[]), \
+             mock.patch.object(appmod, "get_active_users", return_value=[]), \
              mock.patch.object(appmod, "fetch_cliente_autocomplete_options", return_value=[]), \
              mock.patch.object(appmod, "fetch_despesa_projeto_options", return_value=[]), \
              mock.patch.object(appmod, "render_template") as render_mock:
@@ -472,6 +474,7 @@ class FinanceiroLancamentosRouteTests(RouteTestCase):
         with mock.patch.object(appmod, "get_db", return_value=mock.Mock()), \
              mock.patch.object(appmod.expense_repository, "list_fila_lancamento", return_value=[]), \
              mock.patch.object(appmod.expense_repository, "list_desembolsantes", return_value=[]), \
+             mock.patch.object(appmod, "get_active_users", return_value=[]), \
              mock.patch.object(appmod, "fetch_cliente_autocomplete_options", return_value=[]), \
              mock.patch.object(appmod, "fetch_despesa_projeto_options", return_value=[]), \
              mock.patch.object(appmod, "render_template") as render_mock:

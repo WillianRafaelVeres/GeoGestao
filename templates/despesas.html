@@ -232,9 +232,20 @@
                         <label class="form-label">Pessoa</label>
                         <select class="form-select" name="desembolsante_id" id="despesaDesembolsanteSelect">
                             <option value="">+ Nova pessoa...</option>
-                            {% for pessoa in desembolsantes %}
-                                <option value="{{ pessoa.id }}">{{ pessoa.nome }}</option>
-                            {% endfor %}
+                            {% if desembolsantes %}
+                            <optgroup label="Ja cadastrados">
+                                {% for pessoa in desembolsantes %}
+                                    <option value="{{ pessoa.id }}">{{ pessoa.nome }}</option>
+                                {% endfor %}
+                            </optgroup>
+                            {% endif %}
+                            {% if usuarios_sem_desembolsante %}
+                            <optgroup label="Usuarios do sistema">
+                                {% for usuario in usuarios_sem_desembolsante %}
+                                    <option value="user:{{ usuario.id }}">{{ usuario.nome }}</option>
+                                {% endfor %}
+                            </optgroup>
+                            {% endif %}
                         </select>
                     </div>
                     <div class="col-md-6" data-despesa-pessoa-nova-field hidden>
