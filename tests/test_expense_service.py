@@ -552,6 +552,22 @@ class ExpenseRepositoryQueryShapeTests(unittest.TestCase):
         self.assertIsNone(repo.find_anexo_by_hash(db, ""))
         self.assertEqual(db.executed, [])  # nao bate no banco sem hash
 
+    def test_find_anexo_by_hash_excludes_cancelled_despesas(self):
+        # Um documento descartado (despesa cancelada) nao pode continuar
+        # bloqueando o mesmo arquivo de ser lancado de novo depois.
+        db = self.FakeDb(rows=[])
+        repo.find_anexo_by_hash(db, "hash-abc")
+        sql, params = db.executed[0]
+        self.assertIn("d.status != 'cancelada'", sql)
+        self.assertEqual(params, ("hash-abc",))
+
+    def test_find_anexo_by_hash_excludes_cancelled_despesas_with_exclude_id(self):
+        db = self.FakeDb(rows=[])
+        repo.find_anexo_by_hash(db, "hash-abc", exclude_despesa_id=1)
+        sql, params = db.executed[0]
+        self.assertIn("d.status != 'cancelada'", sql)
+        self.assertEqual(params, ("hash-abc", 1))
+
     def test_get_despesas_indicadores_passes_month_range_six_times(self):
         # Item 14 do pedido: total do mes, pago empresa/pessoas no mes usam o
         # mesmo intervalo de datas (inicio/fim), 3 filtros = 6 parametros.

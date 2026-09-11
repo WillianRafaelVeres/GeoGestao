@@ -295,7 +295,10 @@ def list_anexos(db, despesa_id):
 
 
 def find_anexo_by_hash(db, file_hash, exclude_despesa_id=None):
-    """Comprovante com o mesmo hash SHA-256 ja lancado em QUALQUER despesa (nao so a atual).
+    """Comprovante com o mesmo hash SHA-256 ja lancado em QUALQUER despesa ainda
+    ATIVA (nao so a atual). Uma despesa cancelada nao conta como duplicata: se
+    o usuario descartou o lancamento anterior, precisa poder lancar o mesmo
+    arquivo de novo sem ser bloqueado por algo que nao esta mais valendo.
 
     Hash identico e o caso rigoroso do item 20 do pedido: mesmo conteudo de
     arquivo, quase certamente o mesmo comprovante sendo importado de novo.
@@ -309,7 +312,7 @@ def find_anexo_by_hash(db, file_hash, exclude_despesa_id=None):
             SELECT da.*, d.descricao AS despesa_descricao, d.status AS despesa_status
             FROM despesa_anexos da
             JOIN despesas d ON d.id = da.despesa_id
-            WHERE da.hash = %s AND da.despesa_id != %s
+            WHERE da.hash = %s AND da.despesa_id != %s AND d.status != 'cancelada'
             ORDER BY da.id DESC
             LIMIT 1
             """,
@@ -321,7 +324,7 @@ def find_anexo_by_hash(db, file_hash, exclude_despesa_id=None):
         SELECT da.*, d.descricao AS despesa_descricao, d.status AS despesa_status
         FROM despesa_anexos da
         JOIN despesas d ON d.id = da.despesa_id
-        WHERE da.hash = %s
+        WHERE da.hash = %s AND d.status != 'cancelada'
         ORDER BY da.id DESC
         LIMIT 1
         """,
