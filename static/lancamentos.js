@@ -315,9 +315,9 @@ function updateLancamentoDoc(despesa) {
 }
 
 function lancamentoUrl(action, currentId) {
-    const params = new URLSearchParams();
-    if (window.lancamentoLoteId) params.set("lote_id", window.lancamentoLoteId);
-    return `/financeiro/lancamentos/${currentId}/${action}${params.toString() ? `?${params}` : ""}`;
+    // Nunca escopado por lote: a fila e uma caixa de entrada continua, o
+    // backend sempre avanca pro proximo pendente de qualquer importacao.
+    return `/financeiro/lancamentos/${currentId}/${action}`;
 }
 
 async function postLancamento(url, formData) {

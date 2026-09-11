@@ -16229,7 +16229,13 @@ def financeiro_despesas_importar():
         partes.append(f"{len(falhas)} falharam: {resumo_falhas}")
     flash(" ".join(partes), "success" if importados else "warning")
     if request.form.get("destino") == "lancamentos":
-        return redirect(url_for("financeiro_lancamentos", lote_id=lote_id))
+        # Sem lote_id: a fila de Lancamentos e uma caixa de entrada continua
+        # (item 2 do redesenho) -- se cada importacao escopasse a tela pro
+        # lote recem-criado, documentos ainda pendentes de importacoes
+        # anteriores "sumiriam" da vista (ficam la no banco, so nao aparecem
+        # ate alguem lembrar de tirar o filtro), e reimportar o mesmo arquivo
+        # bate na checagem de duplicidade sem o usuario entender por que.
+        return redirect(url_for("financeiro_lancamentos"))
     return redirect(url_for("financeiro_despesas", lote_id=lote_id, status="pendente_classificacao"))
 
 
@@ -16360,20 +16366,27 @@ def financeiro_lancamentos_salvar_proximo(despesa_id):
     if ia_analysis and ia_analysis["status"] == "rascunho":
         expense_repository.mark_ia_analysis_applied(db, despesa_id, now)
 
-    lote_id = request.args.get("lote_id", type=int)
     mensagem = f"Despesa classificada: {despesa['descricao']} - {format_currency(despesa['valor_total'])}."
-    return _lancamento_avancar(db, lote_id, wants_json, mensagem)
+    return _lancamento_avancar(db, wants_json, mensagem)
 
 
-def _lancamento_avancar(db, lote_id, wants_json, mensagem, categoria_flash="success"):
+def _lancamento_avancar(db, wants_json, mensagem, categoria_flash="success"):
     """Devolve/redireciona para o proximo documento pendente da fila -- usado
     tanto depois de classificar (Salvar e proximo) quanto depois de descartar
-    um documento (Cancelar), para nao duplicar essa parte em cada rota."""
-    proxima_fila = expense_repository.list_fila_lancamento(db, lote_id=lote_id, limit=1)
+    um documento (Cancelar), para nao duplicar essa parte em cada rota.
+
+    Nunca escopa por lote_id: a fila e uma caixa de entrada continua (item 2
+    do redesenho) que junta documentos de qualquer importacao -- escopar por
+    lote fazia documentos pendentes de uma importacao anterior "sumirem" da
+    tela assim que uma nova importacao acontecia (o registro continuava no
+    banco, so ficava fora do filtro), e reimportar o mesmo arquivo batia sem
+    aviso na checagem de duplicidade.
+    """
+    proxima_fila = expense_repository.list_fila_lancamento(db, limit=1)
     if not wants_json:
         flash(mensagem, categoria_flash)
         proximo_id = proxima_fila[0]["id"] if proxima_fila else None
-        return redirect(url_for("financeiro_lancamentos", despesa_id=proximo_id, lote_id=lote_id))
+        return redirect(url_for("financeiro_lancamentos", despesa_id=proximo_id))
     return jsonify({
         "ok": True,
         "message": mensagem,
@@ -16407,8 +16420,7 @@ def financeiro_lancamentos_cancelar(despesa_id):
     except expense_service.ExpenseServiceError as exc:
         return fail(str(exc))
 
-    lote_id = request.args.get("lote_id", type=int)
-    return _lancamento_avancar(db, lote_id, wants_json, "Documento descartado.")
+    return _lancamento_avancar(db, wants_json, "Documento descartado.")
 
 
 @app.route("/api/clientes/<int:cliente_id>/projetos")

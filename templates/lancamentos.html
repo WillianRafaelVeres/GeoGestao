@@ -187,7 +187,6 @@
 window.lancamentoClientes = {{ clientes_json|tojson }};
 window.despesaProjetosOptions = {{ projetos_json|tojson }};
 window.lancamentoAberto = {{ aberto|tojson }};
-window.lancamentoLoteId = {{ (lote_id or '')|tojson }};
 </script>
 <script src="{{ url_for('static', filename='lancamentos.js') }}"></script>
 {% endblock %}
